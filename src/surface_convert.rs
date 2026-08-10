@@ -641,10 +641,12 @@ pub fn core_expr_to_expr_value(
             ..
         } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci);
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci, tycon_env);
             fields.insert(
                 HashableValue::Str("tag".into()),
-                mk(string_val(display_name)),
+                mk(string_val(&display_name)),
             );
             fields.insert(
                 HashableValue::Str("payload".into()),
@@ -662,10 +664,12 @@ pub fn core_expr_to_expr_value(
             ..
         } => {
             let mut fields: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci);
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            let display_name = crate::type_tags::ctor_display_name(*tdid, *ci, tycon_env);
             fields.insert(
                 HashableValue::Str("tag".into()),
-                mk(string_val(display_name)),
+                mk(string_val(&display_name)),
             );
             make_variant_with_payload(*tdid, *ci, fields, &core.span, ctx)
         }
@@ -1472,7 +1476,9 @@ pub(crate) fn extract_tag_and_dict(
             payload,
             ..
         } => {
-            let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+            let empty_env = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty_env);
+            let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
                 message: format!("Expr variant {} has no payload", display),
                 field_path: vec![],
@@ -1678,7 +1684,9 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 e
             })?;
         if ci != EXPR_ENTRY {
-            let display = crate::type_tags::ctor_display_name(_tdid, ci);
+            let empty_env = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty_env);
+            let display = crate::type_tags::ctor_display_name(_tdid, ci, tycon_env);
             return Err(AstError {
                 message: format!("expected Expr.Entry, got {}", display),
                 field_path: vec![key.to_string(), i_str],
@@ -1756,7 +1764,9 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
                 e
             })?;
         if ci != EXPR_NAMED_ARG {
-            let display = crate::type_tags::ctor_display_name(_tdid, ci);
+            let empty_env = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty_env);
+            let display = crate::type_tags::ctor_display_name(_tdid, ci, tycon_env);
             return Err(AstError {
                 message: format!("expected Expr.NamedArg, got {}", display),
                 field_path: vec![key.to_string(), i_str],
@@ -1814,7 +1824,9 @@ pub(crate) fn get_param_list_field_with_aliases(
                 e
             })?;
         if ci != EXPR_PARAMETER {
-            let display = crate::type_tags::ctor_display_name(_tdid, ci);
+            let empty_env = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty_env);
+            let display = crate::type_tags::ctor_display_name(_tdid, ci, tycon_env);
             return Err(AstError {
                 message: format!("expected Expr.Parameter, got {}", display),
                 field_path: vec![key.to_string(), i_str],
@@ -2874,8 +2886,10 @@ mod tests {
                 ..
             } => match peek_value(&payload_thunk) {
                 Some(Value::Dict { entries: map, .. }) => {
-                    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index);
-                    (display.to_string(), map)
+                    let empty = std::collections::HashMap::new();
+                    let tycon_env = _ctx.tycon_env().unwrap_or(&empty);
+                    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
+                    (display, map)
                 }
                 other => panic!("expected Dict payload for Variant, got {:?}", other),
             },

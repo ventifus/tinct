@@ -523,7 +523,11 @@ where
                     None => visitor.visit_null(),
                 };
                 Ok(visitor.visit_variant(
-                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string(),
+                    {
+                        let empty = std::collections::HashMap::new();
+                        let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                        crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
+                    },
                     payload_output,
                 ))
             }
@@ -1067,7 +1071,7 @@ mod tests {
             payload: None,
             type_val: Some(make_typevalue_nominal(TEST_ID_COLOR)),
         };
-        assert_eq!(format!("{v}"), "<user-type>");
+        assert_eq!(format!("{v}"), "Variant(500.0)");
     }
 
     /// Regression: all unit variants must serialise uniformly as `Variant(Tag, Null)`.
@@ -1102,12 +1106,12 @@ mod tests {
 
         // Must serialize as a generic variant.
         assert_eq!(
-            red_display, "Variant(<user-type>, Null)",
-            "Color.Red must serialise as Variant(<user-type>, Null) (test type_decl_id has no static display name)"
+            red_display, "Variant(Ctor(500.0), Null)",
+            "Color.Red must serialise as Variant(Ctor(type_decl_id.ctor_index), Null)"
         );
         assert_eq!(
-            green_display, "Variant(<user-type>, Null)",
-            "Color.Green must serialise as Variant(<user-type>, Null) (test type_decl_id has no static display name)"
+            green_display, "Variant(Ctor(500.1), Null)",
+            "Color.Green must serialise as Variant(Ctor(type_decl_id.ctor_index), Null)"
         );
 
         // A unit variant from a different type must produce the same structure.
@@ -1121,8 +1125,8 @@ mod tests {
             .await
             .expect("display should succeed for MyBool.Yes");
         assert_eq!(
-            user_display, "Variant(<user-type>, Null)",
-            "User-defined unit variant must serialise uniformly (test type_decl_id has no static display name)"
+            user_display, "Variant(Ctor(501.0), Null)",
+            "User-defined unit variant must serialise uniformly"
         );
     }
 

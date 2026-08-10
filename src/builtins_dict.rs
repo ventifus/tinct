@@ -1657,12 +1657,14 @@ pub(crate) fn builtin_get_by_field(
             if let Some(constant_val) = constants.get(field_name.as_ref() as &str) {
                 if *constant_val == field_value {
                     // Found a match. Look up the unqualified ctor name from the ctor_index.
+                    let empty = std::collections::HashMap::new();
+                    let tycon_env = ctx.tycon_env().unwrap_or(&empty);
                     let unqualified =
-                        crate::type_tags::ctor_display_name(variant_type_id, *ctor_idx);
+                        crate::type_tags::ctor_display_name(variant_type_id, *ctor_idx, tycon_env);
                     let bare_name = unqualified
                         .split_once('.')
                         .map(|(_, c)| c)
-                        .unwrap_or(unqualified);
+                        .unwrap_or(&unqualified);
                     // Find the matching ThunkId in our pre-collected dict_entries.
                     if let Some((_name, thunk)) = dict_entries.iter().find(|(n, _)| n == bare_name)
                     {

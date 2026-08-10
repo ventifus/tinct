@@ -3500,10 +3500,13 @@ fn eval_structural_pattern_inner<'a>(
                                 if let Some(crate::ast::Annotation::Simple(tag)) =
                                     ann.return_ann.as_ref()
                                 {
+                                    let empty = std::collections::HashMap::new();
+                                    let tycon_env = ctx.tycon_env().unwrap_or(&empty);
                                     Some(
                                         crate::type_tags::ctor_display_name(
                                             *scrutinee_tdid,
                                             *scrutinee_idx,
+                                            tycon_env,
                                         ) == tag.as_str(),
                                     )
                                 } else {
@@ -3685,10 +3688,13 @@ fn eval_structural_pattern_inner<'a>(
                                                 if let Some(crate::ast::Annotation::Simple(tag)) =
                                                     ann.return_ann.as_ref()
                                                 {
+                                                    let empty = std::collections::HashMap::new();
+                                                    let tycon_env = ctx.tycon_env().unwrap_or(&empty);
                                                     Some(
                                                         crate::type_tags::ctor_display_name(
                                                             *scrutinee_tdid,
                                                             *scrutinee_idx,
+                                                            tycon_env,
                                                         ) == tag.as_str(),
                                                     )
                                                 } else {

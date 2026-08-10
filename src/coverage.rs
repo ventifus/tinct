@@ -80,11 +80,7 @@ impl fmt::Display for ConstructorTag {
                 type_decl_id,
                 ctor_index,
             } => {
-                write!(
-                    f,
-                    "{}",
-                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
-                )
+                write!(f, "Variant({}.{})", type_decl_id, ctor_index)
             }
             ConstructorTag::Bottom => write!(f, "⊥"),
         }
@@ -134,7 +130,7 @@ impl fmt::Display for CoveragePattern {
                         ctor_index,
                     } => {
                         // Nominal variant: display as [Tag payload]
-                        let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+                        let name = format!("Variant({}.{})", type_decl_id, ctor_index);
                         if sub_patterns.is_empty() {
                             write!(f, "{name}")
                         } else if sub_patterns.len() == 1 {

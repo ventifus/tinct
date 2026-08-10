@@ -350,12 +350,14 @@ pub(crate) fn builtin_narrow(
                     } => {
                         // Look up the display name for this constructor and extract
                         // the bare flag name (e.g. "DirPerms.Readable" → "Readable").
+                        let empty = std::collections::HashMap::new();
+                        let tycon_env = ctx.tycon_env().unwrap_or(&empty);
                         let ctor_name =
-                            crate::type_tags::ctor_display_name(type_decl_id, ctor_index);
+                            crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
                         let flag_name: &str = ctor_name
                             .split_once('.')
                             .map(|(_, c)| c)
-                            .unwrap_or(ctor_name);
+                            .unwrap_or(&ctor_name);
                         match flag_name {
                             "Readable" => requested.readable = true,
                             "Statable" => requested.statable = true,

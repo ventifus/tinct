@@ -370,7 +370,7 @@ impl fmt::Display for HashableValue {
                 ctor_index,
                 payload,
             } => {
-                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+                let name = format!("Variant({}.{})", type_decl_id, ctor_index);
                 match payload {
                     None => write!(f, "{name}"),
                     Some(p) => write!(f, "[{name} {p}]"),
@@ -770,7 +770,6 @@ pub const TYPE_ID_TYPE_CONTEXT: u64 = 37;
 pub const TYPE_ID_CORE_DOCUMENT: u64 = 38;
 pub const TYPE_ID_SCOPE: u64 = 39;
 pub const TYPE_ID_EXPR: u64 = 40;
-pub const TYPE_ID_ENTRY: u64 = 41;
 pub const TYPE_ID_ANNOTATION: u64 = 42;
 
 pub const TYPE_ID_TYPE_VALUE: u64 = 50;
@@ -1640,11 +1639,10 @@ impl fmt::Debug for Value {
                 payload,
                 ..
             } => {
-                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
                 if payload.is_some() {
-                    write!(f, "Variant({}, <payload>)", name)
+                    write!(f, "Variant({}.{}, <payload>)", type_decl_id, ctor_index)
                 } else {
-                    write!(f, "Variant({})", name)
+                    write!(f, "Variant({}.{})", type_decl_id, ctor_index)
                 }
             }
             Value::Decimal { n, .. } => write!(f, "Decimal({n})"),
@@ -1754,11 +1752,10 @@ impl fmt::Display for Value {
                 payload,
                 ..
             } => {
-                let name = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
                 if payload.is_some() {
-                    write!(f, "{}(<payload>)", name)
+                    write!(f, "Variant({}.{})(<payload>)", type_decl_id, ctor_index)
                 } else {
-                    write!(f, "{}", name)
+                    write!(f, "Variant({}.{})", type_decl_id, ctor_index)
                 }
             }
             Value::Decimal { n, .. } => write!(f, "{n}"),

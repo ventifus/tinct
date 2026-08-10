@@ -56,15 +56,17 @@ pub fn fmt_dict(
                 ctor_index,
                 payload,
             } => {
-                let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+                let empty = std::collections::HashMap::new();
+                let tycon_env = ctx.and_then(|c| c.tycon_env()).unwrap_or(&empty);
+                let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
                 match payload {
                     None => {
-                        out.push_str(display);
+                        out.push_str(&display);
                         out.push(':');
                     }
                     Some(p) => {
                         out.push('[');
-                        out.push_str(display);
+                        out.push_str(&display);
                         out.push(' ');
                         out.push_str(&p.to_string());
                         out.push_str("]:");
@@ -120,11 +122,13 @@ pub fn fmt_variant(
     payload: Option<Arc<Thunk>>,
     ctx: Option<&Arc<EvalContext>>,
 ) -> Result<String, String> {
-    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index);
+    let empty = std::collections::HashMap::new();
+    let tycon_env = ctx.and_then(|c| c.tycon_env()).unwrap_or(&empty);
+    let display = crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
     match payload {
         None => {
             // Nullary constructor — just the tag
-            Ok(display.to_string())
+            Ok(display)
         }
         Some(thunk) => {
             // Unary constructor — [Tag payload]
@@ -956,13 +960,15 @@ fn core_expr_to_tinct(
             payload,
             ..
         } => {
-            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             if let Some(inner) = payload {
                 let inner_str =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
                 Ok(format!("[{} {}]", qualified_tag, inner_str))
             } else {
-                Ok(qualified_tag.to_string())
+                Ok(qualified_tag)
             }
         }
 
@@ -970,7 +976,11 @@ fn core_expr_to_tinct(
             ctor_index,
             type_decl_id,
             ..
-        } => Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()),
+        } => {
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env))
+        }
 
         // ReprDecl: transparent for serialization — emit the inner constructor dict.
         // The repr: metadata is evaluator-only and has no tinct source representation.
@@ -1325,7 +1335,9 @@ fn core_expr_to_tinct_raw(
             payload,
             ..
         } => {
-            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index);
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             if let Some(inner) = payload {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
@@ -1337,7 +1349,7 @@ fn core_expr_to_tinct_raw(
                 )?;
                 Ok(format!("[{} {}]", qualified_tag, s))
             } else {
-                Ok(qualified_tag.to_string())
+                Ok(qualified_tag)
             }
         }
 
@@ -1345,7 +1357,11 @@ fn core_expr_to_tinct_raw(
             ctor_index,
             type_decl_id,
             ..
-        } => Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()),
+        } => {
+            let empty = std::collections::HashMap::new();
+            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+            Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env))
+        }
 
         // ReprDecl: transparent in quote context — emit the inner constructor dict.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_tinct_in_quote(

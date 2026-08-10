@@ -1796,10 +1796,10 @@ pub(crate) fn format_type_with_names(
                                 .get(&HashableValue::Str(Arc::from(FIELD_TAIL)))
                                 .and_then(|t| t.peek_result())
                                 .map(|tail_result| {
-                                    if let Ok(Value::Variant { type_decl_id: tail_tdid, ctor_index: tail_cidx, payload: tail_payload, .. }) = tail_result {
-                                        match crate::type_tags::ctor_display_name(*tail_tdid, *tail_cidx) {
-                                            "RowTail.Closed" => Err(String::new()),
-                                            "RowTail.Uniform" => {
+                                    if let Ok(Value::Variant { ctor_index: tail_cidx, payload: tail_payload, .. }) = tail_result {
+                                        match *tail_cidx {
+                                            crate::type_tags::RT_CLOSED => Err(String::new()),
+                                            crate::type_tags::RT_UNIFORM => {
                                                 if let Some(Ok(Value::Dict { entries: u_entries, .. })) =
                                                     tail_payload.as_ref().and_then(|t| t.peek_result())
                                                 {
@@ -1830,7 +1830,7 @@ pub(crate) fn format_type_with_names(
                                                 }
                                                 Err("  ...".to_string())
                                             }
-                                            "RowTail.Var" => {
+                                            crate::type_tags::RT_VAR => {
                                                 if let Some(Ok(Value::Dict { entries: v_entries, .. })) =
                                                     tail_payload.as_ref().and_then(|t| t.peek_result())
                                                 {

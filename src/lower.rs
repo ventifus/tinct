@@ -1217,28 +1217,32 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             type_decl_id,
             ctor_index,
             ..
-        } => SurfaceExpression::VarRef {
-            name: crate::type_tags::ctor_display_name_full(*type_decl_id, *ctor_index, None)
-                .to_string(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
+        } => {
+            let empty = std::collections::HashMap::new();
+            SurfaceExpression::VarRef {
+                name: crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, &empty),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
 
-            annotation: None,
-            do_infer_placeholder: false,
-        },
+                annotation: None,
+                do_infer_placeholder: false,
+            }
+        }
         CoreExpr::UnitVariant {
             type_decl_id,
             ctor_index,
             ..
-        } => SurfaceExpression::VarRef {
-            name: crate::type_tags::ctor_display_name_full(*type_decl_id, *ctor_index, None)
-                .to_string(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
+        } => {
+            let empty = std::collections::HashMap::new();
+            SurfaceExpression::VarRef {
+                name: crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, &empty),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
 
-            annotation: None,
-            do_infer_placeholder: false,
-        },
+                annotation: None,
+                do_infer_placeholder: false,
+            }
+        }
         // ReprDecl: transparent in quote context — convert as if it were just the inner dict.
         // The repr: metadata is evaluator-only; it has no surface representation in quotes.
         CoreExpr::ReprDecl { inner, .. } => core_expr_to_surface_expr(&inner.node),

@@ -1473,7 +1473,11 @@ pub(crate) fn builtin_signal_channel(
                         ctor_index,
                         ..
                     } => {
-                        crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index).to_string()
+                        {
+                            let empty = std::collections::HashMap::new();
+                            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                            crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
+                        }
                     }
                     _ => {
                         return Err(EvalError::type_mismatch(

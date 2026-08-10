@@ -323,7 +323,11 @@ const MAX_FINGERPRINT_DEPTH: usize = 64;
 /// Consequently, inserting a sigma hypothesis keyed by `(fp(A), fp(B))` and later finding
 /// it means we are comparing the *same pair of types* as before — exactly the condition
 /// required for S-Assum to fire soundly.
-fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
+fn typevalue_structural_fingerprint(
+    tv: &Arc<Value>,
+    depth: usize,
+    tycon_env: &std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
+) -> String {
     if depth >= MAX_FINGERPRINT_DEPTH {
         return "…".to_string();
     }
@@ -384,7 +388,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         TV_RECURSIVE => {
             let body_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_BODY))
-                .map(|b| typevalue_structural_fingerprint(&b, depth + 1))
+                .map(|b| typevalue_structural_fingerprint(&b, depth + 1, tycon_env))
                 .unwrap_or_else(|| "?".to_string());
             format!("Rec({body_fp})")
         }
@@ -400,7 +404,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
             };
             let member_fps: Vec<String> = members
                 .iter()
-                .map(|m| typevalue_structural_fingerprint(m, depth + 1))
+                .map(|m| typevalue_structural_fingerprint(m, depth + 1, tycon_env))
                 .collect();
             format!("{tag}({})", member_fps.join(","))
         }
@@ -409,7 +413,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         TV_NEG => {
             let inner_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_OF))
-                .map(|inner| typevalue_structural_fingerprint(&inner, depth + 1))
+                .map(|inner| typevalue_structural_fingerprint(&inner, depth + 1, tycon_env))
                 .unwrap_or_else(|| "?".to_string());
             format!("Neg({inner_fp})")
         }
@@ -418,7 +422,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         TV_FN => {
             let ret_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_RETURN))
-                .map(|r| typevalue_structural_fingerprint(&r, depth + 1))
+                .map(|r| typevalue_structural_fingerprint(&r, depth + 1, tycon_env))
                 .unwrap_or_else(|| "?".to_string());
             let params_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_PARAMS))
@@ -426,7 +430,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
                     let param_list = collect_indexed_typevalues(&ps);
                     let fps: Vec<String> = param_list
                         .iter()
-                        .map(|p| typevalue_structural_fingerprint(p, depth + 1))
+                        .map(|p| typevalue_structural_fingerprint(p, depth + 1, tycon_env))
                         .collect();
                     fps.join(",")
                 })
@@ -450,7 +454,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
                             };
                             if let Some(val) = peek_value(thunk) {
                                 let tv = Arc::new(val.clone());
-                                let fp = typevalue_structural_fingerprint(&tv, depth + 1);
+                                let fp = typevalue_structural_fingerprint(&tv, depth + 1, tycon_env);
                                 field_fps.push((key_str, fp));
                             }
                         }
@@ -472,7 +476,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
                     Value::Variant { ctor_index, .. } if *ctor_index == RT_CLOSED => {
                         "closed".to_string()
                     }
-                    _ => typevalue_structural_fingerprint(&t, depth + 1),
+                    _ => typevalue_structural_fingerprint(&t, depth + 1, tycon_env),
                 })
                 .unwrap_or_else(|| "?".to_string());
             format!("Record{{{fields_fp}|{tail_fp}}}")
@@ -482,11 +486,11 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         TV_APP => {
             let op_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_OP))
-                .map(|o| typevalue_structural_fingerprint(&o, depth + 1))
+                .map(|o| typevalue_structural_fingerprint(&o, depth + 1, tycon_env))
                 .unwrap_or_else(|| "?".to_string());
             let arg_fp = payload
                 .and_then(|p| payload_typevalue_field(p, FIELD_ARG))
-                .map(|a| typevalue_structural_fingerprint(&a, depth + 1))
+                .map(|a| typevalue_structural_fingerprint(&a, depth + 1, tycon_env))
                 .unwrap_or_else(|| "?".to_string());
             format!("App({op_fp},{arg_fp})")
         }
@@ -501,7 +505,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
                 .and_then(|p| payload_int_field(p, FIELD_CTOR))
                 .map(|id| id as u32)
                 .unwrap_or(0);
-            let display = crate::type_tags::ctor_display_name(tycon_id, ctor_idx);
+            let display = crate::type_tags::ctor_display_name(tycon_id, ctor_idx, tycon_env);
             format!("NV({display})")
         }
 
@@ -509,7 +513,7 @@ fn typevalue_structural_fingerprint(tv: &Arc<Value>, depth: usize) -> String {
         // Use the type_decl_id from the TypeValue to produce a stable display name.
         _ => {
             if let Value::Variant { type_decl_id, .. } = tv.as_ref() {
-                crate::type_tags::ctor_display_name(*type_decl_id, ctor).to_string()
+                crate::type_tags::ctor_display_name(*type_decl_id, ctor, tycon_env)
             } else {
                 ctor.to_string()
             }
@@ -1309,8 +1313,8 @@ fn is_recursive_subtype(
     // whether they share the same Arc allocation. The fingerprint is also injective
     // on types (distinct types produce distinct fingerprints), so S-Assum cannot fire
     // incorrectly — it only fires when the same pair of types is being compared again.
-    let sub_key = typevalue_structural_fingerprint(sub, 0);
-    let sup_key = typevalue_structural_fingerprint(sup, 0);
+    let sub_key = typevalue_structural_fingerprint(sub, 0, &ctx.tycon_env);
+    let sup_key = typevalue_structural_fingerprint(sup, 0, &ctx.tycon_env);
     let key = (sub_key, sup_key);
 
     if sigma.contains(&key) {
@@ -3012,8 +3016,9 @@ mod tests {
         assert!(!Arc::ptr_eq(&mu_1, &mu_2));
 
         // Verify identical fingerprints
-        let fp_1 = typevalue_structural_fingerprint(&mu_1, 0);
-        let fp_2 = typevalue_structural_fingerprint(&mu_2, 0);
+        let empty_env = std::collections::HashMap::new();
+        let fp_1 = typevalue_structural_fingerprint(&mu_1, 0, &empty_env);
+        let fp_2 = typevalue_structural_fingerprint(&mu_2, 0, &empty_env);
         assert_eq!(
             fp_1, fp_2,
             "Structurally identical TypeValues must produce identical fingerprints"
@@ -3026,7 +3031,7 @@ mod tests {
             make_record(vec![("x", make_recursive_ref(0))]),
         ]);
         let mu_diff = make_recursive(body_diff);
-        let fp_diff = typevalue_structural_fingerprint(&mu_diff, 0);
+        let fp_diff = typevalue_structural_fingerprint(&mu_diff, 0, &empty_env);
         assert_ne!(
             fp_1, fp_diff,
             "Structurally different TypeValues must produce different fingerprints"

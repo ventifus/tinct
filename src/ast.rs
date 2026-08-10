@@ -419,21 +419,13 @@ impl fmt::Display for SurfaceExpression {
                 ctor_index,
                 ..
             } => {
-                write!(
-                    f,
-                    "{}",
-                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
-                )
+                write!(f, "Variant({}.{})", type_decl_id, ctor_index)
             }
             SurfaceExpression::MakeVariant {
                 type_decl_id,
                 ctor_index,
                 ..
-            } => write!(
-                f,
-                "MakeVariant({})",
-                crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index)
-            ),
+            } => write!(f, "MakeVariant({}.{})", type_decl_id, ctor_index),
             SurfaceExpression::TypeDecl {
                 type_name, params, ..
             } => {

@@ -1278,14 +1278,18 @@ pub(crate) fn builtin_tag_of(
                 type_decl_id,
                 ctor_index,
                 ..
-            } => ok_val(
-                string_val(&crate::type_tags::ctor_display_name_full(
-                    *type_decl_id,
-                    *ctor_index,
-                    ctx.tycon_env.get().map(|e| e.as_ref()),
-                )),
-                call_span,
-            ),
+            } => {
+                let empty = std::collections::HashMap::new();
+                let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                ok_val(
+                    string_val(&crate::type_tags::ctor_display_name(
+                        *type_decl_id,
+                        *ctor_index,
+                        tycon_env,
+                    )),
+                    call_span,
+                )
+            }
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
                 ctx.type_display_name(peeled.type_decl_id_of()),

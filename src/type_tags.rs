@@ -401,181 +401,22 @@ pub const DISPATCH_BYTES: &str = "Bytes";
 
 pub const STRUCTURAL_CLOSED_DICT: &str = "closed-dict";
 
-// ── Static display name arrays ──────────────────────────────────────────────
-//
-// Each array maps a ctor_index (used as array index) to the human-readable
-// display name for that constructor. Arrays cover both declared (builtin_core.llt)
-// and Rust-internal constructors.
-
-pub const TYPEVALUE_CTOR_NAMES: &[&str] = &[
-    "TypeValue.Repr",
-    "TypeValue.Phantom",
-    "TypeValue.Var",
-    "TypeValue.Fn",
-    "TypeValue.App",
-    "TypeValue.Op",
-    "TypeValue.Record",
-    "TypeValue.Union",
-    "TypeValue.Inter",
-    "TypeValue.Neg",
-    "TypeValue.Scheme",
-    "TypeValue.IntLit",
-    "TypeValue.FloatLit",
-    "TypeValue.StrLit",
-    "TypeValue.Recursive",
-    "TypeValue.RecursiveRef",
-    "TypeValue.NominalVariant",
-    "TypeValue.Unknown",
-    "TypeValue.Never",
-    "TypeValue.Top",
-    "TypeValue.StageApp",
-    "TypeValue.Error",
-    "TypeValue.Nominal",
-];
-
-pub const ROWTAIL_CTOR_NAMES: &[&str] = &["RowTail.Closed", "RowTail.Var", "RowTail.Uniform"];
-
-pub const TYPENODE_CTOR_NAMES: &[&str] = &[
-    "TypeNode.Int",
-    "TypeNode.String",
-    "TypeNode.Float",
-    "TypeNode.Bytes",
-    "TypeNode.Never",
-    "TypeNode.Top",
-    "TypeNode.Unknown",
-    "TypeNode.Proxy",
-    "TypeNode.Callable",
-    "TypeNode.Absent",
-    "TypeNode.Union",
-    "TypeNode.Intersect",
-    "TypeNode.Negation",
-    "TypeNode.Arrow",
-    "TypeNode.Recursive",
-    "TypeNode.RecursiveRef",
-    "TypeNode.Dict",
-    "TypeNode.TypeConstructor",
-    "TypeNode.TypeApplication",
-    "TypeNode.TypeVar",
-    "TypeNode.IntLiteral",
-    "TypeNode.StringLiteral",
-    "TypeNode.FloatLiteral",
-];
-
-pub const BOOL_CTOR_NAMES: &[&str] = &["true", "false"];
-
-pub const PROGRAM_ITEM_CTOR_NAMES: &[&str] = &["ProgramItem.File", "ProgramItem.Expr"];
-
-pub const EXPR_CTOR_NAMES: &[&str] = &[
-    "Expression.Literal",
-    "Expression.VarRef",
-    "Expression.DotAccess",
-    "Expression.Pipe",
-    "Expression.Sequential",
-    "Expression.Dict",
-    "Expression.Call",
-    "Expression.Fn",
-    "Expression.TypeAlias",
-    "Expression.TypeAssert",
-    "Expression.Annotated",
-    "Expression.Rest",
-    "Expression.Match",
-    "Expression.LetDecl",
-    "Expression.CaseArm",
-    "Expression.Quote",
-    "Expression.Unquote",
-    "Expression.UnquoteSplice",
-    "Expression.Splice",
-    "Expression.SyntaxClass",
-    "Expression.ClassDecl",
-    "Expression.InstanceDecl",
-    "Expression.PatternDecl",
-    "Expression.Placeholder",
-    "Expression.Error",
-    "Expression.Entry",
-    "Expression.NamedArg",
-    "Expression.Parameter",
-];
-
-pub const ENTRY_CTOR_NAMES: &[&str] = &["Entry.Keyed", "Entry.Unkeyed"];
-
-pub const ANNOTATION_CTOR_NAMES: &[&str] = &[
-    "Annotation.Simple",
-    "Annotation.PropDict",
-    "Annotation.Null",
-    "Annotation.Annotated",
-    "Annotation.Unknown",
-];
-
-pub const DOTKEY_CTOR_NAMES: &[&str] = &["DotKey.Ident", "DotKey.Index"];
-
-// ── Display name lookup functions ───────────────────────────────────────────
+// ── Display name lookup ─────────────────────────────────────────────────────
 
 /// Look up the display name for a constructor by `(type_decl_id, ctor_index)`.
 ///
-/// Returns a static string for known builtin types. Returns `"<user-type>"`
-/// for user-defined types whose display names require a TyConDef lookup.
-pub fn ctor_display_name(type_decl_id: u64, ctor_index: u32) -> &'static str {
-    use crate::value::*;
-    let idx = ctor_index as usize;
-    match type_decl_id {
-        TYPE_ID_TYPE_VALUE => TYPEVALUE_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-tv>"),
-        TYPE_ID_ROW_TAIL => ROWTAIL_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-rt>"),
-        TYPE_ID_TYPE_NODE => TYPENODE_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-tn>"),
-        TYPE_ID_BOOL => BOOL_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-bool>"),
-        TYPE_ID_PROGRAM_ITEM => PROGRAM_ITEM_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-pi>"),
-        TYPE_ID_EXPR => EXPR_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-expr>"),
-        TYPE_ID_ENTRY => ENTRY_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-entry>"),
-        TYPE_ID_ANNOTATION => ANNOTATION_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-ann>"),
-        TYPE_ID_DOT_KEY => DOTKEY_CTOR_NAMES
-            .get(idx)
-            .copied()
-            .unwrap_or("<unknown-dk>"),
-        TYPE_ID_CONSTRAINT_DECL => "ConstraintDecl",
-        TYPE_ID_VAR_DECL => "VarDecl",
-        _ => "<user-type>",
-    }
-}
-
-/// Look up the display name for a constructor, falling back to TyConDef lookup
-/// for user-defined types. Returns a `String` since user-type names are owned.
-pub fn ctor_display_name_full(
+/// Returns the bare constructor name from `TyConDef.constructors`.
+/// Falls back to `"Ctor(type_decl_id.ctor_index)"` only if the TyConDef
+/// is not registered (should not happen for any type that has been through
+/// the type checker).
+pub fn ctor_display_name(
     type_decl_id: u64,
     ctor_index: u32,
-    tycon_env: Option<&std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>>,
+    tycon_env: &std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
 ) -> String {
-    let static_name = ctor_display_name(type_decl_id, ctor_index);
-    if static_name != "<user-type>" {
-        return static_name.to_string();
-    }
-    if let Some(env) = tycon_env {
-        if let Some(def) = env.get(&type_decl_id) {
-            if let Some((bare_name, _arity)) = def.constructors.get(ctor_index as usize) {
-                return bare_name.clone();
-            }
+    if let Some(def) = tycon_env.get(&type_decl_id) {
+        if let Some((bare_name, _arity)) = def.constructors.get(ctor_index as usize) {
+            return bare_name.clone();
         }
     }
     format!("Ctor({type_decl_id}.{ctor_index})")
