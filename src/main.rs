@@ -1939,30 +1939,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
         if let Some(ref libdir_rc) = libdir_rc_for_ctx {
             ctx.set_libdir_dir(Arc::clone(libdir_rc));
         }
-        // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
-        // tycon_env seeded with builtin_core TyCons (Program, DirCap, etc.) so runtime
-        // value_matches_type checks have definition spans for clear error messages.
-        // type_stage_scope seeded with builtin_core type-stage entries (Integer, String,
-        // Dict, DirCap, etc.) so that @Dict and similar annotations resolve correctly
-        // (B-663: without this, Dict → Op("Dict") from TyConDef wiring, causing incorrect
-        // record-subtype errors when @Dict annotations are used).
-        // Accumulated further by builtin-typecheck-doc calls during loading.
-        let (core_type_env, core_tycon_env, core_type_name_to_id) =
-            tinct::build_builtin_core_envs().await?;
-        let core_ts_data = tinct::get_builtin_core_type_stage_scope().await?;
-        ctx.init_type_context(tinct::TypeContextData {
-            inference_env: core_type_env,
-            tycon_env: core_tycon_env,
-            type_stage_scope: core_ts_data.scope,
-            type_stage_fns: core_ts_data.fns,
-            type_stage_type_vars: core_ts_data.type_vars,
-            type_diagnostics: Vec::new(),
-            type_display_names: core_type_name_to_id
-                .iter()
-                .map(|(name, &id)| (id, name.clone()))
-                .collect(),
-            type_name_to_id: core_type_name_to_id,
-        });
         ctx
     };
 
@@ -2242,22 +2218,12 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
             Some(std::sync::Arc::new(std::sync::RwLock::new(inj)))
         };
 
-        // Re-fetch builtin_core envs for the loader pipeline.
-        // build_builtin_core_envs is cached internally — no redundant re-parsing.
-        let (loader_core_env, loader_core_tycon_env, loader_core_name_to_id) =
-            tinct::build_builtin_core_envs().await?;
-        let loader_core_ts_data = tinct::get_builtin_core_type_stage_scope().await?;
-
         tinct::run_loader_pipeline(
             &eval_ctx,
             &libdir_for_loader,
             init_source,
             init_path,
             injected_type_env,
-            loader_core_env,
-            loader_core_tycon_env,
-            loader_core_ts_data,
-            loader_core_name_to_id,
         )
         .await
         .map_err(|e| cli_error(e))
@@ -2365,14 +2331,21 @@ async fn run_fmt(
         let program = tinct::desugar::desugar_program_full(&output.program);
         let program = tinct::expand::expand_program(&program);
 
-        // Seed pipeline state from the already-built builtin core envs.
-        let (env_arc, tycon_env, type_name_to_id) = tinct::build_builtin_core_envs().await?;
-        let ts_data = tinct::get_builtin_core_type_stage_scope().await?;
         let ctx = EvalContext::new_empty();
-        let mut state =
-            tinct::PipelineState::from_core_envs(env_arc, tycon_env, ts_data, type_name_to_id, Some(&ctx));
+        let mut state = tinct::PipelineState::from_builtins(&ctx);
 
-        // Process each document through the pipeline: resolve → typecheck → eval.
+        // Process builtin_core.llt inline — same pipeline, same context.
+        let core_source = include_str!("../stdlib/builtin_core.llt");
+        let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
+        let core_parsed = parse(core_source, core_sf)
+            .map_err(|e| cli_error(format!("builtin_core.llt parse error: {e}")))?;
+        let core_program = tinct::desugar::desugar_program_full(&core_parsed.program);
+        let core_program = tinct::expand::expand_program(&core_program);
+        for doc in &core_program.documents {
+            tinct::process_pipeline_document(doc, &mut state, &ctx).await?;
+        }
+
+        // Process each user document through the pipeline.
         for doc in &program.documents {
             tinct::process_pipeline_document(doc, &mut state, &ctx).await?;
         }

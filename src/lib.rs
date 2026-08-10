@@ -176,39 +176,11 @@ pub async fn run_loader_pipeline(
     init_source: &str,
     init_path: &str,
     injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
-    core_env: Arc<std::sync::RwLock<crate::env::Env>>,
-    core_tycon_env: crate::type_def::TyConEnv,
-    core_type_stage_data: crate::type_infer::TypeStageData,
-    core_type_name_to_id: std::collections::HashMap<String, u64>,
 ) -> Result<(), String> {
-    let loader_sf: Arc<str> = Arc::from(init_path);
-    let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
-        .map_err(|e| format!("{init_path} parse error: {e}"))?;
-    for diag in &loader_parsed.diagnostics {
-        eprintln!(
-            "{}",
-            crate::parser::format_parse_error(diag, init_source, init_path)
-        );
-    }
-    let loader_program = desugar::desugar_program_full(&loader_parsed.program);
-    let loader_program = expand::expand_program(&loader_program);
+    // Start from builtins — consistent slots, single context.
+    let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
 
-    // Build pipeline state from the already-processed builtin_core results.
-    // The caller (main.rs) processes builtin_core.llt via build_builtin_core_envs
-    // and passes the results here. This function does not embed builtin_core.llt.
-    let mut state = crate::pipeline::PipelineState::from_core_envs(
-        core_env,
-        core_tycon_env,
-        core_type_stage_data,
-        core_type_name_to_id,
-        Some(eval_ctx),
-    );
-    state.infer_state.eval_ctx = Some(Arc::clone(eval_ctx));
-
-    // Inject capability types from the caller's injected_type_env.
-    // PipelineState::from_builtins seeds all root_group slots (builtins + caps)
-    // with Unknown type schemes. Upgrade the capability slots to their declared
-    // types so the per-document type checker sees %cwd, %libdir, etc. correctly.
+    // Inject capability types so the type checker sees %cwd, %libdir, etc.
     if let Some(ref inj) = injected_type_env {
         let root_frame = eval_ctx.root_group_resolver_map();
         let cap_types: std::collections::HashMap<String, crate::type_infer::TypeValue> = {
@@ -227,10 +199,44 @@ pub async fn run_loader_pipeline(
         }
     }
 
+    // Process builtin_core.llt inline — same pipeline, same context.
+    let core_source = include_str!("../stdlib/builtin_core.llt");
+    let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
+    let core_parsed = parse(core_source, core_sf)
+        .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    let core_program = desugar::desugar_program_full(&core_parsed.program);
+    let core_program = expand::expand_program(&core_program);
+    for doc in &core_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
+            .await
+            .map_err(|e| format!("builtin_core.llt: {e}"))?;
+    }
+
+    // Initialize TypeContext from the pipeline state accumulated during builtin_core
+    // processing. The loader calls builtin-get-type-context which needs this.
+    eval_ctx.init_type_context(crate::eval::TypeContextData {
+        inference_env: Arc::clone(&state.env),
+        tycon_env: state.tycon_env.clone(),
+        type_stage_scope: state.type_stage_data.scope.clone(),
+        type_stage_fns: state.type_stage_data.fns.clone(),
+        type_stage_type_vars: state.type_stage_data.type_vars.clone(),
+        type_diagnostics: Vec::new(),
+        type_display_names: state.type_display_names.clone(),
+        type_name_to_id: state.type_name_to_id.clone(),
+    });
+
     // Process init program documents.
-    // builtin_core.llt is already processed by build_builtin_core_envs (called by the
-    // caller in main.rs). Its results are seeded into PipelineState via from_builtins +
-    // capability injection above. The init program's documents are processed here.
+    let loader_sf: Arc<str> = Arc::from(init_path);
+    let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
+        .map_err(|e| format!("{init_path} parse error: {e}"))?;
+    for diag in &loader_parsed.diagnostics {
+        eprintln!(
+            "{}",
+            crate::parser::format_parse_error(diag, init_source, init_path)
+        );
+    }
+    let loader_program = desugar::desugar_program_full(&loader_parsed.program);
+    let loader_program = expand::expand_program(&loader_program);
     for doc in &loader_program.documents {
         crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
             .await
@@ -257,17 +263,23 @@ pub async fn run_loader_pipeline(
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs()
-        .await
-        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let ts_data = imports::get_builtin_core_type_stage_scope()
-        .await
-        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let mut state =
-        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id, None);
+    let ctx = eval::EvalContext::new_empty();
+    let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
+    // Process builtin_core.llt inline.
+    let core_parsed = parse(
+        include_str!("../stdlib/builtin_core.llt"),
+        Arc::from("stdlib/builtin_core.llt"),
+    )
+    .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    let core_program = desugar::desugar_program_full(&core_parsed.program);
+    let core_program = expand::expand_program(&core_program);
+    for doc in &core_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, &ctx)
+            .await
+            .map_err(|e| format!("builtin_core.llt: {e}"))?;
+    }
     let mut diagnostics = Vec::new();
     for doc in &program.documents {
         let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;
@@ -295,18 +307,23 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
     let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> desugar -> expand -> typecheck.
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
-    // Type check the surface program using the per-document pipeline.
-    let (env, tycon_env, type_name_to_id) = imports::build_builtin_core_envs()
-        .await
-        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let ts_data = imports::get_builtin_core_type_stage_scope()
-        .await
-        .map_err(|e| format!("builtin_core bootstrap failed: {e}"))?;
-    let mut state =
-        crate::pipeline::PipelineState::from_core_envs(env, tycon_env, ts_data, type_name_to_id, None);
+    let ctx = eval::EvalContext::new_empty();
+    let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
+    // Process builtin_core.llt inline.
+    let core_parsed = parse(
+        include_str!("../stdlib/builtin_core.llt"),
+        Arc::from("stdlib/builtin_core.llt"),
+    )
+    .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    let core_program = desugar::desugar_program_full(&core_parsed.program);
+    let core_program = expand::expand_program(&core_program);
+    for doc in &core_program.documents {
+        crate::pipeline::process_pipeline_document(doc, &mut state, &ctx)
+            .await
+            .map_err(|e| format!("builtin_core.llt: {e}"))?;
+    }
     let mut diagnostics = Vec::new();
     for doc in &program.documents {
         let mut doc_diags = crate::pipeline::typecheck_pipeline_document(doc, &mut state).await;

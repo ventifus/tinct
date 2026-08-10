@@ -202,16 +202,14 @@
   builtin-build-dict:        [fn@Dict    [let entries@Dict] ...]
 
   # ── Builder ops ───────────────────────────────────────────────────────────
-  # Builder is an opaque mutable accumulator. Typed as Any to prevent BuilderHandle
-  # from propagating into type inference for callers using builders internally.
-  builtin-make-builder:      [fn@Any [] ...]
-  builtin-builder-set:       [fn@Any [let key@Any value@Any builder@Any] ...]
-  builtin-builder-delete:    [fn@Any [let builder@Any key@Any] ...]
-  builtin-builder-finish:    [fn@Dict    [let builder@Any] ...]
-  builtin-builder-snapshot:  [fn@Dict    [let builder@Any] ...]
-  builtin-builder-has?:      [fn@[or 0 1] [let builder@Any key@Any] ...]
-  builtin-builder-get:       [fn@Any     [let builder@Any key@Any] ...]
-  builtin-builder-get-or:    [fn@Any     [let builder@Any default@Any key@Any] ...]
+  builtin-make-builder:      [fn@BuilderHandle [] ...]
+  builtin-builder-set:       [fn@BuilderHandle [let key@Any value@Any builder@BuilderHandle] ...]
+  builtin-builder-delete:    [fn@BuilderHandle [let builder@BuilderHandle key@Any] ...]
+  builtin-builder-finish:    [fn@Dict          [let builder@BuilderHandle] ...]
+  builtin-builder-snapshot:  [fn@Dict          [let builder@BuilderHandle] ...]
+  builtin-builder-has?:      [fn@[or 0 1]      [let builder@BuilderHandle key@Any] ...]
+  builtin-builder-get:       [fn@Any           [let builder@BuilderHandle key@Any] ...]
+  builtin-builder-get-or:    [fn@Any           [let builder@BuilderHandle default@Any key@Any] ...]
 
   # ── String primitives ─────────────────────────────────────────────────────
   builtin-str-bytes:     [fn@Bytes   [let s@String] ...]
@@ -272,7 +270,7 @@
   # Required third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
   # tc: the TypeContext carrying accumulated type-stage state for this document.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@Dict] ...]
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@Scope] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
