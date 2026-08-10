@@ -4240,7 +4240,7 @@ async fn run_match_exhaustiveness_check(
                 diag = diag.with_label(
                     arms[cover_idx].pattern.span.clone(),
                     format!(
-                        "covered by this arm, resolved to: {}",
+                        "already matched: {}",
                         result.resolved[cover_idx].render(tycon_env_ref)
                     ),
                 );
