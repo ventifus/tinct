@@ -324,17 +324,10 @@ pub(crate) enum TypeCheckCont {
         /// Restored after AfterBlock fires so that nested blocks do not corrupt
         /// the outer block's liveness graph.
         saved_use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
-        /// Saved state.current_binding from the enclosing block. Also used by the merge
-        /// step: closure_captures are merged as use_def[saved_current_binding → captured]
-        /// edges in the restored use_def graph, so the enclosing entry's liveness propagates
-        /// to all bindings captured from inside this block.
         saved_current_binding: Option<BindingId>,
-        /// Saved state.narrowing_map from before this block's narrowings were applied.
-        /// Restored after AfterBlock fires so narrowings from one arm don't leak into others.
         saved_narrowing_map:
             std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
-        /// Saved state.closure_captures from before this block.
-        saved_closure_captures: Vec<BindingId>,
+        saved_frame_cursor: usize,
     },
 
     /// Identity continuation — returns the child type unchanged.
@@ -607,7 +600,6 @@ async fn infer_step(
             // Sequentials do not corrupt the outer Sequential's liveness graph.
             let saved_use_def = std::mem::take(&mut state.use_def);
             let saved_current_binding = state.current_binding.take();
-            let saved_closure_captures = std::mem::take(&mut state.closure_captures);
 
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use typecheck_letrec_group for proper letrec
@@ -683,7 +675,7 @@ async fn infer_step(
                     saved_use_def,
                     saved_current_binding,
                     saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                    saved_closure_captures,
+                    saved_frame_cursor: state.frame_cursor,
                 },
                 Arc::clone(node),
             ));
@@ -1279,6 +1271,7 @@ async fn apply_cont(
             // for coverage checking and narrowing. If any pattern has an error (Never),
             // the whole match is an error — skip coverage analysis entirely.
             let mut pattern_error = false;
+            let saved_cursor_for_patterns = state.frame_cursor;
             for arm in &arms {
                 let arm_env = build_case_arm_env(&arm.let_bindings, &env, state, &arm.pattern);
                 let mut local_stack = Vec::new();
@@ -1294,6 +1287,7 @@ async fn apply_cont(
                 if typevalue_ctor_index(&pattern_ty) == Some(TV_NEVER) {
                     pattern_error = true;
                 }
+                state.frame_cursor = saved_cursor_for_patterns;
             }
 
             if !pattern_error {
@@ -1339,7 +1333,7 @@ async fn apply_cont(
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                            saved_closure_captures: std::mem::take(&mut state.closure_captures),
+                            saved_frame_cursor: state.frame_cursor,
                         },
                         Arc::clone(&match_node),
                     ));
@@ -1428,7 +1422,7 @@ async fn apply_cont(
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
                                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                                saved_closure_captures: std::mem::take(&mut state.closure_captures),
+                                saved_frame_cursor: state.frame_cursor,
                             },
                             Arc::clone(&match_node),
                         ));
@@ -1664,10 +1658,10 @@ async fn apply_cont(
         TypeCheckCont::AfterBlock {
             binding_envs,
             pre_final_refs,
-            mut saved_use_def,
+            saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
-            saved_closure_captures,
+            saved_frame_cursor,
         } => {
             // Step 1: Seed the live set with names newly marked by the final expression.
             // Names in pre_final_refs were already referenced before the final expression
@@ -1739,42 +1733,8 @@ async fn apply_cont(
                 }
             }
 
-            // Step 4: Merge closure captures into the outer use_def graph.
-            // Take fn-body captures, restore parent captures.
-            let fn_captures =
-                std::mem::replace(&mut state.closure_captures, saved_closure_captures);
-            // Merge captures as use_def[saved_current_binding → captured] so the
-            // enclosing entry's liveness propagates to its captures via BFS.
-            // saved_current_binding is the entry whose value expression was being
-            // evaluated when this block started — the correct source for the edge.
-            if let Some(ref binder) = saved_current_binding {
-                for cap in &fn_captures {
-                    saved_use_def
-                        .entry(binder.clone())
-                        .or_default()
-                        .insert(cap.clone());
-                }
-            }
-            // Propagate outer-scope captures: any capture whose definition is NOT
-            // in this block's binding_envs belongs to an even-outer scope and must
-            // bubble up through the (now-restored) state.closure_captures.
-            for cap in fn_captures {
-                let belongs_locally = binding_envs.iter().any(|frame| {
-                    let guard = frame.read().unwrap();
-                    guard
-                        .slot_index
-                        .get(&cap.name)
-                        .and_then(|&pos| guard.slots.get(pos))
-                        .and_then(|e| e.as_ref())
-                        .and_then(|(_, slot)| slot.definition_span.as_ref())
-                        .map_or(false, |span| *span == cap.def_span)
-                });
-                if !belongs_locally {
-                    state.closure_captures.push(cap);
-                }
-            }
-
-            // Restore enclosing block's state fields.
+            // Restore enclosing block's state fields and frame cursor.
+            state.frame_cursor = saved_frame_cursor;
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
             state.narrowing_map = saved_narrowing_map;
@@ -1959,8 +1919,6 @@ async fn infer_var_ref(
                                     .or_default()
                                     .insert(dep_id);
                             }
-                        } else {
-                            state.closure_captures.push(dep_id);
                         }
                     }
                     slot_scheme
@@ -3307,7 +3265,7 @@ fn extract_seq_elem_type(bucket_ty: &TypeValue) -> TypeValue {
 /// recursing on the Rust call stack.
 async fn infer_fn_push_cont(
     node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
+    _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
@@ -3449,8 +3407,12 @@ async fn infer_fn_push_cont(
     // Taking it here prevents leaking into nested fn expressions in the body.
     let expected_params: Option<Vec<TypeValue>> = state.expected_fn_params.take();
 
-    // Resolve param annotations and build fn env
-    let mut fn_env_inner = Env::with_parent(Arc::clone(env));
+    // Navigate to the pre-built Param frame in the env chain (T-2327).
+    state.frame_cursor += 1;
+    let fn_env_arc = Arc::clone(&state.frame_envs[state.frame_cursor]);
+    // Deferred insertions: (slot, name, type, def_span) — applied after the loop
+    // to avoid holding the write guard across await points.
+    let mut deferred_inserts: Vec<(usize, String, TypeValue, Option<Span>)> = Vec::new();
     let mut param_types: Vec<(Option<String>, TypeValue)> = Vec::new();
     let mut typed_variadics: Vec<(String, TypeValue)> = Vec::new();
     let mut rest: Option<Box<(String, TypeValue)>> = None;
@@ -3551,20 +3513,12 @@ async fn infer_fn_push_cont(
             .get()
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
-        match param_definition_span {
-            Some(ref span) => {
-                fn_env_inner.insert_at_slot(
-                    slot,
-                    p.node.name.clone(),
-                    Arc::clone(&param_ty),
-                    Some(span.clone()),
-                );
-            }
-            None => {
-                // No definition span — Placeholder param (builtin interface). Skip lost-binding.
-                fn_env_inner.insert_at_slot(slot, p.node.name.clone(), Arc::clone(&param_ty), None);
-            }
-        }
+        deferred_inserts.push((
+            slot,
+            p.node.name.clone(),
+            Arc::clone(&param_ty),
+            param_definition_span,
+        ));
         param_slot_idx += 1;
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
@@ -3665,7 +3619,13 @@ async fn infer_fn_push_cont(
         }
     }
 
-    let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
+    // Apply deferred inserts to the pre-built frame (scoped to avoid holding guard across await).
+    {
+        let mut fn_env_guard = fn_env_arc.write().unwrap();
+        for (slot, name, ty, def_span) in deferred_inserts {
+            fn_env_guard.insert_at_slot(slot, name, ty, def_span);
+        }
+    }
 
     let saved_level = state.ctx.current_level;
     let saved_expected_return = state.expected_return.clone();
@@ -3738,7 +3698,7 @@ async fn infer_fn_push_cont(
             saved_use_def: std::mem::take(&mut state.use_def),
             saved_current_binding: state.current_binding.take(),
             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-            saved_closure_captures: std::mem::take(&mut state.closure_captures),
+            saved_frame_cursor: state.frame_cursor,
         },
         Arc::clone(node),
     ));
@@ -4200,7 +4160,7 @@ async fn run_match_exhaustiveness_check(
 
 fn build_case_arm_env(
     let_bindings: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
+    _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     _node: &Arc<SurfaceNode>,
 ) -> Arc<RwLock<Env>> {
@@ -4223,17 +4183,25 @@ fn build_case_arm_env(
             .collect(),
         _ => Vec::new(),
     };
-    // Always create a fresh child frame so that AfterBlock's slot-based liveness check
-    // reads ONLY this arm's own bindings, not inherited bindings from the parent chain.
-    let mut child_inner = Env::with_parent(Arc::clone(env));
-    for (slot_idx, (name, binding_span)) in bindings_with_spans.into_iter().enumerate() {
-        let tv = state.fresh_type_var(&binding_span);
-        // Use find_slot_in_frames to get the absolute slot assigned by the resolver.
-        // Fall back to slot_idx if the slot is not found (shouldn't happen after resolver).
-        let slot = super::find_slot_in_frames(&state.resolver_frames, &name).unwrap_or(slot_idx);
-        child_inner.insert_at_slot(slot, name, tv, Some(binding_span));
+    // Only advance to a pre-built Param frame if there are actual bindings.
+    // The resolver only pushes a Param scope for arms with [let] bindings.
+    // Keyed arms (no [let]) don't have a corresponding frame.
+    if !bindings_with_spans.is_empty() {
+        state.frame_cursor += 1;
+        let arm_env_arc = Arc::clone(&state.frame_envs[state.frame_cursor]);
+        {
+            let mut child_inner = arm_env_arc.write().unwrap();
+            for (slot_idx, (name, binding_span)) in bindings_with_spans.into_iter().enumerate() {
+                let tv = state.fresh_type_var(&binding_span);
+                let slot =
+                    super::find_slot_in_frames(&state.resolver_frames, &name).unwrap_or(slot_idx);
+                child_inner.insert_at_slot(slot, name, tv, Some(binding_span));
+            }
+        }
+        arm_env_arc
+    } else {
+        Arc::clone(_env)
     }
-    Arc::new(RwLock::new(child_inner))
 }
 
 // ===== Inline helper: TypeAssert mismatch computation =====
@@ -5203,10 +5171,9 @@ pub(crate) async fn typecheck_letrec_group(
     let enclosing_level = state.ctx.current_level;
     state.ctx.current_level += 1;
 
-    // dict_env is a fresh child of the incoming env. The parent chain already contains all
-    // root-group entries (seeded into child_env by the per-document pipeline) at their
-    // correct depths. get_scheme_at(depth, slot) traverses the chain naturally.
-    let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
+    // Navigate to the pre-built DictLetrec frame in the env chain (T-2327).
+    state.frame_cursor += 1;
+    let dict_env: Arc<RwLock<Env>> = Arc::clone(&state.frame_envs[state.frame_cursor]);
 
     // Extra schemes from ADT constructors — injected in type declaration registration, merged into final schemes.
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
@@ -5988,14 +5955,16 @@ pub(crate) async fn typecheck_letrec_group(
         }
     }
 
-    // Build final schemes map from dict_env in SOURCE ORDER.
+    // Build final schemes map from dict_env in SOURCE ORDER using slot-based lookup.
     let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
     {
         let dict_env_guard = dict_env.read().unwrap();
-        for (key_name, _is_type_decl, _) in &key_entries {
+        for (idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
             if let Some(name) = key_name {
-                if let Some(scheme) = dict_env_guard.get_scheme(name) {
-                    schemes.insert(name.clone(), scheme);
+                if let Some(slot) = entry_slots[idx] {
+                    if let Some(scheme) = dict_env_guard.get_scheme_at(0, slot) {
+                        schemes.insert(name.clone(), scheme);
+                    }
                 }
             }
         }

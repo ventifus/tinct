@@ -117,7 +117,7 @@ pub async fn typecheck_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    let doc_sequential_env = crate::typecheck::build_env_from_frames(
+    let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
         &state.env,
         &state.infer_state.resolver_frames,
         &state.infer_state.type_stage_scope,
@@ -125,14 +125,11 @@ pub async fn typecheck_pipeline_document(
         &state.infer_state.type_stage_type_vars,
         &state.infer_state.type_name_to_id,
     );
+    state.infer_state.frame_envs = all_envs;
+    state.infer_state.frame_cursor = doc_idx;
 
-    let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
-        doc,
-        &doc_sequential_env,
-        &mut state.infer_state,
-        &mut None,
-    )
-    .await;
+    let (new_env, _result_ty, tc_errors) =
+        crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;
 
     // Append tc_errors to state diagnostics so state.diagnostics() is the
     // single source of truth — consistent with process_pipeline_document.
@@ -202,7 +199,7 @@ pub async fn process_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    let doc_sequential_env = crate::typecheck::build_env_from_frames(
+    let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
         &state.env,
         &state.infer_state.resolver_frames,
         &state.infer_state.type_stage_scope,
@@ -210,14 +207,11 @@ pub async fn process_pipeline_document(
         &state.infer_state.type_stage_type_vars,
         &state.infer_state.type_name_to_id,
     );
+    state.infer_state.frame_envs = all_envs;
+    state.infer_state.frame_cursor = doc_idx;
 
-    let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
-        doc,
-        &doc_sequential_env,
-        &mut state.infer_state,
-        &mut None,
-    )
-    .await;
+    let (new_env, _result_ty, tc_errors) =
+        crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;
 
     // Propagate type checker errors — they are already Diagnostics.
     for err in &tc_errors {

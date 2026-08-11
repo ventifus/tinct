@@ -2359,11 +2359,6 @@ pub struct InferState {
     /// pushed here. When `AfterBlock` fires for the fn body, these are merged as
     /// `use_def[fn_binding_id → captured]` edges in the *outer* scope's use_def graph.
     /// Captures from even-outer scopes (not in the current binding_envs) propagate
-    /// upward so that deeply nested closures correctly mark their transitive captures.
-    ///
-    /// Saved and restored (via std::mem::take) alongside `use_def` at each fn body /
-    /// Sequential / match arm boundary.
-    pub closure_captures: Vec<BindingId>,
     /// Narrowing refinements for the current branch scope (T-2083).
     ///
     /// Maps BindingId → narrowed TypeValue for bindings whose type has been refined
@@ -2389,6 +2384,13 @@ pub struct InferState {
     /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build
     /// the type instantiation on the Call's SurfaceNode. Cleared after consumption.
     pub last_scheme_renaming: Option<std::collections::HashMap<String, String>>,
+    /// Pre-built env frames from build_env_from_frames — one per resolver scope frame.
+    /// The type checker navigates this chain via frame_cursor instead of creating
+    /// independent Env::with_parent frames.
+    pub frame_envs: Vec<Arc<RwLock<crate::env::Env>>>,
+    /// Current position in frame_envs. Advances when entering fn/dict/match scopes,
+    /// retreats when exiting. Matches the resolver's scope push/pop pattern.
+    pub frame_cursor: usize,
 }
 
 impl InferState {
@@ -2424,11 +2426,12 @@ impl InferState {
             fd_depth: 0,
             current_binding: None,
             use_def: std::collections::HashMap::new(),
-            closure_captures: Vec::new(),
             narrowing_map: std::collections::HashMap::new(),
             ctx: InferenceContext::new(),
             last_scheme_renaming: None,
             eval_scope: None,
+            frame_envs: Vec::new(),
+            frame_cursor: 0,
         }
     }
 

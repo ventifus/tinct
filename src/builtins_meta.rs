@@ -2615,7 +2615,7 @@ pub(crate) fn builtin_typecheck_doc(
             (state, parent_env)
         };
 
-        let child_env = crate::typecheck::build_env_from_frames(
+        let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
             &parent_env,
             &state.resolver_frames,
             &state.type_stage_scope,
@@ -2623,16 +2623,18 @@ pub(crate) fn builtin_typecheck_doc(
             &state.type_stage_type_vars,
             &state.type_name_to_id,
         );
+        state.frame_envs = all_envs;
+        state.frame_cursor = doc_idx;
 
-        // Update state.env to point at child_env so class/instance lookups work.
-        state.env = Arc::clone(&child_env);
+        // Update state.env to point at doc_env so class/instance lookups work.
+        state.env = Arc::clone(&doc_env);
 
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
         // process_document processes all items in source order, extends env with schemes from
         // the last dict body, and returns (doc_env, result_type, errors).
         let (doc_env, _, errors) =
-            crate::typecheck::process_document(&doc_arc, &child_env, &mut state, &mut type_map_ref)
+            crate::typecheck::process_document(&doc_arc, &doc_env, &mut state, &mut type_map_ref)
                 .await;
 
         // Collect Diagnostics from state.diagnostics — now includes inline CEK emissions

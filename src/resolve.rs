@@ -66,6 +66,11 @@ pub enum FrameKind {
     /// Function parameter scope (from `enter_param_scope`).
     /// Params use Dispatch addresses with slots starting at accumulated_dict_offset.
     Param,
+    /// Input scope seed frame (from `enter_scope_from_frame`).
+    /// Contains builtins, capabilities, and external frames injected at document start.
+    /// Previously excluded from unified_frames; now included so the type checker builds
+    /// the complete scope chain.
+    Seed,
 }
 
 struct SurfaceResolver {
@@ -222,14 +227,16 @@ impl SurfaceResolver {
     /// they occupy the first slots of the accumulated_group at runtime. Document dict entries
     /// follow at cumulative slot offsets above the root-scope slots.
     ///
-    /// Initial frames (root builtins, capabilities, external frames) do not push to
-    /// unified_frames — they are not letrec dict scopes or block body injections.
+    /// After T-2324: include input scope in unified_frames so the type checker builds
+    /// one Env per resolver scope frame.
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
         let converted: indexmap::IndexMap<String, VarAddr> = frame
             .iter()
             // depth=0 placeholder; resolve_name overwrites depth with traversal offset at lookup.
             .map(|(k, &slot)| (k.clone(), VarAddr::Dispatch(0, slot)))
             .collect();
+        // Include in unified_frames so the type checker builds the complete scope chain.
+        self.unified_frames.push((frame.clone(), FrameKind::Seed));
         self.scopes.push(converted);
     }
 

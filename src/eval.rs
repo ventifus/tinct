@@ -2608,19 +2608,25 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) = resolve_surface_program(&program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST nodes (setting
-        // OnceLock resolution coordinates); the returned table and frames are not needed here.
+        let (_table, resolver_frames) = resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;
@@ -5896,20 +5902,26 @@ mod tests {
         let surface_program = crate::expand::expand_program(&surface_program);
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) =
+        let (_table, resolver_frames) =
             crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST nodes (setting
-        // OnceLock resolution coordinates); the returned table and frames are not needed here.
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &surface_program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;
@@ -6293,17 +6305,26 @@ mod tests {
         let mut resolver_seed = ctx.root_group_resolver_map();
         let percent_slot = ctx.root_group.len() as u32;
         resolver_seed.insert("%".to_string(), percent_slot);
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
+        let (_table, resolver_frames) =
+            crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;
@@ -6417,19 +6438,26 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST nodes (setting
-        // OnceLock resolution coordinates); the returned table and frames are not needed here.
+        let (_table, resolver_frames) =
+            crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;
@@ -6476,19 +6504,26 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST nodes (setting
-        // OnceLock resolution coordinates); the returned table and frames are not needed here.
+        let (_table, resolver_frames) =
+            crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;
@@ -6534,19 +6569,26 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _frames) = crate::resolve::resolve_surface_program(&program, &[root_frame]);
-        // resolve_surface_program is called for its side effects on AST node (setting
-        // OnceLock resolution coordinates); the returned table and frames are not needed here.
+        let (_table, resolver_frames) =
+            crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
+            infer_state.resolver_frames = resolver_frames;
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let doc_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-                    Arc::clone(&env),
-                )));
+                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
+                    &env,
+                    &infer_state.resolver_frames,
+                    &infer_state.type_stage_scope,
+                    &infer_state.type_stage_fns,
+                    &infer_state.type_stage_type_vars,
+                    &infer_state.type_name_to_id,
+                );
+                infer_state.frame_envs = all_envs;
+                infer_state.frame_cursor = doc_idx;
                 let (_new_env, _result_ty, _tc_errors) =
                     crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
                         .await;

@@ -208,19 +208,24 @@ pub(crate) fn find_slot_in_frames(
     None
 }
 
-/// Build a type checker env frame seeded with type-stage entries at their resolver-assigned slots.
+/// Build a multi-frame type checker env chain matching the resolver's scope structure.
 ///
-/// Slot assignments come from the resolver's `unified_frames` — the single source of truth.
-/// Each entry is placed at the slot `find_slot_in_frames` returns. Entries not in the
-/// resolver frames are appended (they exist only at the type-stage level).
+/// After T-2324: creates one Env per frame in `resolver_frames` (now includes Seed frames).
+/// The resolver's Dispatch(depth, slot) addresses directly correspond to env chain traversal:
+/// depth N = N parent links from the innermost frame, slot = position in that frame's slots Vec.
 ///
-/// Seeding order (type-stage wins over parent env for same-named entries):
-/// 1. type_stage_scope — TypeValues from type-stage evaluation
-/// 2. type_stage_fns — nominal TypeValues for parameterized type constructors
-/// 3. type_stage_type_vars — nominal TypeValues for type variable markers
-/// 4. Parent env chain — copy schemes for names present in resolver_frames
+/// Parent env is used as a SOURCE of type schemes for Seed frame entries, NOT as a parent
+/// in the new chain. The new chain starts from Env::new() (no parent) to prevent prior
+/// document frames from leaking into the depth structure.
 ///
-/// Returns a child env with parent set to `parent_env`.
+/// Frame population:
+/// - Seed frames: copy type schemes from parent_env chain + type_stage entries (which override)
+/// - DocSequential/DictLetrec/Param frames: pre-allocate slots (type checker fills during inference)
+///
+/// Returns `(doc_sequential_env, all_envs, doc_sequential_idx)` where:
+/// - `doc_sequential_env` is the first DocSequential frame (document entry point for type-checking)
+/// - `all_envs` is the complete Vec of envs (one per resolver frame, for cursor-based navigation)
+/// - `doc_sequential_idx` is the index of the DocSequential frame in all_envs (initial frame_cursor)
 pub(crate) fn build_env_from_frames(
     parent_env: &Arc<RwLock<Env>>,
     resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
@@ -228,75 +233,131 @@ pub(crate) fn build_env_from_frames(
     type_stage_fns: &std::collections::HashMap<String, Arc<crate::value::Thunk>>,
     type_stage_type_vars: &std::collections::HashMap<String, String>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Arc<RwLock<Env>> {
+) -> (Arc<RwLock<Env>>, Vec<Arc<RwLock<Env>>>, usize) {
     use crate::type_infer::make_typevalue_nominal;
 
-    let child_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-        Arc::clone(parent_env),
-    )));
-    let mut child_inner = child_env.write().unwrap();
-    let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
-
-    // 1. Type-stage scope entries
-    for (name, tv) in type_stage_scope.iter().flat_map(|m| m.iter()) {
-        let idx = find_slot_in_frames(resolver_frames, name)
-            .unwrap_or(child_inner.slots.len());
-        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
-        covered.insert(idx);
-    }
-
-    // 2. Type-stage function entries
-    for (name, _thunk) in type_stage_fns {
-        let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
-        let idx = find_slot_in_frames(resolver_frames, name)
-            .unwrap_or(child_inner.slots.len());
-        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
-        covered.insert(idx);
-    }
-
-    // 3. Type-stage type variable entries
-    for (name, _kind) in type_stage_type_vars {
-        let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
-        let idx = find_slot_in_frames(resolver_frames, name)
-            .unwrap_or(child_inner.slots.len());
-        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
-        covered.insert(idx);
-    }
-
-    // 4. Copy parent env schemes for names in resolver_frames not yet covered.
+    // Build parent_env name→scheme lookup for Seed frame population.
+    let mut parent_schemes: std::collections::HashMap<String, crate::type_infer::TypeValue> =
+        std::collections::HashMap::new();
     {
-        let mut chain: Vec<Arc<std::sync::RwLock<crate::env::Env>>> = Vec::new();
-        {
-            let mut cursor = Some(Arc::clone(parent_env));
-            while let Some(arc) = cursor {
-                chain.push(Arc::clone(&arc));
-                cursor = arc.read().unwrap().parent.as_ref().map(Arc::clone);
-            }
-        }
-        for frame in chain.iter().rev() {
-            let frame_read = frame.read().unwrap();
-            for slot_entry in frame_read.slots.iter() {
+        let mut cursor = Some(Arc::clone(parent_env));
+        while let Some(arc) = cursor {
+            let env_read = arc.read().unwrap();
+            for slot_entry in env_read.slots.iter() {
                 if let Some((name, env_slot)) = slot_entry {
                     if let Some(ref scheme) = env_slot.scheme {
-                        if let Some(resolver_slot) = find_slot_in_frames(resolver_frames, name) {
-                            if !covered.contains(&resolver_slot) {
-                                child_inner.insert_at_slot(
-                                    resolver_slot,
-                                    name.clone(),
-                                    Arc::clone(scheme),
-                                    None,
-                                );
-                                covered.insert(resolver_slot);
-                            }
+                        parent_schemes
+                            .entry(name.clone())
+                            .or_insert_with(|| Arc::clone(scheme));
+                    }
+                }
+            }
+            cursor = env_read.parent.as_ref().map(Arc::clone);
+        }
+    }
+
+    // Create root Env (NO parent — prevents prior document frames from leaking).
+    let mut current_env = Arc::new(RwLock::new(Env::new()));
+
+    // Build one Env per resolver frame, tracking document entry point.
+    let mut doc_sequential_env: Option<Arc<RwLock<Env>>> = None;
+    let mut doc_sequential_idx: usize = 0;
+    let mut all_envs: Vec<Arc<RwLock<Env>>> = Vec::with_capacity(resolver_frames.len());
+
+    for (frame, kind) in resolver_frames.iter() {
+        let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
+
+        match kind {
+            crate::resolve::FrameKind::Seed => {
+                // Populate Seed frame with type schemes from parent_env chain.
+                let mut covered: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
+
+                // 1. Type-stage scope entries (override parent schemes)
+                for (name, tv) in type_stage_scope.iter().flat_map(|m| m.iter()) {
+                    if let Some(&slot) = frame.get(name) {
+                        new_env_inner.insert_at_slot(
+                            slot as usize,
+                            name.clone(),
+                            Arc::clone(tv),
+                            None,
+                        );
+                        covered.insert(slot as usize);
+                    }
+                }
+
+                // 2. Type-stage function entries (override parent schemes)
+                for (name, _thunk) in type_stage_fns {
+                    if let Some(&slot) = frame.get(name) {
+                        let tv = make_typevalue_nominal(
+                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
+                        );
+                        new_env_inner.insert_at_slot(
+                            slot as usize,
+                            name.clone(),
+                            Arc::clone(&tv),
+                            None,
+                        );
+                        covered.insert(slot as usize);
+                    }
+                }
+
+                // 3. Type-stage type variable entries (override parent schemes)
+                for (name, _kind) in type_stage_type_vars {
+                    if let Some(&slot) = frame.get(name) {
+                        let tv = make_typevalue_nominal(
+                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
+                        );
+                        new_env_inner.insert_at_slot(
+                            slot as usize,
+                            name.clone(),
+                            Arc::clone(&tv),
+                            None,
+                        );
+                        covered.insert(slot as usize);
+                    }
+                }
+
+                // 4. Copy parent env schemes for names in frame not yet covered.
+                for (name, &slot) in frame.iter() {
+                    if !covered.contains(&(slot as usize)) {
+                        if let Some(scheme) = parent_schemes.get(name) {
+                            new_env_inner.insert_at_slot(
+                                slot as usize,
+                                name.clone(),
+                                Arc::clone(scheme),
+                                None,
+                            );
                         }
                     }
                 }
             }
+            crate::resolve::FrameKind::DocSequential => {
+                // Pre-allocate slots — type checker fills them during inference.
+                let max_slot = frame.values().max().copied().unwrap_or(0) as usize;
+                new_env_inner.slots.resize(max_slot + 1, None);
+
+                current_env = Arc::new(RwLock::new(new_env_inner));
+                if doc_sequential_env.is_none() {
+                    doc_sequential_env = Some(Arc::clone(&current_env));
+                    doc_sequential_idx = all_envs.len();
+                }
+                all_envs.push(Arc::clone(&current_env));
+                continue; // Skip the normal current_env update at the end
+            }
+            crate::resolve::FrameKind::DictLetrec | crate::resolve::FrameKind::Param => {
+                // Pre-allocate slots — type checker fills them during inference.
+                let max_slot = frame.values().max().copied().unwrap_or(0) as usize;
+                new_env_inner.slots.resize(max_slot + 1, None);
+            }
         }
+
+        current_env = Arc::new(RwLock::new(new_env_inner));
+        all_envs.push(Arc::clone(&current_env));
     }
 
-    drop(child_inner);
-    child_env
+    let entry_env = doc_sequential_env.unwrap_or_else(|| Arc::clone(&all_envs[0]));
+    (entry_env, all_envs, doc_sequential_idx)
 }
 
 /// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
