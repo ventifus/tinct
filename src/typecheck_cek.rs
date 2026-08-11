@@ -1937,7 +1937,7 @@ async fn apply_cont_call_func(
     }
 
     // T-2149: Extract EffectPerform metadata for instance checking after args are inferred.
-    // Read from VarRef node's resolution OnceLock instead of resolution_table.
+    // Read from VarRef node's resolution OnceLock.
     let effect_perform_meta = if let SurfaceExpression::VarRef { resolution, .. } = &func_node.expr
     {
         if let Some(Some(crate::ast::VarAddr::EffectPerform { slot })) = resolution.get() {

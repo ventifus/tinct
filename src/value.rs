@@ -990,18 +990,6 @@ pub enum Value {
     /// A single document within a program — accessible via `program.documents`.
     Document {
         doc: Arc<SurfaceDocument>,
-        /// Unified scope frames from `resolve_surface_document_with_seed_frames`.
-        ///
-        /// Contains all scope frames collected during resolution — both Dict letrec frames
-        /// and BlockBody sequential injection frames, in injection order. Used by the type
-        /// checker (typecheck_cek.rs) for slot base lookup and by `builtin-lower`
-        /// (`builtin-lower`) for mangled instance binding name resolution.
-        ///
-        /// Set by builtin-resolve. Empty if the document was not resolved.
-        resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
-        /// Resolution table from the resolver — maps NodeId → VarAddr for slot-based lookup.
-        /// Set by builtin-resolve. Empty if the document was not resolved.
-        resolution_table: Arc<crate::ast::ResolutionTable>,
         type_val: Option<std::sync::Arc<Value>>,
     },
 
@@ -1281,15 +1269,8 @@ impl Clone for Value {
                 resolutions: Arc::clone(resolutions),
                 type_val: type_val.clone(),
             },
-            Value::Document {
-                doc,
-                resolver_frames,
-                resolution_table,
-                type_val,
-            } => Value::Document {
+            Value::Document { doc, type_val } => Value::Document {
                 doc: Arc::clone(doc),
-                resolver_frames: Arc::clone(resolver_frames),
-                resolution_table: Arc::clone(resolution_table),
                 type_val: type_val.clone(),
             },
             Value::Expression { node, type_val } => Value::Expression {

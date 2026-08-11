@@ -1525,52 +1525,8 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     );
 }
 
-/// T-2323: resolution_table is carried in Value::Document and survives clone.
-/// Verifies that Value::Document.resolution_table is preserved through clone,
-/// ensuring that builtin-resolve → builtin-typecheck-doc propagation works.
-#[test]
-fn test_resolution_table_carried_in_value_document() {
-    use crate::ast::{NodeId, VarAddr};
-    use crate::value::Value;
-
-    let mut table = std::collections::HashMap::new();
-    table.insert(NodeId(42), VarAddr::Dispatch(0, 5));
-    table.insert(NodeId(99), VarAddr::EffectPerform { slot: 3 });
-    let table_arc = Arc::new(table);
-
-    let doc_val = Value::Document {
-        doc: Arc::new(crate::ast::SurfaceDocument {
-            header: indexmap::IndexMap::new(),
-            items: vec![],
-        }),
-        resolver_frames: Arc::new(vec![]),
-        resolution_table: Arc::clone(&table_arc),
-        type_val: None,
-    };
-
-    // Clone preserves resolution_table
-    let cloned = doc_val.clone();
-    if let Value::Document {
-        resolution_table, ..
-    } = &cloned
-    {
-        assert_eq!(resolution_table.len(), 2);
-        assert_eq!(
-            resolution_table.get(&NodeId(42)),
-            Some(&VarAddr::Dispatch(0, 5))
-        );
-        assert_eq!(
-            resolution_table.get(&NodeId(99)),
-            Some(&VarAddr::EffectPerform { slot: 3 })
-        );
-    } else {
-        panic!("cloned value is not Document");
-    }
-}
-
-/// T-2326: resolver-miss diagnostic fires when resolution_table lacks a VarRef entry.
-/// After removing the name-based fallback, a VarRef with no resolution_table entry
-/// must emit a "resolver-miss" diagnostic instead of silently falling back.
+/// T-2326: resolver-miss diagnostic fires when a VarRef has no resolution OnceLock entry.
+/// A VarRef with no resolution must emit a "resolver-miss" diagnostic.
 #[tokio::test]
 async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
     use crate::ast::{SurfaceExpression, SurfaceNode};
@@ -1593,7 +1549,7 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
     });
 
     let mut state = InferState::new();
-    // resolution_table is empty — no entry for this VarRef
+    // No resolution set on this VarRef
     let mut errors = vec![];
     let mut type_map = None;
     let mut stack: Vec<(TypeCheckCont, Arc<SurfaceNode>)> = vec![];
@@ -1613,7 +1569,7 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
         .collect();
     assert!(
         !resolver_miss_errors.is_empty(),
-        "Expected resolver-miss diagnostic for VarRef with no resolution_table entry"
+        "Expected resolver-miss diagnostic for VarRef with no resolution"
     );
 }
 

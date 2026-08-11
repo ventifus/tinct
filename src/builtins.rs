@@ -650,7 +650,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         {

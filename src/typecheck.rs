@@ -194,7 +194,6 @@ fn make_typevalue_record(
 /// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
 ///
 /// Sets:
-/// - resolution_table, resolver_frames
 /// - type_stage_scope, type_stage_fns, type_stage_type_vars
 /// - tycon_env, type_name_to_id, type_display_names
 /// - ctx.type_name_to_id, ctx.type_display_names, ctx.tycon_env
@@ -202,8 +201,6 @@ fn make_typevalue_record(
 /// Mutates `state` in place — the bootstrap path accumulates state across documents.
 pub(crate) fn build_infer_state(
     state: &mut InferState,
-    resolution_table: Arc<crate::ast::ResolutionTable>,
-    resolver_frames: Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>,
     type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
     type_stage_fns: std::collections::HashMap<String, Arc<crate::value::Thunk>>,
     type_stage_type_vars: std::collections::HashMap<String, String>,
@@ -211,11 +208,6 @@ pub(crate) fn build_infer_state(
     type_name_to_id: std::collections::HashMap<String, u64>,
     type_display_names: std::collections::HashMap<u64, String>,
 ) {
-    // Resolution data is now on AST nodes (resolution OnceLock on VarRef, assigned_slot on entries/params).
-    // resolution_table and resolver_frames removed from InferState in S-1046 Phase 2.
-    let _ = resolution_table; // Suppress unused warning
-    let _ = resolver_frames; // Suppress unused warning
-
     // Set type-stage data
     state.type_stage_scope = type_stage_scope;
     state.type_stage_fns = type_stage_fns;

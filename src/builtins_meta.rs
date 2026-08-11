@@ -2245,7 +2245,7 @@ pub(crate) fn builtin_resolve(
                 std::collections::HashMap::new()
             }
         };
-        let (resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
+        let (_resolve_table, resolve_diagnostics, unreferenced_names) =
             crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
                 &[scope_frame],
@@ -2253,12 +2253,6 @@ pub(crate) fn builtin_resolve(
                 root_group_len,
                 class_methods,
             );
-
-        // unified_frames already contains all scope frames from the resolver in natural
-        // order: env_names frame first (outermost), then Dict letrec and BlockBody frames
-        // in nesting order. resolve_name_in_frames searches from last (innermost) to first,
-        // so dict frames are searched before the env_names frame.
-        let dispatcher_frames = unified_frames;
 
         // Build unified diagnostics dict from Diagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2305,8 +2299,6 @@ pub(crate) fn builtin_resolve(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
-                resolver_frames: Arc::new(dispatcher_frames),
-                resolution_table: Arc::new(resolve_table),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DOCUMENT,
                 )),
@@ -2524,15 +2516,10 @@ pub(crate) fn builtin_typecheck_doc(
             )));
         }
 
-        // arg0: Value::Document — extract doc_arc and resolver_frames.
+        // arg0: Value::Document — extract doc_arc.
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, resolver_frames, resolution_table) = match doc_val {
-            Value::Document {
-                doc: d,
-                resolver_frames: rf,
-                resolution_table: rt,
-                ..
-            } => (d, rf, rt),
+        let doc_arc = match doc_val {
+            Value::Document { doc: d, .. } => d,
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
@@ -2595,8 +2582,6 @@ pub(crate) fn builtin_typecheck_doc(
             // type_display_names is empty for builtin path (derived during typecheck, not from guard).
             crate::typecheck::build_infer_state(
                 &mut state,
-                Arc::clone(&resolution_table),
-                (*resolver_frames).clone(),
                 type_stage_scope,
                 guard.type_stage_fns.clone(),
                 guard.type_stage_type_vars.clone(),
@@ -2710,8 +2695,6 @@ pub(crate) fn builtin_typecheck_doc(
             HashableValue::Str("doc".into()),
             mk(Value::Document {
                 doc: doc_arc,
-                resolver_frames,
-                resolution_table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DOCUMENT,
                 )),
@@ -3322,8 +3305,6 @@ pub(crate) fn builtin_program_docs(
             let doc_thunk = Arc::new(Thunk::value(
                 Value::Document {
                     doc: doc_arc,
-                    resolver_frames: Arc::new(Vec::new()),
-                    resolution_table: Arc::new(std::collections::HashMap::new()),
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DOCUMENT,
                     )),
@@ -4008,7 +3989,7 @@ pub(crate) fn builtin_eval_macro_ast(
         // Resolve with empty frames — ScopeArena was deleted; de Bruijn coordinates
         // resolve via MAX/MAX name-based lookup at eval time.
         let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
-        let (_resolve_table, _new_frames) =
+        let _resolve_table =
             crate::resolve::resolve_surface_program(&program, &initial_frames);
 
         // ── Step 5: Extract the single expression node ────────────────────────

@@ -23,8 +23,6 @@ pub struct PipelineState {
     pub type_name_to_id: HashMap<String, u64>,
     /// type_decl_id → display name mapping.
     pub type_display_names: HashMap<u64, String>,
-    /// Resolver seed frames — one per scope level (builtins + previous documents).
-    pub resolver_frames: Vec<indexmap::IndexMap<String, u32>>,
     /// Type checker state — carries substitution, constraints, levels, etc.
     pub(crate) infer_state: InferState,
 }
@@ -32,7 +30,6 @@ pub struct PipelineState {
 impl PipelineState {
     /// Create the initial pipeline state from the Rust-native builtins.
     pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
-        let root_frame = ctx.root_group_resolver_map();
         let mut infer_state = InferState::new();
         infer_state.eval_ctx = Some(Arc::clone(ctx));
 
@@ -41,7 +38,6 @@ impl PipelineState {
             tycon_env: HashMap::new(),
             type_name_to_id: HashMap::new(),
             type_display_names: HashMap::new(),
-            resolver_frames: vec![root_frame],
             infer_state,
         }
     }
@@ -64,29 +60,25 @@ pub async fn typecheck_pipeline_document(
 
     // Step 1: Resolve this document against the current environment.
     let env_names: Vec<String> = Vec::new();
-    let root_group_len = state
-        .resolver_frames
-        .iter()
-        .flat_map(|f| f.values())
+    let root_frame = state.infer_state.eval_ctx.as_ref().expect("eval_ctx required").root_group_resolver_map();
+    let root_group_len = root_frame
+        .values()
         .copied()
         .max()
         .map(|m| m + 1)
         .unwrap_or(0);
 
-    let (resolve_table, _resolve_diags, _unreferenced, resolve_frames) =
+    let (_resolve_table, _resolve_diags, _unreferenced) =
         crate::resolve::resolve_surface_document_with_seed_frames(
             doc,
-            &state.resolver_frames,
+            &[root_frame.clone()],
             &env_names,
             root_group_len,
         );
-    let resolve_table = Arc::new(resolve_table);
 
     // Step 2: Typecheck this document.
     crate::typecheck::build_infer_state(
         &mut state.infer_state,
-        Arc::clone(&resolve_table),
-        resolve_frames,
         state.type_stage_data.scope.clone(),
         state.type_stage_data.fns.clone(),
         state.type_stage_data.type_vars.clone(),
@@ -113,7 +105,7 @@ pub async fn typecheck_pipeline_document(
         }
         // Override with type-stage type schemes (declared types from builtin_core.llt).
         for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            if let Some(&slot) = state.resolver_frames.iter().flat_map(|f| f.iter()).find_map(|(n, s)| if n == name { Some(s) } else { None }) {
+            if let Some(&slot) = root_frame.iter().find_map(|(n, s)| if n == name { Some(s) } else { None }) {
                 outermost.set_type_scheme(slot, Arc::clone(tv));
             }
         }
@@ -142,7 +134,6 @@ pub async fn typecheck_pipeline_document(
 ///
 /// After evaluation, routes results based on the document's stage header:
 /// - `stage: "type"` → classify entries and update `state.type_stage_data`
-/// - Otherwise → no-op (bindings propagate via resolver_frames)
 pub async fn process_pipeline_document(
     doc_spanned: &Spanned<Arc<SurfaceDocument>>,
     state: &mut PipelineState,
@@ -152,30 +143,25 @@ pub async fn process_pipeline_document(
 
     // Step 1: Resolve this document against the current environment.
     let env_names: Vec<String> = Vec::new();
-    let root_group_len = state
-        .resolver_frames
-        .iter()
-        .flat_map(|f| f.values())
+    let root_frame = ctx.root_group_resolver_map();
+    let root_group_len = root_frame
+        .values()
         .copied()
         .max()
         .map(|m| m + 1)
         .unwrap_or(0);
 
-    let (resolve_table, _resolve_diags, _unreferenced, resolve_frames) =
+    let (_resolve_table, _resolve_diags, _unreferenced) =
         crate::resolve::resolve_surface_document_with_seed_frames(
             doc,
-            &state.resolver_frames,
+            &[root_frame.clone()],
             &env_names,
             root_group_len,
         );
-    let resolve_table = Arc::new(resolve_table);
 
     // Step 2: Typecheck this document.
-    // Set the resolution table and type-stage data on InferState before type-checking.
     crate::typecheck::build_infer_state(
         &mut state.infer_state,
-        Arc::clone(&resolve_table),
-        resolve_frames,
         state.type_stage_data.scope.clone(),
         state.type_stage_data.fns.clone(),
         state.type_stage_data.type_vars.clone(),
@@ -188,7 +174,7 @@ pub async fn process_pipeline_document(
     if state.infer_state.scope_chain.is_empty() {
         let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
         for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            if let Some(&slot) = state.resolver_frames.iter().flat_map(|f| f.iter()).find_map(|(n, s)| if n == name { Some(s) } else { None }) {
+            if let Some(&slot) = root_frame.iter().find_map(|(n, s)| if n == name { Some(s) } else { None }) {
                 outermost.set_type_scheme(slot, Arc::clone(tv));
             }
         }

@@ -2591,7 +2591,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) = resolve_surface_program(&program, &[root_frame]);
+        let _table = resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -5840,7 +5840,7 @@ mod tests {
         let surface_program = crate::expand::expand_program(&surface_program);
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
 
         {
@@ -6229,7 +6229,7 @@ mod tests {
         let mut resolver_seed = ctx.root_group_resolver_map();
         let percent_slot = ctx.root_group.len() as u32;
         resolver_seed.insert("%".to_string(), percent_slot);
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
@@ -6350,7 +6350,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
@@ -6404,7 +6404,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
@@ -6457,7 +6457,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, _resolver_frames) =
+        let _table =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.

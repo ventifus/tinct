@@ -50,28 +50,6 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
     }
 }
 
-/// Classifies the origin of a resolver scope frame so downstream consumers
-/// (e.g. the type checker's body_slot_base computation) can distinguish
-/// document-level sequential frames from fn-body/dict-letrec frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameKind {
-    /// Document-level sequential injection (from `walk_surface_document_with_offset`).
-    /// These frames have absolute slots >= initial_offset (N_root).
-    DocSequential,
-    /// Dict letrec scope (from the Dict arm of `walk_surface_expr`) or
-    /// fn-body sequential injection (from the Fn sequential arm).
-    /// Dict letrec frames exist for self-referential bindings within a dict body.
-    /// Fn-body sequential frames have small absolute slots starting from 0.
-    DictLetrec,
-    /// Function parameter scope (from `enter_param_scope`).
-    /// Params use Dispatch addresses with slots starting at accumulated_dict_offset.
-    Param,
-    /// Input scope seed frame (from `enter_scope_from_frame`).
-    /// Contains builtins, capabilities, and external frames injected at document start.
-    /// Previously excluded from unified_frames; now included so the type checker builds
-    /// the complete scope chain.
-    Seed,
-}
 
 struct SurfaceResolver {
     /// Each scope frame maps name → VarAddr.
@@ -102,14 +80,6 @@ struct SurfaceResolver {
     /// - Fn arm (`SurfaceExpression::Fn`): save, reset to 0 (fn call frame has `group = []`),
     ///   restore on exit.
     accumulated_dict_offset: u32,
-    /// Unified scope frames collected during the walk, in order of injection.
-    /// Includes all scope frames pushed by `enter_scope_with_offset` — both Dict letrec
-    /// frames and BlockBody sequential injection frames. Returned by
-    /// `resolve_surface_document_with_seed_frames` as a single list for downstream use
-    /// by the type checker and the `builtin-lower` lowering pipeline.
-    /// Each entry is `(name→slot map, FrameKind)` so callers can distinguish
-    /// document-level sequential frames from fn-body/dict letrec frames.
-    unified_frames: Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
 }
 
 impl SurfaceResolver {
@@ -121,7 +91,6 @@ impl SurfaceResolver {
             referenced_env_names: std::collections::HashSet::new(),
             env_scope_depth: None,
             accumulated_dict_offset: 0,
-            unified_frames: Vec::new(),
         }
     }
 
@@ -152,10 +121,7 @@ impl SurfaceResolver {
     /// Each key gets `Dispatch(0, offset + i)` as its VarAddr.
     /// Used by walk_surface_document to assign cumulative Dispatch indices to sequential
     /// dict scopes so that cross-document references don't collide with prior dicts.
-    ///
-    /// `frame_kind` classifies the origin of this scope frame so the type checker
-    /// can distinguish document-level sequential frames from fn-body/dict-letrec frames.
-    fn enter_scope_with_offset(&mut self, keys: &[String], offset: u32, frame_kind: FrameKind) {
+    fn enter_scope_with_offset(&mut self, keys: &[String], offset: u32) {
         let mut scope: indexmap::IndexMap<String, VarAddr> =
             indexmap::IndexMap::with_capacity(keys.len());
         for (i, key) in keys.iter().enumerate() {
@@ -163,18 +129,6 @@ impl SurfaceResolver {
             // scope-stack traversal distance when the name is looked up.
             scope.insert(key.clone(), VarAddr::Dispatch(0, offset + i as u32));
         }
-        // Collect frame as name→slot map for unified_frames output.
-        let frame: indexmap::IndexMap<String, u32> = scope
-            .iter()
-            .filter_map(|(k, addr)| {
-                if let VarAddr::Dispatch(_, slot) = addr {
-                    Some((k.clone(), *slot))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        self.unified_frames.push((frame.clone(), frame_kind));
         self.scopes.push(scope);
     }
 
@@ -184,23 +138,12 @@ impl SurfaceResolver {
     /// this method accepts explicit slot positions for each name. Used when entries get
     /// uniform sequential slot assignment (all entries, not just static-key ones), so
     /// static key names may have non-contiguous slot positions.
-    fn enter_scope_with_slot_pairs(&mut self, pairs: &[(String, u32)], frame_kind: FrameKind) {
+    fn enter_scope_with_slot_pairs(&mut self, pairs: &[(String, u32)]) {
         let mut scope: indexmap::IndexMap<String, VarAddr> =
             indexmap::IndexMap::with_capacity(pairs.len());
         for (name, slot) in pairs {
             scope.insert(name.clone(), VarAddr::Dispatch(0, *slot));
         }
-        let frame: indexmap::IndexMap<String, u32> = scope
-            .iter()
-            .filter_map(|(k, addr)| {
-                if let VarAddr::Dispatch(_, slot) = addr {
-                    Some((k.clone(), *slot))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        self.unified_frames.push((frame, frame_kind));
         self.scopes.push(scope);
     }
 
@@ -209,13 +152,10 @@ impl SurfaceResolver {
     /// Advances accumulated_dict_offset by params.len() so body dict entries start after params.
     fn enter_param_scope(&mut self, params: &[String]) {
         let mut scope = indexmap::IndexMap::with_capacity(params.len());
-        let mut frame = indexmap::IndexMap::with_capacity(params.len());
         for (i, name) in params.iter().enumerate() {
             let slot = self.accumulated_dict_offset + i as u32;
             scope.insert(name.clone(), VarAddr::Dispatch(0, slot));
-            frame.insert(name.clone(), slot);
         }
-        self.unified_frames.push((frame, FrameKind::Param));
         self.scopes.push(scope);
         self.accumulated_dict_offset += params.len() as u32;
     }
@@ -226,17 +166,12 @@ impl SurfaceResolver {
     /// Root-scope names (builtins and capabilities) are assigned `Dispatch(0, slot)` —
     /// they occupy the first slots of the accumulated_group at runtime. Document dict entries
     /// follow at cumulative slot offsets above the root-scope slots.
-    ///
-    /// After T-2324: include input scope in unified_frames so the type checker builds
-    /// one Env per resolver scope frame.
     fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
         let converted: indexmap::IndexMap<String, VarAddr> = frame
             .iter()
             // depth=0 placeholder; resolve_name overwrites depth with traversal offset at lookup.
             .map(|(k, &slot)| (k.clone(), VarAddr::Dispatch(0, slot)))
             .collect();
-        // Include in unified_frames so the type checker builds the complete scope chain.
-        self.unified_frames.push((frame.clone(), FrameKind::Seed));
         self.scopes.push(converted);
     }
 
@@ -446,7 +381,7 @@ impl SurfaceResolver {
                     // sequential indices. The resolver assigns Dispatch(_, slot) using the
                     // actual slot position of each static-key entry so that LGM(slot) →
                     // frame.group[slot] resolves to the correct thunk.
-                    self.enter_scope_with_slot_pairs(&scope_pairs, FrameKind::DictLetrec);
+                    self.enter_scope_with_slot_pairs(&scope_pairs);
                     // Set ScopeFrame on the Dict AST node after entering scope.
                     if let SurfaceExpression::Dict { scope_frame, .. } = &arc.expr {
                         let _ = scope_frame.set(std::sync::Arc::new(crate::ast::ScopeFrame::new(scope_pairs.len())));
@@ -713,10 +648,7 @@ impl SurfaceResolver {
                                 sequential_offset += total_slots;
                             } else {
                                 // Enter the per-body letrec scope with actual slot positions.
-                                self.enter_scope_with_slot_pairs(
-                                    &scope_pairs,
-                                    FrameKind::DictLetrec,
-                                );
+                                self.enter_scope_with_slot_pairs(&scope_pairs);
 
                                 // Walk key annotations inside the letrec scope
                                 // (same as the Dict arm — annotations can reference siblings).
@@ -750,10 +682,7 @@ impl SurfaceResolver {
                                 // Enter the Sequential scope (injected) so subsequent
                                 // bodies can reference this body's bindings.
                                 // Use the same slot pairs so name→slot mapping is consistent.
-                                self.enter_scope_with_slot_pairs(
-                                    &scope_pairs,
-                                    FrameKind::DictLetrec,
-                                );
+                                self.enter_scope_with_slot_pairs(&scope_pairs);
                                 sequential_offset += total_slots;
                                 injected += 1;
                             }
@@ -763,7 +692,7 @@ impl SurfaceResolver {
                             // scope injection path stays correct for future cases).
                             self.walk_surface_node(e);
                             if !pairs.is_empty() {
-                                self.enter_scope_with_slot_pairs(&pairs, FrameKind::DictLetrec);
+                                self.enter_scope_with_slot_pairs(&pairs);
                                 sequential_offset += total;
                                 injected += 1;
                             } else {
@@ -1078,8 +1007,6 @@ impl SurfaceResolver {
     /// any runtime frame traversal. The cumulative offset starts at `initial_offset` (the number
     /// of root-scope entries already assigned by the caller) and increases by each dict's key count.
     ///
-    /// Document-level sequential intermediate bodies are collected into
-    /// `self.unified_frames` automatically via `enter_scope_with_offset`.
     fn walk_surface_document_with_offset(&mut self, doc: &SurfaceDocument, initial_offset: u32) {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
@@ -1115,7 +1042,7 @@ impl SurfaceResolver {
                         if let Some((pairs, total)) = surface_node_slot_pairs(node) {
                             if !pairs.is_empty() {
                                 // Document-level sequential intermediate dict scope.
-                                self.enter_scope_with_slot_pairs(&pairs, FrameKind::DocSequential);
+                                self.enter_scope_with_slot_pairs(&pairs);
                                 cumulative_offset += total;
                                 injected += 1;
                             } else {
@@ -1132,8 +1059,7 @@ impl SurfaceResolver {
             }
         }
 
-        // Scope frames are collected automatically by enter_scope_with_offset.
-        // Just exit the injected scopes.
+        // Exit the injected scopes.
         for _ in 0..injected {
             self.exit_scope();
         }
@@ -1165,18 +1091,13 @@ impl SurfaceResolver {
 /// VarRefs are reported — annotation type names, static dict keys, LetDecl binding names,
 /// and class/instance method-name keys are suppressed (not runtime variable references).
 ///
-/// Returns `(ResolutionTable, diagnostics, new_frames)` where:
+/// Returns `(ResolutionTable, diagnostics)` where:
 /// - `diagnostics`: unified bag of resolve diagnostics (errors only).
 ///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
-/// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
     initial_frames: &[indexmap::IndexMap<String, u32>],
-) -> (
-    ResolutionTable,
-    Vec<Diagnostic>,
-    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-) {
+) -> (ResolutionTable, Vec<Diagnostic>) {
     let mut resolver = SurfaceResolver::new();
 
     // Seed from initial_frames (outermost first).
@@ -1201,9 +1122,7 @@ pub fn resolve_surface_document_inplace(
         resolver.exit_scope();
     }
 
-    let unified_frames = std::mem::take(&mut resolver.unified_frames);
-    let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unified_frames)
+    resolver.finish_with_errors()
 }
 
 /// Resolve a SurfaceDocument seeded with an env-dict name list.
@@ -1249,9 +1168,7 @@ pub fn resolve_surface_document_with_env_dict(
     // Enter env-dict scope with offset starting at root_group_len.
     // Env-dict name i gets LGM(root_group_len + i) to match the runtime accumulated_group
     // where env-dict thunks follow root_group entries.
-    // DocSequential: env-dict names are document-level scope. This function does not
-    // return unified_frames, so the FrameKind is only relevant for internal consistency.
-    resolver.enter_scope_with_offset(env_names, root_group_len, FrameKind::DocSequential);
+    resolver.enter_scope_with_offset(env_names, root_group_len);
     resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
 
     // Walk the document with cumulative offset starting after root_group + env-dict slots.
@@ -1287,29 +1204,19 @@ pub fn resolve_surface_document_with_env_dict(
 /// Used by `builtin-resolve` to include root_group entries in the resolver's scope at
 /// their correct runtime slots, while keeping env-dict names at their own offset
 /// starting at `root_group_len`.
-/// Returns `(table, diagnostics, unreferenced, unified_frames)`.
-/// `unified_frames` — all scope frames (Dict letrec + BlockBody sequential injection)
-/// collected during the walk, in injection order. Each entry is `(name→slot map, FrameKind)`.
 pub fn resolve_surface_document_with_seed_frames(
     doc: &crate::ast::SurfaceDocument,
     seed_frames: &[indexmap::IndexMap<String, u32>],
     env_names: &[String],
     root_group_len: u32,
-) -> (
-    ResolutionTable,
-    Vec<Diagnostic>,
-    Vec<String>,
-    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-) {
+) -> (ResolutionTable, Vec<Diagnostic>, Vec<String>) {
     let mut resolver = SurfaceResolver::new();
 
     for frame in seed_frames {
         resolver.enter_scope_from_frame(frame);
     }
 
-    // DocSequential: env-dict names are document-level scope. This frame is returned
-    // in unified_frames and consumed by the type checker for slot base lookups.
-    resolver.enter_scope_with_offset(env_names, root_group_len, FrameKind::DocSequential);
+    resolver.enter_scope_with_offset(env_names, root_group_len);
     resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
 
     let initial_offset = root_group_len + env_names.len() as u32;
@@ -1326,10 +1233,8 @@ pub fn resolve_surface_document_with_seed_frames(
     }
     resolver.exit_scope();
 
-    let unified_frames = std::mem::take(&mut resolver.unified_frames);
-
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced, unified_frames)
+    (table, diagnostics, unreferenced)
 }
 
 /// Variant of `resolve_surface_document_with_seed_frames` that injects
@@ -1347,19 +1252,14 @@ pub fn resolve_surface_document_with_seed_frames_and_classes(
     env_names: &[String],
     root_group_len: u32,
     class_methods: std::collections::HashMap<String, u64>,
-) -> (
-    ResolutionTable,
-    Vec<crate::error::Diagnostic>,
-    Vec<String>,
-    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-) {
+) -> (ResolutionTable, Vec<crate::error::Diagnostic>, Vec<String>) {
     let mut resolver = SurfaceResolver::new();
 
     for frame in seed_frames {
         resolver.enter_scope_from_frame(frame);
     }
 
-    resolver.enter_scope_with_offset(env_names, root_group_len, FrameKind::DocSequential);
+    resolver.enter_scope_with_offset(env_names, root_group_len);
     resolver.inject_class_methods(&class_methods);
     resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
 
@@ -1377,9 +1277,8 @@ pub fn resolve_surface_document_with_seed_frames_and_classes(
     }
     resolver.exit_scope();
 
-    let unified_frames = std::mem::take(&mut resolver.unified_frames);
     let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced, unified_frames)
+    (table, diagnostics, unreferenced)
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
@@ -1387,16 +1286,10 @@ pub fn resolve_surface_document_with_seed_frames_and_classes(
 /// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
 /// Pass `&[]` when there is no outer scope (e.g., standalone eval, tests).
 ///
-/// Returns `(ResolutionTable, new_frames)` where `new_frames` are the scope frames
-/// ADDED by this program (not including `initial_frames`). Each entry is
-/// `(name→slot map, FrameKind)`.
 pub fn resolve_surface_program(
     program: &SurfaceProgram,
     initial_frames: &[indexmap::IndexMap<String, u32>],
-) -> (
-    ResolutionTable,
-    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-) {
+) -> ResolutionTable {
     let mut resolver = SurfaceResolver::new();
 
     // Compute initial_offset = total root-scope slots (builtins + capabilities).
@@ -1424,10 +1317,7 @@ pub fn resolve_surface_program(
         resolver.exit_scope();
     }
 
-    // All scope frames were collected during the walk.
-    let unified_frames = std::mem::take(&mut resolver.unified_frames);
-    let table = resolver.finish();
-    (table, unified_frames)
+    resolver.finish()
 }
 
 /// Variant of `resolve_surface_program` that injects `VarAddr::EffectPerform` addresses
@@ -1443,10 +1333,7 @@ pub fn resolve_surface_program_with_classes(
     program: &SurfaceProgram,
     initial_frames: &[indexmap::IndexMap<String, u32>],
     class_methods: std::collections::HashMap<String, u64>,
-) -> (
-    ResolutionTable,
-    Vec<(indexmap::IndexMap<String, u32>, FrameKind)>,
-) {
+) -> ResolutionTable {
     let mut resolver = SurfaceResolver::new();
 
     let initial_offset: u32 = initial_frames
@@ -1471,9 +1358,7 @@ pub fn resolve_surface_program_with_classes(
         resolver.exit_scope();
     }
 
-    let unified_frames = std::mem::take(&mut resolver.unified_frames);
-    let table = resolver.finish();
-    (table, unified_frames)
+    resolver.finish()
 }
 
 /// Extract the static produced keys of a document's final expression.
@@ -1929,7 +1814,7 @@ mod tests {
         let program = crate::desugar::desugar_surface_program(&output.program);
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
-        let (table, _frames) = resolve_surface_program(&program, &[]);
+        let table = resolve_surface_program(&program, &[]);
         (program, table)
     }
 
@@ -2477,7 +2362,7 @@ mod tests {
         // Simulate R=1: one root-scope entry named "builtin-dict-get" at slot 0.
         let mut root_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
         root_frame.insert("builtin-dict-get".to_string(), 0u32);
-        let (table, _diags, _frames) = resolve_surface_document_inplace(doc, &[root_frame]);
+        let (table, _diags) = resolve_surface_document_inplace(doc, &[root_frame]);
 
         // Outer dict: x at Dispatch(_, 1), inner at Dispatch(_, 2) (offset=1 from root frame).
         let x_refs = find_varref_nodes(&program, "x");
