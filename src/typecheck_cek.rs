@@ -293,7 +293,7 @@ pub(crate) enum TypeCheckCont {
         saved_use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
         saved_current_binding: Option<BindingId>,
         saved_narrowing_map:
-            std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
+            std::collections::HashMap<crate::ast::VarAddr, crate::type_infer::TypeValue>,
     },
 
     /// Identity continuation — returns the child type unchanged.
@@ -1212,9 +1212,8 @@ async fn apply_cont(
                     // Setup failed: fresh TypeVar (unconstrained)
                     TypeCheckAction::Done(state.fresh_type_var(&span))
                 }
-                Some((next_remaining_scrutinee, _guard_narrowings)) => {
+                Some((next_remaining_scrutinee, guard_narrowings)) => {
                     let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
-                    // MatchArm accumulates arm results; AfterBlock handles case arm liveness.
                     stack.push((
                         TypeCheckCont::MatchArm {
                             remaining_arms,
@@ -1234,6 +1233,8 @@ async fn apply_cont(
                         },
                         Arc::clone(&match_node),
                     ));
+                    // Apply guard narrowings to the now-empty narrowing_map so arm body sees them.
+                    typecheck_narrow::apply_narrowings(&guard_narrowings, state);
                     TypeCheckAction::Eval(Arc::clone(arms[0].body_expr()))
                 }
             }
@@ -1292,7 +1293,7 @@ async fn apply_cont(
                         };
                         TypeCheckAction::Done(match_ty)
                     }
-                    Some((next_remaining_scrutinee, _guard_narrowings)) => {
+                    Some((next_remaining_scrutinee, guard_narrowings)) => {
                         let next_remaining: Vec<SurfaceMatchArm> = remaining_arms[1..].to_vec();
                         stack.push((
                             TypeCheckCont::MatchArm {
@@ -1313,6 +1314,7 @@ async fn apply_cont(
                             },
                             Arc::clone(&match_node),
                         ));
+                        typecheck_narrow::apply_narrowings(&guard_narrowings, state);
                         TypeCheckAction::Eval(Arc::clone(remaining_arms[0].body_expr()))
                     }
                 }
@@ -1530,8 +1532,23 @@ async fn apply_cont(
             saved_current_binding,
             saved_narrowing_map,
         } => {
-            // Pop scope_chain (matches the push at Dict/Fn/MatchArm entry).
-            state.scope_chain.pop();
+            // Pop scope_chain and check for lost bindings.
+            if let Some(popped_scope) = state.scope_chain.pop() {
+                for slot_idx in 0..popped_scope.len() {
+                    let slot = slot_idx as u32;
+                    if popped_scope.get_type_scheme(slot).is_some()
+                        && !popped_scope.is_referenced(slot)
+                    {
+                        if let Some(def_span) = popped_scope.definition_span(slot) {
+                            errors.push(Diagnostic::warn(
+                                "lost-binding",
+                                "binding is never used",
+                                def_span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -1704,14 +1721,15 @@ async fn infer_var_ref(
                         if let Some(idx) = scope_idx {
                             state.scope_chain[idx].mark_referenced(slot);
                         }
+                        // Check narrowing_map using VarAddr as key.
+                        if let Some(narrowed) = state.narrowing_map.get(addr) {
+                            return Arc::clone(narrowed);
+                        }
                         if let Some(ref def_span) = dep_def_span {
                             let dep_id = BindingId {
                                 def_span: def_span.clone(),
                                 name: name.to_string(),
                             };
-                            if let Some(narrowed) = state.narrowing_map.get(&dep_id) {
-                                return Arc::clone(narrowed);
-                            }
                             if let Some(ref binder) = state.current_binding {
                                 if *binder != dep_id {
                                     state
@@ -3524,8 +3542,7 @@ async fn setup_match_arm_env(
             &mut local_stack,
         ))
         .await;
-        // TODO: extract_narrowings needs to be updated to not require env
-        Vec::new()
+        typecheck_narrow::extract_narrowings(guard, &state.type_name_to_id)
     } else {
         Vec::new()
     };

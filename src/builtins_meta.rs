@@ -2596,9 +2596,21 @@ pub(crate) fn builtin_typecheck_doc(
             (state,)
         };
 
+        // Push outermost scope with type-stage entries onto scope_chain.
+        if state.scope_chain.is_empty() {
+            let root_frame = ctx.root_group_resolver_map();
+            let outermost_size = root_frame.values().max().map(|m| *m + 1).unwrap_or(0) as usize;
+            let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(outermost_size));
+            for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
+                if let Some(&slot) = root_frame.get(name) {
+                    outermost.set_type_scheme(slot, Arc::clone(tv));
+                }
+            }
+            state.scope_chain.push(outermost);
+        }
+
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
-        // process_document processes all items in source order and returns (result_type, errors).
         let (_, errors) =
             crate::typecheck::process_document(&doc_arc, &mut state, &mut type_map_ref).await;
 

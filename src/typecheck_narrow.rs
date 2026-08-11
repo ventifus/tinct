@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Path-sensitive narrowing and overlap checking.
 //!
 //! This module contains the subsystem responsible for:
@@ -53,6 +52,7 @@ use crate::value::Value;
 /// TypeValue.Scheme has an optional `narrowings` field (an indexed dict: `{ 0: TypeValue | [] }`).
 /// Returns `Some(narrowing_ty)` if `narrowings[0]` is a TypeValue (non-empty dict/variant).
 /// Returns `None` if the scheme has no narrowings, or if `narrowings[0]` is `[]` (absent/null).
+#[allow(dead_code)] // Used by annotation-based narrowing (T-1761) once func scheme lookup is wired
 fn extract_scheme_narrowings_first(
     scheme: &Arc<crate::value::Value>,
 ) -> Option<Arc<crate::value::Value>> {
@@ -94,21 +94,25 @@ fn extract_scheme_narrowings_first(
 }
 
 /// Narrowing constraints extracted from conditional expressions.
-/// Each constraint refines the type of a variable in the true branch of an `if`.
+/// Each constraint refines the type of a binding in the true branch of an `if`.
+/// Bindings are identified by their resolver-assigned VarAddr, not by name.
 #[derive(Debug, Clone)]
 pub(crate) enum Narrowing {
-    /// `[= var literal]` narrows `var` to the literal type.
+    /// `[= var literal]` narrows the binding to the literal type.
     EqLiteral {
-        var: String,
+        addr: crate::ast::VarAddr,
         ty: Arc<crate::value::Value>,
     },
-    /// `[= [type-of var] "TypeName"]` narrows `var` to the named type.
+    /// `[= [type-of var] "TypeName"]` narrows the binding to the named type.
     TypeOf {
-        var: String,
+        addr: crate::ast::VarAddr,
         ty: Arc<crate::value::Value>,
     },
-    /// `[has? var "key"]` narrows `var` to a record with at least that key.
-    HasKey { var: String, key: String },
+    /// `[has? var "key"]` narrows the binding to a record with at least that key.
+    HasKey {
+        addr: crate::ast::VarAddr,
+        key: String,
+    },
 }
 
 /// Extract narrowing constraints from a condition expression (SurfaceNode version).
@@ -119,6 +123,18 @@ pub(crate) enum Narrowing {
 /// argument narrows that variable to `T` in the true branch. The callee's TypeValue.Scheme
 /// `narrowings` payload is looked up via the scope chain. Any function can participate in
 /// narrowing — not just hardcoded prelude predicates.
+/// Extract VarAddr from a VarRef node's resolution OnceLock.
+fn varref_addr(node: &SurfaceNode) -> Option<crate::ast::VarAddr> {
+    if let SurfaceExpression::VarRef { resolution, .. } = &node.expr {
+        match resolution.get() {
+            Some(Some(addr)) => Some(addr.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
@@ -151,13 +167,11 @@ pub(crate) fn extract_narrowings(
                     }
                     // Pattern: [has? x "key"]
                     "has?" if args.len() == 2 => {
-                        if let (
-                            SurfaceExpression::VarRef { name: var_name, .. },
-                            SurfaceExpression::StringLiteral { content: key, .. },
-                        ) = (&args[0].expr, &args[1].expr)
+                        if let (Some(addr), SurfaceExpression::StringLiteral { content: key, .. }) =
+                            (varref_addr(&args[0]), &args[1].expr)
                         {
                             return vec![Narrowing::HasKey {
-                                var: var_name.clone(),
+                                addr,
                                 key: key.clone(),
                             }];
                         }
@@ -176,20 +190,12 @@ pub(crate) fn extract_narrowings(
                     // mechanism — any function can declare narrowing via `@[narrows: T]`
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // TODO: look up scheme via scope_chain once name-based lookup is available
-                            let scheme: Option<Arc<crate::value::Value>> = None;
-                            if let Some(ref scheme_tv) = scheme {
-                                // Extract narrowings[0] from TypeValue.Scheme payload if present.
-                                if let Some(narrowing_ty) =
-                                    extract_scheme_narrowings_first(scheme_tv)
-                                {
-                                    return vec![Narrowing::TypeOf {
-                                        var: var_name.clone(),
-                                        ty: narrowing_ty,
-                                    }];
-                                }
-                            }
+                        if let Some(addr) = varref_addr(&args[0]) {
+                            // TODO: annotation-based narrowing (T-1761) — look up func's scheme
+                            // via scope_chain to check for @[narrows: T] annotation.
+                            // For now, built-in narrowing patterns (=, has?, and) work;
+                            // annotation-based narrowing requires func scheme lookup.
+                            let _ = addr;
                         }
                     }
                     _ => {}
@@ -206,18 +212,18 @@ pub(crate) fn try_eq_literal(
     left: &Arc<SurfaceNode>,
     right: &Arc<SurfaceNode>,
 ) -> Option<Narrowing> {
-    if let SurfaceExpression::VarRef { name, .. } = &left.expr {
+    if let Some(addr) = varref_addr(left) {
         match &right.expr {
             SurfaceExpression::Int(n) => Some(Narrowing::EqLiteral {
-                var: name.clone(),
+                addr,
                 ty: make_typevalue_int_lit(*n),
             }),
             SurfaceExpression::Float(f) => Some(Narrowing::EqLiteral {
-                var: name.clone(),
+                addr,
                 ty: make_typevalue_float_lit(*f),
             }),
             SurfaceExpression::StringLiteral { content: s, .. } => Some(Narrowing::EqLiteral {
-                var: name.clone(),
+                addr,
                 ty: make_typevalue_str_lit(s),
             }),
             _ => None,
@@ -247,20 +253,16 @@ pub(crate) fn try_type_of(
             } = &func.expr
             {
                 if func_name == "type-of" {
-                    if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                        // Right side must be a string literal type name
+                    if let Some(addr) = varref_addr(&args[0]) {
                         if let SurfaceExpression::StringLiteral {
                             content: type_name, ..
                         } = &right.expr
                         {
-                            // Look up the type name in the type_name_to_id map.
-                            // This handles all nominal types (Int, Float, String, and any
-                            // prelude-defined types) without hardcoding names in Rust.
                             let tv = type_name_to_id
                                 .get(type_name.as_str())
                                 .map(|id| make_typevalue_nominal(*id));
                             return tv.map(|t| Narrowing::TypeOf {
-                                var: var_name.clone(),
+                                addr: addr.clone(),
                                 ty: t,
                             });
                         }
@@ -283,15 +285,20 @@ pub(crate) fn apply_narrowings(
     state: &mut crate::type_infer::InferState,
 ) {
     for narrowing in narrowings {
-        let (var, refined_tv) = match narrowing {
-            Narrowing::EqLiteral { var, ty } => (var, Arc::clone(ty)),
-            Narrowing::TypeOf { var, ty } => (var, Arc::clone(ty)),
-            Narrowing::HasKey { var, key } => {
+        let (addr, refined_tv) = match narrowing {
+            Narrowing::EqLiteral { addr, ty } => (addr, Arc::clone(ty)),
+            Narrowing::TypeOf { addr, ty } => (addr, Arc::clone(ty)),
+            Narrowing::HasKey { addr, key } => {
                 let fresh_field_tv = state.fresh_type_var(&crate::rust_span!());
                 let mut fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
                 fields.insert(key.clone(), fresh_field_tv);
-                // TODO: look up existing type via scope_chain once name-based lookup is available
-                let current_tv: Option<Arc<crate::value::Value>> = None;
+                // Look up existing type via scope_chain using the VarAddr.
+                let current_tv: Option<Arc<crate::value::Value>> = if let crate::ast::VarAddr::Dispatch(depth, slot) = addr {
+                    state.scope_chain.len().checked_sub(1 + *depth as usize)
+                        .and_then(|idx| state.scope_chain[idx].get_type_scheme(*slot))
+                } else {
+                    None
+                };
                 if let Some(existing_tv) = current_tv {
                     if let Some(existing_fields) =
                         crate::typecheck::extract_record_fields_pub(&existing_tv)
@@ -302,24 +309,14 @@ pub(crate) fn apply_narrowings(
                     }
                 }
                 (
-                    var,
+                    addr,
                     crate::typecheck::make_typevalue_record_pub(fields, None),
                 )
             }
         };
 
-        // Find the binding's BindingId via its definition span, then insert the refinement.
-        // TODO: look up def_span via scope_chain once name-based lookup is available
-        if let Some(def_span) = Option::<Span>::None {
-            let id = crate::type_infer::BindingId {
-                def_span,
-                name: var.clone(),
-            };
-            state.narrowing_map.insert(id, refined_tv);
-        }
-        // If no definition_span found: the binding has no tinct source (e.g. a builtin
-        // injected without a span). Narrowings on such bindings are silently dropped —
-        // they cannot be tracked via BindingId.
+        // Key narrowing_map by the binding's VarAddr — unique slot-based identity.
+        state.narrowing_map.insert(addr.clone(), refined_tv);
     }
 }
 

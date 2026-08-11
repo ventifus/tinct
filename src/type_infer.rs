@@ -2361,7 +2361,7 @@ pub struct InferState {
     /// Scoped via AfterBlock: `saved_narrowing_map` is stored in the AfterBlock continuation
     /// when pushed before a match arm body, and restored when AfterBlock fires. Same
     /// mechanism as `saved_use_def` and `saved_current_binding`.
-    pub narrowing_map: std::collections::HashMap<BindingId, TypeValue>,
+    pub narrowing_map: std::collections::HashMap<crate::ast::VarAddr, TypeValue>,
     /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
     /// Replaces the deleted `Substitution` and `type_vars` fields.
     pub ctx: InferenceContext,

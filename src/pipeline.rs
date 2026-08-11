@@ -95,6 +95,20 @@ pub async fn typecheck_pipeline_document(
         state.type_display_names.clone(),
     );
 
+    // Push outermost scope (builtins + type-stage entries) onto scope_chain.
+    // This ScopeFrame holds type schemes for names in the resolver's input scope.
+    // Size = root_group_len so Dispatch(depth, slot) lookups find entries at the right slot.
+    if state.infer_state.scope_chain.is_empty() {
+        let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
+        // Populate with type-stage type schemes (from builtin_core.llt's type-stage documents).
+        for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
+            if let Some(&slot) = state.resolver_frames.iter().flat_map(|f| f.iter()).find_map(|(n, s)| if n == name { Some(s) } else { None }) {
+                outermost.set_type_scheme(slot, Arc::clone(tv));
+            }
+        }
+        state.infer_state.scope_chain.push(outermost);
+    }
+
     let (_result_ty, tc_errors) =
         crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
 
@@ -158,6 +172,17 @@ pub async fn process_pipeline_document(
         state.type_name_to_id.clone(),
         state.type_display_names.clone(),
     );
+
+    // Push outermost scope if not already present.
+    if state.infer_state.scope_chain.is_empty() {
+        let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
+        for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
+            if let Some(&slot) = state.resolver_frames.iter().flat_map(|f| f.iter()).find_map(|(n, s)| if n == name { Some(s) } else { None }) {
+                outermost.set_type_scheme(slot, Arc::clone(tv));
+            }
+        }
+        state.infer_state.scope_chain.push(outermost);
+    }
 
     let (_result_ty, tc_errors) =
         crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
