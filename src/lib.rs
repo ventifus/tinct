@@ -166,7 +166,6 @@ pub async fn run_loader_pipeline(
     _libdir_dir: &cap_std::fs::Dir,
     init_source: &str,
     init_path: &str,
-    _injected_cap_types: Option<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
 ) -> crate::error::DiagnosticResult<()> {
     // Start from builtins — consistent slots, single context.
     let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
@@ -203,6 +202,8 @@ pub async fn run_loader_pipeline(
         type_stage_scope: state.type_stage_data.scope.clone(),
         type_stage_fns: state.type_stage_data.fns.clone(),
         type_stage_type_vars: state.type_stage_data.type_vars.clone(),
+        classes: state.infer_state.classes.clone(),
+        instances: state.infer_state.instances.clone(),
         type_diagnostics: Vec::new(),
         type_display_names: state.type_display_names.clone(),
         type_name_to_id: state.type_name_to_id.clone(),

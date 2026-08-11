@@ -95,12 +95,23 @@ pub async fn typecheck_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    // Push outermost scope (builtins + type-stage entries) onto scope_chain.
-    // This ScopeFrame holds type schemes for names in the resolver's input scope.
-    // Size = root_group_len so Dispatch(depth, slot) lookups find entries at the right slot.
+    // Push outermost scope onto scope_chain. Populated from:
+    // 1. Root group values — Nominal(value.type_decl_id_of()) for each slot
+    // 2. Type-stage entries — override with declared types from builtin_core.llt
     if state.infer_state.scope_chain.is_empty() {
         let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
-        // Populate with type-stage type schemes (from builtin_core.llt's type-stage documents).
+        // Seed from root group values' type_decl_ids.
+        if let Some(eval_ctx) = &state.infer_state.eval_ctx {
+            for (i, thunk) in eval_ctx.root_group.iter().enumerate() {
+                if let Some(Ok(val)) = thunk.peek_result() {
+                    let tid = val.type_decl_id_of();
+                    if tid > 0 {
+                        outermost.set_type_scheme(i as u32, crate::type_infer::make_typevalue_nominal(tid));
+                    }
+                }
+            }
+        }
+        // Override with type-stage type schemes (declared types from builtin_core.llt).
         for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
             if let Some(&slot) = state.resolver_frames.iter().flat_map(|f| f.iter()).find_map(|(n, s)| if n == name { Some(s) } else { None }) {
                 outermost.set_type_scheme(slot, Arc::clone(tv));

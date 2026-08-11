@@ -2229,10 +2229,22 @@ pub(crate) fn builtin_resolve(
         // in the resolved document emit VarAddr::EffectPerform instead of plain Dispatch.
         // The class_methods map is built from the EvalContext's type_context when available.
         // An empty map is safe — it disables EffectPerform emission for methods not listed.
-        // TODO: class_methods needs a new data source now that inference_env is removed.
-        // Classes/instances should be accumulated on TypeContextData directly.
-        let class_methods: std::collections::HashMap<String, u64> =
-            { std::collections::HashMap::new() };
+        let class_methods: std::collections::HashMap<String, u64> = {
+            let tc_guard = ctx.type_context.lock().unwrap();
+            if let Some(ref tc) = *tc_guard {
+                tc.classes
+                    .iter()
+                    .flat_map(|cd| {
+                        let class_id = cd.class_decl_id;
+                        cd.method_signatures
+                            .iter()
+                            .map(move |(method_name, _sig)| (method_name.clone(), class_id))
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            }
+        };
         let (resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
@@ -2593,6 +2605,10 @@ pub(crate) fn builtin_typecheck_doc(
                 std::collections::HashMap::new(), // type_display_names starts empty
             );
 
+            // Seed classes/instances from TypeContextData.
+            state.classes = guard.classes.clone();
+            state.instances = guard.instances.clone();
+
             (state,)
         };
 
@@ -2653,9 +2669,18 @@ pub(crate) fn builtin_typecheck_doc(
             }
         }
 
-        // Env-based class/instance sync removed — classes and instances live on InferState,
-        // not in Env. Cross-document class/instance propagation will be handled by
-        // accumulating on TypeContextData directly.
+        // Write back classes and instances from InferState to TypeContextData.
+        {
+            let mut guard = tc_arc.lock().unwrap();
+            for class in &state.classes {
+                if !guard.classes.iter().any(|c| c.class_decl_id == class.class_decl_id) {
+                    guard.classes.push(class.clone());
+                }
+            }
+            for (mangled, inst) in &state.instances {
+                guard.instances.entry(mangled.clone()).or_insert_with(|| inst.clone());
+            }
+        }
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
@@ -2827,6 +2852,8 @@ pub(crate) fn builtin_make_type_ctx(
             type_stage_scope: type_stage_data.scope,
             type_stage_fns: type_stage_data.fns,
             type_stage_type_vars: type_stage_data.type_vars,
+            classes: vec![],
+            instances: std::collections::HashMap::new(),
             type_diagnostics: Vec::new(),
             type_name_to_id: std::collections::HashMap::new(),
             type_display_names: std::collections::HashMap::new(),

@@ -2143,10 +2143,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        // Capability type injection removed — Env deleted. Capability types will be
-        // injected via a different mechanism (scope_chain on InferState) in a future commit.
-
-        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, init_source, init_path, None)
+        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, init_source, init_path)
             .await
             .take(&eval_ctx.runtime_diagnostics)
             .map_err(|e| Box::new(e))

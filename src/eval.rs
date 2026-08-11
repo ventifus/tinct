@@ -449,6 +449,10 @@ pub struct TypeContextData {
     pub type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
     /// Parameterized type constructor thunks: name → function thunk (e.g., Seq, Result).
     pub type_stage_fns: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
+    /// Accumulated class declarations from type-checked documents.
+    pub classes: Vec<crate::type_class::ClassDecl>,
+    /// Accumulated instance declarations from type-checked documents.
+    pub instances: std::collections::HashMap<String, crate::type_class::InstanceDecl>,
     /// TypeVar kind annotations: name → kind string (e.g., "Operator", "Label").
     pub type_stage_type_vars: std::collections::HashMap<String, String>,
     /// Accumulated type errors from all `builtin-typecheck-doc` calls.
@@ -5128,6 +5132,8 @@ mod tests {
             type_stage_scope: vec![],
             type_stage_fns: std::collections::HashMap::new(),
             type_stage_type_vars: std::collections::HashMap::new(),
+            classes: vec![],
+            instances: std::collections::HashMap::new(),
             type_diagnostics: vec![],
             type_display_names: tni.iter().map(|(n, &id)| (id, n.clone())).collect(),
             type_name_to_id: tni,
