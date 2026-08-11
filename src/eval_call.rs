@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::ast::{
     CoreClause, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
 };
-use crate::error::{ArityBound, EvalError, EvalResult};
+use crate::error::{ArityBound, Diagnostic};
 use crate::type_tags::*;
 use crate::value::{EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 use indexmap::IndexMap;
@@ -67,11 +67,11 @@ pub(crate) async fn eval_call_core(
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
     caller_frame: &Arc<EvalFrame>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let func_thunk = eval_core_expr(func_expr, caller_frame, ctx).await?;
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (Arc<Thunk> directly).
-    // Use the caller's EvalFrame so that Dispatch/ClosureCapture variable
+    // Use the caller's EvalFrame so that Dispatch variable
     // references inside argument expressions resolve against the call site's scope.
     let pos_args: Vec<Arc<Thunk>> = args
         .iter()
@@ -128,11 +128,12 @@ pub(crate) async fn eval_call_core(
 ///
 /// `clauses` is the full clause list from `Value::Function.clauses`.
 /// `invoke_function` iterates clauses via `try_clause` to find the first matching one.
-/// `closure_env` is the captured environment built at function-definition time.
+/// `definition_scope` is the definition-site scope captured at function-definition time.
 pub struct CallContext<'a> {
     pub clauses: &'a Arc<Vec<CoreClause>>,
-    /// Captured closure environment (replaces closure_env_id u32 + scope_arena lookup).
-    pub closure_env: Arc<Vec<Arc<Thunk>>>,
+    /// Definition-site scope: the accumulated group at the point the function was defined.
+    /// All outer-scope names resolve through Dispatch addresses into this scope.
+    pub definition_scope: Arc<Vec<Arc<Thunk>>>,
     pub positional: &'a [Arc<Thunk>],
     pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
     /// Call site span — `name` field carries the function label for blame tracking.
@@ -167,12 +168,12 @@ pub(crate) async fn try_clause(
     clause: &CoreClause,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    closure_env: Arc<Vec<Arc<Thunk>>>,
+    definition_scope: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     caller_evidence: crate::value::Scope,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> EvalResult<Option<Arc<EvalFrame>>> {
+) -> Result<Option<Arc<EvalFrame>>, Box<crate::error::Diagnostic>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
     let params: Vec<Param> = clause
@@ -277,9 +278,9 @@ pub(crate) async fn try_clause(
     // (fn clauses have lowered_pattern = None; only match arm clauses set it). If a fn clause
     // ever carries a lowered_pattern, evaluate it as a structural pattern against args[0].
     if let Some(lowered_pattern) = &clause.lowered_pattern {
-        // Build a pre-arm frame with the closure_env so ClosureCapture pin addresses resolve.
+        // Build a pre-arm frame with the definition_scope so pin addresses resolve.
         let pre_frame = Arc::new(EvalFrame::for_function_call(
-            Arc::clone(&closure_env),
+            Arc::clone(&definition_scope),
             vec![],
             crate::value::empty_scope(),
         ));
@@ -349,7 +350,7 @@ pub(crate) async fn try_clause(
                 })
                 .collect();
             let bound_frame = EvalFrame::for_function_call(
-                Arc::clone(&closure_env),
+                Arc::clone(&definition_scope),
                 params_final,
                 caller_evidence.clone(),
             );
@@ -381,7 +382,7 @@ pub(crate) async fn try_clause(
             &params,
             args,
             named,
-            Arc::clone(&closure_env),
+            Arc::clone(&definition_scope),
             ctx,
             call_span,
             caller_evidence.clone(),
@@ -413,7 +414,7 @@ pub(crate) async fn try_clause(
         &params,
         args,
         named,
-        closure_env,
+        definition_scope,
         ctx,
         call_span,
         caller_evidence,
@@ -438,7 +439,9 @@ pub(crate) async fn try_clause(
 /// "missing argument for required parameter"). Multi-clause functions report
 /// "no matching clause" — they may have rejected due to type dispatch rather than arity,
 /// and `bind_args_thunks` on an arbitrary clause would give a misleading error.
-pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
+pub async fn invoke_function(
+    ctx: &CallContext<'_>,
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let (body, frame) = invoke_function_tco(ctx).await?;
     Ok(Arc::new(Thunk::core_expr(
         body,
@@ -455,13 +458,13 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
 /// Returns `(body_expr, call_frame)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<EvalFrame>)> {
+) -> Result<(Arc<Spanned<CoreExpr>>, Arc<EvalFrame>), Box<crate::error::Diagnostic>> {
     for clause in ctx.clauses.iter() {
         let result = try_clause(
             clause,
             ctx.positional,
             ctx.named,
-            Arc::clone(&ctx.closure_env),
+            Arc::clone(&ctx.definition_scope),
             ctx.ctx,
             &ctx.call_span,
             ctx.caller_evidence.clone(),
@@ -491,7 +494,7 @@ pub(crate) async fn invoke_function_tco(
             &params,
             ctx.positional,
             ctx.named,
-            Arc::clone(&ctx.closure_env),
+            Arc::clone(&ctx.definition_scope),
             ctx.ctx,
             &ctx.call_span,
             ctx.caller_evidence.clone(),
@@ -512,7 +515,7 @@ pub(crate) async fn invoke_function_tco(
         Some(name) => format!("no matching clause for the given arguments in `{name}`"),
         None => "no matching clause for the given arguments".to_string(),
     };
-    let mut err = EvalError::user_error(message, ctx.call_span.clone());
+    let mut err = Diagnostic::user_error(message, ctx.call_span.clone());
 
     // Note: actual arg types (peeked from thunk cache — free if already materialized by try_clause).
     let arg_types: Vec<String> = ctx
@@ -591,18 +594,18 @@ pub(crate) async fn invoke_function_tco(
 /// Validate function arguments, build a call-frame EvalFrame, and return it.
 ///
 /// Handles arity validation, default params, variadic params, and system-injected
-/// named args. The returned EvalFrame carries the bound params and closure captures
+/// named args. The returned EvalFrame carries the bound params
 /// for use with `Thunk::core_expr` and `EvalFrame`-based variable lookup.
 pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    closure_env: Arc<Vec<Arc<Thunk>>>,
+    definition_scope: Arc<Vec<Arc<Thunk>>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     caller_evidence: crate::value::Scope,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> EvalResult<Arc<EvalFrame>> {
+) -> Result<Arc<EvalFrame>, Box<crate::error::Diagnostic>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
     // Untyped rest has variadic=true and resolved_type=None (or Unknown).
@@ -637,7 +640,7 @@ pub(crate) async fn bind_args_thunks(
             let covered_positionally = i < positional.len();
             let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
             if !covered_positionally && !covered_by_name {
-                return Err(EvalError::missing_required_param(
+                return Err(Diagnostic::missing_required_param(
                     param.name.clone(),
                     call_span.clone(),
                 )
@@ -656,7 +659,7 @@ pub(crate) async fn bind_args_thunks(
         };
         let param_names: Vec<String> = regular_params.iter().map(|p| p.name.clone()).collect();
         let mut err =
-            EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone());
+            Diagnostic::arity_mismatch_bound(expected, positional.len(), call_span.clone());
         err.set_arity_params(param_names);
         return Err(err.into());
     }
@@ -678,7 +681,7 @@ pub(crate) async fn bind_args_thunks(
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
                     // C-NO-OVERLAP: named arg targets a positionally-bound parameter
-                    return Err(Box::new(EvalError::named_arg_conflict(
+                    return Err(Box::new(Diagnostic::named_arg_conflict(
                         name.clone(),
                         call_span.clone(),
                     )));
@@ -693,7 +696,7 @@ pub(crate) async fn bind_args_thunks(
                         // No variadic param: raise E022
                         let valid_params: Vec<String> =
                             regular_params.iter().map(|p| p.name.clone()).collect();
-                        return Err(Box::new(EvalError::unknown_named_arg(
+                        return Err(Box::new(Diagnostic::unknown_named_arg(
                             name.clone(),
                             valid_params,
                             call_span.clone(),
@@ -705,7 +708,7 @@ pub(crate) async fn bind_args_thunks(
     }
 
     // Build param slots as a Vec<Arc<Thunk>> indexed by param.slot.
-    // EvalFrame::for_function_call(closure_env, params) creates a frame where
+    // EvalFrame::for_function_call(definition_scope, params) creates a frame where
     // VarAddr::Parameter(i) resolves params[i].
     let slot_count = params.len();
     let mut param_slots: Vec<Option<Arc<Thunk>>> = vec![None; slot_count];
@@ -728,32 +731,11 @@ pub(crate) async fn bind_args_thunks(
             } else if let Some(default_node) = get_default(param) {
                 // Default param: lower and wrap as a CoreExpr thunk with empty frame.
                 let display_names = ctx.type_display_names_snapshot();
-                let (lowered_default, lower_diags) =
-                    crate::lower::lower(&default_node, &display_names);
-                {
-                    let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                        .into_iter()
-                        .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-                    for d in info_diags {
-                        ctx.runtime_diagnostics
-                            .lock()
-                            .expect("runtime_diagnostics mutex poisoned")
-                            .push(d);
-                    }
-                    let (err_opt, warnings) =
-                        crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-                    for w in warnings {
-                        ctx.runtime_diagnostics
-                            .lock()
-                            .expect("runtime_diagnostics mutex poisoned")
-                            .push(w);
-                    }
-                    if let Some(err) = err_opt {
-                        return Err(err);
-                    }
-                }
+                let core_spanned = crate::lower::lower(&default_node, &display_names)
+                    .take(&ctx.runtime_diagnostics)
+                    .expect("lowering always succeeds");
                 let default_thunk = Arc::new(Thunk::core_expr(
-                    Arc::new(lowered_default),
+                    Arc::new(core_spanned),
                     EvalFrame::empty(),
                     Arc::clone(ctx),
                     call_span.clone(),
@@ -764,31 +746,11 @@ pub(crate) async fn bind_args_thunks(
         } else if let Some(default_node) = get_default(param) {
             // Default param (no named args provided).
             let display_names = ctx.type_display_names_snapshot();
-            let (lowered_default, lower_diags) = crate::lower::lower(&default_node, &display_names);
-            {
-                let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                    .into_iter()
-                    .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-                for d in info_diags {
-                    ctx.runtime_diagnostics
-                        .lock()
-                        .expect("runtime_diagnostics mutex poisoned")
-                        .push(d);
-                }
-                let (err_opt, warnings) =
-                    crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-                for w in warnings {
-                    ctx.runtime_diagnostics
-                        .lock()
-                        .expect("runtime_diagnostics mutex poisoned")
-                        .push(w);
-                }
-                if let Some(err) = err_opt {
-                    return Err(err);
-                }
-            }
+            let core_spanned = crate::lower::lower(&default_node, &display_names)
+                .take(&ctx.runtime_diagnostics)
+                .expect("lowering always succeeds");
             let default_thunk = Arc::new(Thunk::core_expr(
-                Arc::new(lowered_default),
+                Arc::new(core_spanned),
                 EvalFrame::empty(),
                 Arc::clone(ctx),
                 call_span.clone(),
@@ -868,7 +830,7 @@ pub(crate) async fn bind_args_thunks(
                 } else {
                     // No rest bucket and no typed bucket matched: arg cannot be accepted.
                     let expected = ArityBound::Exact(max_positional);
-                    return Err(EvalError::arity_mismatch_bound(
+                    return Err(Diagnostic::arity_mismatch_bound(
                         expected,
                         positional.len(),
                         call_span.clone(),
@@ -941,7 +903,7 @@ pub(crate) async fn bind_args_thunks(
         .collect();
 
     Ok(EvalFrame::for_function_call_with_type_inst(
-        closure_env,
+        definition_scope,
         params_vec,
         caller_evidence,
         type_inst,
@@ -990,7 +952,6 @@ mod tests {
             guard: None,
             body: Arc::new(body),
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
-            captures: std::sync::Arc::new(vec![]),
         }
     }
 
@@ -1003,8 +964,6 @@ mod tests {
                 inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             }))],
             desugared: true,
-            captures: std::sync::Arc::new(vec![]),
-
             resolved_fn_type: None,
             return_ann: None,
             inferred_type: crate::type_infer::make_typevalue_unknown(),
@@ -1025,8 +984,6 @@ mod tests {
                 inferred_type: crate::type_infer::make_typevalue_nominal(crate::value::TYPE_ID_INT),
             }))],
             desugared: false,
-            captures: std::sync::Arc::new(vec![]),
-
             resolved_fn_type: None,
             return_ann: None,
             inferred_type: crate::type_infer::make_typevalue_unknown(),

@@ -36,7 +36,10 @@
 use std::collections::BTreeSet;
 
 use crate::ast::{SurfaceExpression, SurfaceNode};
-use crate::type_tags::*;
+#[cfg(test)]
+use crate::type_tags::{
+    FIELD_FIELDS, FIELD_TAIL, FIELD_VALUE, TV_FN, TV_INT_LIT, TV_NOMINAL, TV_RECORD, TV_STR_LIT,
+};
 use crate::value::Value;
 #[cfg(test)]
 use crate::value::TYPE_ID_DICT;
@@ -351,172 +354,66 @@ fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<String>> {
 
 pub fn ast_pattern_to_coverage<'a>(
     node: &'a SurfaceNode,
-    tycon_env: Option<&'a crate::type_def::TyConEnv>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = CoveragePattern> + Send + 'a>> {
-    Box::pin(async move { ast_pattern_to_coverage_inner(node, tycon_env).await })
+    state: &'a crate::type_infer::InferState,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<CoveragePattern, crate::error::Diagnostic>>
+            + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move { ast_pattern_to_coverage_inner(node, state).await })
 }
 
 async fn ast_pattern_to_coverage_inner(
     node: &SurfaceNode,
-    tycon_env: Option<&crate::type_def::TyConEnv>,
-) -> CoveragePattern {
-    match &node.expr {
-        // Placeholder `...` — always a wildcard.
-        SurfaceExpression::Placeholder(..) => CoveragePattern::Wildcard,
+    state: &crate::type_infer::InferState,
+) -> Result<CoveragePattern, crate::error::Diagnostic> {
+    let coverage_err = |msg: String| {
+        Err(crate::error::Diagnostic::error(
+            "coverage-error",
+            msg,
+            node.span.clone(),
+        ))
+    };
 
-        // VarRef — distinguish binder from pin from unresolvable.
-        // A binder pattern (VarAddr::Parameter from [case [let names] ...] arms) is a wildcard
-        // with a binding name attached — it always matches and contributes to exhaustiveness.
-        // A pin pattern (`foo:` where `foo` is in scope) matches only the current value of
-        // `foo` — it is NOT exhaustive. Treat it as a named non-exhaustive "literal" so the
-        // coverage algorithm does not falsely report it as exhaustive.
-        // An unresolvable VarRef (resolver returned Some(None), e.g. `_:` not yet migrated)
-        // is treated as wildcard: the error was already reported by the resolver.
-        // If the resolver has not run (None), be conservative and treat as wildcard.
+    let propagate = |r: Result<CoveragePattern, crate::error::Diagnostic>| {
+        r.map_err(|e| e.with_label(node.span.clone(), format!("in pattern `{}`", node.expr)))
+    };
+
+    match &node.expr {
+        SurfaceExpression::Placeholder(..) => Ok(CoveragePattern::Wildcard),
+
         SurfaceExpression::VarRef {
             name, resolution, ..
-        } => {
-            match resolution.get() {
-                Some(Some(crate::ast::VarAddr::Parameter(_))) => {
-                    // Binder pattern (case arm binding) — always matches (wildcard semantics)
-                    CoveragePattern::Wildcard
-                }
-                Some(Some(_)) => {
-                    // Resolved pin — non-exhaustive, like a literal
-                    CoveragePattern::Constructor {
-                        tag: ConstructorTag::DictKey(format!("__pin_{}__", name)),
-                        sub_patterns: vec![],
-                    }
-                }
-                Some(None) | None => {
-                    // Unresolvable or not yet resolved — conservative wildcard
-                    CoveragePattern::Wildcard
-                }
-            }
-        }
+        } => match resolution.get() {
+            Some(Some(crate::ast::VarAddr::Parameter(_))) => Ok(CoveragePattern::Wildcard),
+            Some(Some(_)) => Ok(CoveragePattern::Constructor {
+                tag: ConstructorTag::DictKey(format!("__pin_{}__", name)),
+                sub_patterns: vec![],
+            }),
+            Some(None) => coverage_err(format!("cannot analyze pattern: `{name}` is unresolved")),
+            None => coverage_err(format!(
+                "cannot analyze pattern: `{name}` has no resolution"
+            )),
+        },
 
-        // Literal patterns
-        SurfaceExpression::Int(n) => CoveragePattern::Constructor {
+        SurfaceExpression::Int(n) => Ok(CoveragePattern::Constructor {
             tag: ConstructorTag::LiteralInt(*n),
             sub_patterns: vec![],
-        },
-        SurfaceExpression::StringLiteral { content, .. } => CoveragePattern::Constructor {
+        }),
+        SurfaceExpression::StringLiteral { content, .. } => Ok(CoveragePattern::Constructor {
             tag: ConstructorTag::LiteralStr(content.clone()),
             sub_patterns: vec![],
-        },
-        SurfaceExpression::U64(_) | SurfaceExpression::Float(_) => {
-            // Infinite domain — not suitable for exhaustiveness
-            CoveragePattern::Wildcard
-        }
+        }),
+        SurfaceExpression::U64(n) => coverage_err(format!(
+            "cannot analyze pattern: u64 literal `{n}` has infinite domain"
+        )),
+        SurfaceExpression::Float(n) => coverage_err(format!(
+            "cannot analyze pattern: float literal `{n}` has infinite domain"
+        )),
 
-        // Field access (e.g., `Boolean.False`, `Color.Red`)
-        // Read the constructor's numeric identity from inferred_type_decl_id,
-        // which is populated by the type checker.
-        SurfaceExpression::Field { .. } => match node.inferred_type_decl_id.get() {
-            Some(tv) => match tv.as_ref() {
-                crate::value::Value::Variant {
-                    ctor_index,
-                    payload: Some(thunk),
-                    ..
-                } if *ctor_index == TV_NOMINAL_VARIANT => {
-                    if let Some(Ok(crate::value::Value::Dict { entries, .. })) = thunk.peek_result()
-                    {
-                        let tycon_key =
-                            crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_TYCON));
-                        let ctor_key =
-                            crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_CTOR));
-                        if let (Some(tid_thunk), Some(cid_thunk)) =
-                            (entries.get(&tycon_key), entries.get(&ctor_key))
-                        {
-                            if let (
-                                Some(Ok(crate::value::Value::Int { n: tid, .. })),
-                                Some(Ok(crate::value::Value::Int { n: cid, .. })),
-                            ) = (tid_thunk.peek_result(), cid_thunk.peek_result())
-                            {
-                                return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant {
-                                        type_decl_id: *tid as u64,
-                                        ctor_index: *cid as u32,
-                                    },
-                                    sub_patterns: vec![],
-                                };
-                            }
-                        }
-                    }
-                    CoveragePattern::Wildcard
-                }
-                _ => CoveragePattern::Wildcard,
-            },
-            None => CoveragePattern::Wildcard,
-        },
-
-        // Call with Field head and single arg → Constructor(tag, [sub])
-        // (e.g., `[Color.Red payload]`)
-        // Read the constructor's numeric identity from the call head's inferred_type_decl_id.
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } if matches!(&func.expr, SurfaceExpression::Field { .. })
-            && args.len() == 1
-            && named_args.is_empty() =>
-        {
-            let resolved = match func.inferred_type_decl_id.get() {
-                Some(tv) => match tv.as_ref() {
-                    crate::value::Value::Variant {
-                        ctor_index,
-                        payload: Some(thunk),
-                        ..
-                    } if *ctor_index == TV_NOMINAL_VARIANT => {
-                        if let Some(Ok(crate::value::Value::Dict { entries, .. })) =
-                            thunk.peek_result()
-                        {
-                            let tycon_key =
-                                crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_TYCON));
-                            let ctor_key =
-                                crate::value::HashableValue::Str(std::sync::Arc::from(FIELD_CTOR));
-                            if let (Some(tid_thunk), Some(cid_thunk)) =
-                                (entries.get(&tycon_key), entries.get(&ctor_key))
-                            {
-                                if let (
-                                    Some(Ok(crate::value::Value::Int { n: tid, .. })),
-                                    Some(Ok(crate::value::Value::Int { n: cid, .. })),
-                                ) = (tid_thunk.peek_result(), cid_thunk.peek_result())
-                                {
-                                    Some((*tid as u64, *cid as u32))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                },
-                None => None,
-            };
-            match resolved {
-                Some((type_decl_id, ctor_index)) => {
-                    let sub = ast_pattern_to_coverage(&args[0], tycon_env).await;
-                    CoveragePattern::Constructor {
-                        tag: ConstructorTag::Variant {
-                            type_decl_id,
-                            ctor_index,
-                        },
-                        sub_patterns: vec![sub],
-                    }
-                }
-                None => CoveragePattern::Wildcard,
-            }
-        }
-
-        // Dict pattern
         SurfaceExpression::Dict(entries) => {
-            // Extract keyed entries (filter out auto-indexed positional entries if any)
             let keyed: Vec<_> = entries
                 .iter()
                 .filter_map(|e| {
@@ -534,14 +431,16 @@ async fn ast_pattern_to_coverage_inner(
 
             if keyed.len() == 1 {
                 let (key, sub_node) = &keyed[0];
-                CoveragePattern::Constructor {
+                Ok(CoveragePattern::Constructor {
                     tag: ConstructorTag::DictKey(key.clone()),
-                    sub_patterns: vec![ast_pattern_to_coverage(sub_node, tycon_env).await],
-                }
+                    sub_patterns: vec![propagate(ast_pattern_to_coverage(sub_node, state).await)?],
+                })
             } else if keyed.is_empty() {
-                CoveragePattern::Wildcard
+                coverage_err(format!(
+                    "cannot analyze pattern `{}`: dict has no string-keyed entries",
+                    node.expr
+                ))
             } else {
-                // Multi-field dict pattern
                 let mut sorted = keyed.clone();
                 sorted.sort_by_key(|(k, _)| k.clone());
                 let combined_key = sorted
@@ -550,179 +449,176 @@ async fn ast_pattern_to_coverage_inner(
                     .collect::<Vec<_>>()
                     .join("\x00");
                 let mut sub_pats: Vec<CoveragePattern> = Vec::with_capacity(sorted.len());
-                for (_, node) in &sorted {
-                    sub_pats.push(ast_pattern_to_coverage(node, tycon_env).await);
+                for (_, sub_node) in &sorted {
+                    sub_pats.push(propagate(ast_pattern_to_coverage(sub_node, state).await)?);
                 }
-                CoveragePattern::Constructor {
+                Ok(CoveragePattern::Constructor {
                     tag: ConstructorTag::DictKey(combined_key),
                     sub_patterns: sub_pats,
-                }
+                })
             }
         }
 
-        // TypeAssert pattern — extract resolved TypeValue from inline TypeAnnotation
-        SurfaceExpression::TypeAssert {
-            expr,
-            resolved_type,
+        SurfaceExpression::TypeAssert { expr, .. } => {
+            propagate(ast_pattern_to_coverage(expr, state).await)
+        }
+
+        SurfaceExpression::Field {
+            expr: Some(base),
+            field,
             ..
         } => {
-            // TypeAnnotation::get() now returns Option<&Arc<Value>> after S-1003 migration.
-            let resolved_tv = resolved_type
-                .get()
-                .cloned()
-                .unwrap_or_else(crate::type_infer::make_typevalue_unknown);
+            // Evaluate the base expression to get the type dict (e.g., Color in Color.Red)
+            let base_arc = std::sync::Arc::new((**base).clone());
+            let base_val = crate::typecheck::typecheck_annot::eval_expr(&base_arc, state)
+                .await
+                .map_err(|e| {
+                    e.with_label(
+                        base.span.clone(),
+                        format!("while evaluating base of `.{}`", field),
+                    )
+                })?;
 
-            let inner_sub = vec![ast_pattern_to_coverage(expr, tycon_env).await];
+            // Convert the field to a HashableValue for lookup
+            let field_key = match field {
+                crate::ast::DotKey::Ident(s) => {
+                    crate::value::HashableValue::Str(std::sync::Arc::from(s.as_str()))
+                }
+                crate::ast::DotKey::Int(n) => crate::value::HashableValue::Int(*n),
+            };
 
-            // Determine the constructor tag from the TypeValue's ctor.
-            // For literal TypeValues, use TYPE_ID_TYPE_VALUE with the appropriate TV_* ctor_index.
-            match resolved_tv.as_ref() {
-                Value::Variant { ctor_index, .. } => match *ctor_index {
-                    TV_INT_LIT => {
-                        return CoveragePattern::Constructor {
-                            tag: ConstructorTag::Variant {
-                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
-                                ctor_index: TV_INT_LIT,
-                            },
-                            sub_patterns: inner_sub,
-                        }
-                    }
-                    TV_FLOAT_LIT => {
-                        return CoveragePattern::Constructor {
-                            tag: ConstructorTag::Variant {
-                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
-                                ctor_index: TV_FLOAT_LIT,
-                            },
-                            sub_patterns: inner_sub,
-                        }
-                    }
-                    TV_STR_LIT => {
-                        return CoveragePattern::Constructor {
-                            tag: ConstructorTag::Variant {
-                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
-                                ctor_index: TV_STR_LIT,
-                            },
-                            sub_patterns: inner_sub,
-                        }
-                    }
-                    TV_NOMINAL => {
-                        // Check for primitive types by id first.
-                        let nominal_id = crate::type_infer::typevalue_nominal_id(&resolved_tv);
-                        match nominal_id {
-                            Some(crate::value::TYPE_ID_INT) => {
-                                return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant {
-                                        type_decl_id: crate::value::TYPE_ID_INT,
-                                        ctor_index: 0,
-                                    },
-                                    sub_patterns: inner_sub.clone(),
-                                }
+            // Look up the field in the dict
+            match &base_val {
+                Value::Dict { entries, .. } => {
+                    if let Some(thunk) = entries.get(&field_key) {
+                        // Materialize the thunk to get the actual value
+                        let ctx: std::sync::Arc<crate::eval::EvalContext> =
+                            if let Some(ref eval_ctx) = state.eval_ctx {
+                                std::sync::Arc::clone(eval_ctx)
+                            } else {
+                                crate::eval::EvalContext::new_empty()
+                            };
+                        let field_val = crate::eval::materialize(thunk, Some(&node.span), &ctx)
+                            .await
+                            .map_err(|e| {
+                                e.with_label(
+                                    node.span.clone(),
+                                    format!("while materializing field `{}` in pattern", field),
+                                )
+                            })?;
+
+                        // Check if it's a unit variant constructor
+                        match &field_val {
+                            Value::Variant {
+                                type_decl_id,
+                                ctor_index,
+                                payload: None,
+                                ..
+                            } => Ok(CoveragePattern::Constructor {
+                                tag: ConstructorTag::Variant {
+                                    type_decl_id: *type_decl_id,
+                                    ctor_index: *ctor_index,
+                                },
+                                sub_patterns: vec![],
+                            }),
+                            Value::Variant { .. } => {
+                                let tycon_env = state.tycon_env_ref();
+                                coverage_err(format!(
+                                    "cannot analyze pattern `{}`: field `{}` is a variant with payload ({}), \
+                                    but payload constructors need [case] syntax",
+                                    node.expr,
+                                    field,
+                                    field_val.render(tycon_env)
+                                ))
                             }
-                            Some(crate::value::TYPE_ID_FLOAT) => {
-                                return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant {
-                                        type_decl_id: crate::value::TYPE_ID_FLOAT,
-                                        ctor_index: 0,
-                                    },
-                                    sub_patterns: inner_sub.clone(),
-                                }
-                            }
-                            Some(crate::value::TYPE_ID_STRING) => {
-                                return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant {
-                                        type_decl_id: crate::value::TYPE_ID_STRING,
-                                        ctor_index: 0,
-                                    },
-                                    sub_patterns: inner_sub.clone(),
-                                }
-                            }
-                            Some(crate::value::TYPE_ID_BYTES) => {
-                                return CoveragePattern::Constructor {
-                                    tag: ConstructorTag::Variant {
-                                        type_decl_id: crate::value::TYPE_ID_BYTES,
-                                        ctor_index: 0,
-                                    },
-                                    sub_patterns: inner_sub.clone(),
-                                }
-                            }
-                            _ => {}
-                        }
-                        if let (Some(type_decl_id), Some(env)) = (nominal_id, tycon_env) {
-                            if let Some(def) = env.get(&type_decl_id) {
-                                if !def.constructors.is_empty() {
-                                    let branches: Vec<CoveragePattern> = def
-                                        .constructors
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(idx, (_ctor_name, _arity))| {
-                                            CoveragePattern::Constructor {
-                                                tag: ConstructorTag::Variant {
-                                                    type_decl_id,
-                                                    ctor_index: idx as u32,
-                                                },
-                                                sub_patterns: inner_sub.clone(),
-                                            }
-                                        })
-                                        .collect();
-                                    if branches.len() == 1 {
-                                        return branches.into_iter().next().unwrap();
-                                    }
-                                    return CoveragePattern::Wildcard;
-                                }
+                            _ => {
+                                // Non-constructor field access — treat as wildcard/guard pattern
+                                Ok(CoveragePattern::Wildcard)
                             }
                         }
-                        // Unresolved nominal type — conservative wildcard
-                        CoveragePattern::Wildcard
+                    } else {
+                        // Field not found in dict — this will error at evaluation time, treat as wildcard
+                        Ok(CoveragePattern::Wildcard)
                     }
-                    _ => {
-                        // Unknown TypeValue ctor — conservative wildcard
-                        CoveragePattern::Wildcard
-                    }
-                },
+                }
                 _ => {
-                    // Not a Variant TypeValue — conservative wildcard
-                    CoveragePattern::Wildcard
+                    // Base is not a dict — fall through to catch-all for error handling
+                    let node_arc = std::sync::Arc::new(node.clone());
+                    let val = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
+                        .await
+                        .map_err(|e| {
+                            e.with_label(
+                                node.span.clone(),
+                                format!("while evaluating pattern `{}`", node.expr),
+                            )
+                        })?;
+                    let tycon_env = state.tycon_env_ref();
+                    match &val {
+                        Value::Variant {
+                            type_decl_id,
+                            ctor_index,
+                            payload: None,
+                            ..
+                        } => Ok(CoveragePattern::Constructor {
+                            tag: ConstructorTag::Variant {
+                                type_decl_id: *type_decl_id,
+                                ctor_index: *ctor_index,
+                            },
+                            sub_patterns: vec![],
+                        }),
+                        Value::Variant { .. } => coverage_err(format!(
+                            "cannot analyze pattern `{}`: evaluated to a variant with payload ({}), \
+                            but payload constructors need [case] syntax",
+                            node.expr,
+                            val.render(tycon_env)
+                        )),
+                        _ => coverage_err(format!(
+                            "cannot analyze pattern `{}`: evaluated to {}, which is not a constructor",
+                            node.expr,
+                            val.render(tycon_env)
+                        )),
+                    }
                 }
             }
         }
 
-        // UnitVariant and MakeVariant are expansion-produced but can appear in patterns
-        // after macro expansion. Extract their numeric identity directly.
-        SurfaceExpression::UnitVariant {
-            type_decl_id,
-            ctor_index,
-            ..
-        } => CoveragePattern::Constructor {
-            tag: ConstructorTag::Variant {
-                type_decl_id: *type_decl_id,
-                ctor_index: *ctor_index,
-            },
-            sub_patterns: vec![],
-        },
-        SurfaceExpression::MakeVariant {
-            type_decl_id,
-            ctor_index,
-            payload,
-            ..
-        } => {
-            let sub = ast_pattern_to_coverage(payload, tycon_env).await;
-            CoveragePattern::Constructor {
-                tag: ConstructorTag::Variant {
-                    type_decl_id: *type_decl_id,
-                    ctor_index: *ctor_index,
-                },
-                sub_patterns: vec![sub],
+        _ => {
+            let node_arc = std::sync::Arc::new(node.clone());
+            let val = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
+                .await
+                .map_err(|e| {
+                    e.with_label(
+                        node.span.clone(),
+                        format!("while evaluating pattern `{}`", node.expr),
+                    )
+                })?;
+            let tycon_env = state.tycon_env_ref();
+            match &val {
+                Value::Variant {
+                    type_decl_id,
+                    ctor_index,
+                    payload: None,
+                    ..
+                } => Ok(CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant {
+                        type_decl_id: *type_decl_id,
+                        ctor_index: *ctor_index,
+                    },
+                    sub_patterns: vec![],
+                }),
+                Value::Variant { .. } => coverage_err(format!(
+                    "cannot analyze pattern `{}`: evaluated to a variant with payload ({}), \
+                    but payload constructors need [case] syntax",
+                    node.expr,
+                    val.render(tycon_env)
+                )),
+                _ => coverage_err(format!(
+                    "cannot analyze pattern `{}`: evaluated to {}, which is not a constructor",
+                    node.expr,
+                    val.render(tycon_env)
+                )),
             }
         }
-
-        // TypeDecl/ReprDecl wrap an inner expression — not valid in pattern position.
-        // Treat as wildcard for coverage safety.
-        SurfaceExpression::TypeDecl { .. } | SurfaceExpression::ReprDecl { .. } => {
-            CoveragePattern::Wildcard
-        }
-
-        // All other forms: Wildcard
-        _ => CoveragePattern::Wildcard,
     }
 }
 
@@ -2019,31 +1915,39 @@ mod tests {
         }
     }
 
+    fn test_state() -> crate::type_infer::InferState {
+        crate::type_infer::InferState::new()
+    }
+
     #[tokio::test]
     async fn test_ast_pattern_placeholder_is_wildcard() {
+        let state = test_state();
         let node = mknode(SurfaceExpression::Placeholder(None, None));
-        let result = ast_pattern_to_coverage(&node, None).await;
+        let result = ast_pattern_to_coverage(&node, &state).await.unwrap();
         assert_eq!(result, CoveragePattern::Wildcard);
     }
 
     #[tokio::test]
-    async fn test_ast_pattern_varref_unresolved_some_none_is_wildcard() {
+    async fn test_ast_pattern_varref_unresolved_some_none_is_err() {
+        let state = test_state();
         let node = mknode(varref_unresolved("_"));
-        let result = ast_pattern_to_coverage(&node, None).await;
-        assert_eq!(result, CoveragePattern::Wildcard);
+        let result = ast_pattern_to_coverage(&node, &state).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_ast_pattern_varref_not_resolved_none_is_wildcard() {
+    async fn test_ast_pattern_varref_not_resolved_none_is_err() {
+        let state = test_state();
         let node = mknode(varref_not_resolved("x"));
-        let result = ast_pattern_to_coverage(&node, None).await;
-        assert_eq!(result, CoveragePattern::Wildcard);
+        let result = ast_pattern_to_coverage(&node, &state).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_ast_pattern_varref_resolved_pin_is_constructor() {
+        let state = test_state();
         let node = mknode(varref_resolved("foo", 1, 0));
-        let result = ast_pattern_to_coverage(&node, None).await;
+        let result = ast_pattern_to_coverage(&node, &state).await.unwrap();
         assert_eq!(
             result,
             CoveragePattern::Constructor {
@@ -2055,8 +1959,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_ast_pattern_int_literal_is_constructor() {
+        let state = test_state();
         let node = mknode(SurfaceExpression::Int(42));
-        let result = ast_pattern_to_coverage(&node, None).await;
+        let result = ast_pattern_to_coverage(&node, &state).await.unwrap();
         assert_eq!(
             result,
             CoveragePattern::Constructor {
@@ -2067,16 +1972,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ast_pattern_field_dot_access_without_inferred_id_is_wildcard() {
+    async fn test_ast_pattern_field_dot_access_is_err_without_env() {
+        let state = test_state();
         let node = mknode(field_dot("Color", "Red"));
-        let result = ast_pattern_to_coverage(&node, None).await;
-        assert_eq!(result, CoveragePattern::Wildcard);
+        let result = ast_pattern_to_coverage(&node, &state).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_ast_pattern_dict_single_key_is_dict_key_constructor() {
-        // [host: _] → Constructor(DictKey("host"), [Wildcard])
-        // Dict with one entry: key=VarRef("host"), value=Placeholder
+        let state = test_state();
         use crate::ast::{Spanned, SurfaceEntry};
         let key_node = Arc::new(SurfaceNode::new(
             SurfaceExpression::VarRef {
@@ -2102,7 +2007,7 @@ mod tests {
             crate::rust_span!(),
         );
         let node = mknode(SurfaceExpression::Dict(vec![entry]));
-        let result = ast_pattern_to_coverage(&node, None).await;
+        let result = ast_pattern_to_coverage(&node, &state).await.unwrap();
         assert_eq!(
             result,
             CoveragePattern::Constructor {

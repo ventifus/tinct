@@ -1,26 +1,15 @@
-//! Variable resolution pass: assigns VarAddr closure-converted addresses to VarRef nodes.
+//! Variable resolution pass: assigns VarAddr addresses to VarRef nodes.
 //!
-//! This is Phase 1 of the closure-conversion strategy. The resolver walks the AST and
-//! assigns VarAddr values to static variable references before evaluation begins:
+//! The resolver walks the AST and assigns VarAddr values to static variable references
+//! before evaluation begins:
 //!
 //! - `Dispatch(depth, slot)` — reference to `accumulated_group[slot]`. Slot is an
 //!   ABSOLUTE cumulative index: root-scope entries occupy slots 0..N-1 (from
 //!   `enter_scope_from_frame`), and each document dict's entries follow at cumulative
 //!   offsets assigned by `walk_surface_document_with_offset`. Cross-dict references
 //!   within a document use Dispatch with the absolute slot — no runtime frame traversal needed.
-//!   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
 //! - `Parameter(i)` — reference to the i-th parameter of the enclosing function.
-//! - `ClosureCapture(i)` — fn capture: a free variable referenced inside a fn body from
-//!   an outer scope. `i` is the index into the function's capture list (`resolved_captures`).
-//!   Exclusively emitted when inside a fn boundary — never for cross-dict references alone.
-//!
-//! For each `SurfaceExpression::Fn` node, the resolver also sets `resolved_captures`:
-//! an ordered list of `(name, original_addr)` pairs in first-occurrence order, where
-//! `original_addr` is the VarAddr the captured binding held in the ENCLOSING frame
-//! (before the resolver converted it to `ClosureCapture` for uses inside the function).
-//! The evaluator uses `original_addr` at function-definition time to look up each
-//! captured thunk in the accumulated_group (frame.group[slot]) and build the function's
-//! `closure_env`. LGM(slot) original_addrs index frame.group directly.
+//! - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
 //!
 //! **Invariants:**
 //! - Must run exactly once per AST (write-once OnceLock).
@@ -80,39 +69,13 @@ struct SurfaceResolver {
     /// Each scope frame maps name → VarAddr.
     scopes: Vec<indexmap::IndexMap<String, VarAddr>>,
     table: ResolutionTable,
-    /// Diagnostics accumulated during the walk (errors and warnings unified).
-    /// - `kind = "resolve-error"`, `level = Err`: undefined variable in expression position.
-    ///   Populated only when suppress_depth == 0 (annotation, static key, declaration, and
-    ///   method-name positions are suppressed — they are not runtime variable references).
     diagnostics: Vec<Diagnostic>,
-    /// > 0 when inside a context where unresolved VarRefs are not errors
-    /// > (annotation, static key, declaration position, etc.).
-    suppress_depth: usize,
-    /// The name of the field-access primitive function in the runtime's root group.
-    /// Used by the Field arm to resolve dot-access expressions. Stored here rather than
-    /// hardcoded in the arm so the resolver remains agnostic to the specific name used by
-    /// any given prelude/loader stack. The default matches the standard builtin registration.
-    field_getter_name: Arc<str>,
     /// Names from the env-dict (name-set) that were referenced during this document's walk.
     /// Used to compute unreferenced env names returned by resolve_surface_document_with_env_dict.
     referenced_env_names: std::collections::HashSet<String>,
     /// Depth of the env-dict scope in the scope stack (set by resolve_surface_document_with_env_dict).
     /// When set, only names resolved at this depth are recorded in referenced_env_names.
     env_scope_depth: Option<usize>,
-    /// Stack of function boundaries, one entry per enclosing `Fn` node.
-    /// Each entry is the value of `self.scopes.len()` at the moment the Fn was entered —
-    /// i.e., the number of scope frames that belong to outer functions or document scope.
-    /// Scopes at index < boundary are "outer" (free variables → ClosureCapture);
-    /// scopes at index >= boundary are "local" (params, letrec members within this fn).
-    fn_scope_boundaries: Vec<usize>,
-    /// Per-function capture lists, parallel to `fn_scope_boundaries`.
-    /// Each entry is the accumulating list of (name, original_addr) pairs for the corresponding Fn.
-    /// Pairs are appended in first-occurrence order; the index within the list is the
-    /// ClosureCapture index assigned to that name's VarRef nodes inside the function.
-    /// `original_addr` is the VarAddr the binding held in the enclosing frame BEFORE the
-    /// resolver converted it to ClosureCapture — the evaluator uses it to look up the thunk
-    /// in the enclosing EvalFrame when building the function's closure_env at definition time.
-    fn_capture_lists: Vec<Vec<(String, VarAddr)>>,
     /// Tracks the cumulative base slot for the next `SurfaceExpression::Dict` letrec scope.
     ///
     /// At runtime, `eval_dict_core` builds `extended_group = outer_frame.group ++ letrec_slots`,
@@ -147,13 +110,9 @@ impl SurfaceResolver {
             scopes: Vec::new(),
             table: ResolutionTable::new(),
             diagnostics: Vec::new(),
-            suppress_depth: 0,
             referenced_env_names: std::collections::HashSet::new(),
             env_scope_depth: None,
-            fn_scope_boundaries: Vec::new(),
-            fn_capture_lists: Vec::new(),
             accumulated_dict_offset: 0,
-            field_getter_name: Arc::from("builtin-dict-get"),
             unified_frames: Vec::new(),
         }
     }
@@ -271,27 +230,19 @@ impl SurfaceResolver {
 
     /// Resolve `name` in the current scope stack, returning its `VarAddr`.
     ///
-    /// All variable addressing uses exactly four variants (no OuterGroupRef):
+    /// All variable addressing uses exactly three variants:
     /// - `Dispatch(depth, slot)` — absolute cumulative slot in the accumulated_group.
     ///   Root-scope entries occupy slots 0..N-1; document dict entries follow at cumulative
     ///   offsets. Cross-dict references (a name from dict_i referenced in dict_j where j>i)
     ///   resolve directly to Dispatch(depth, slot) because walk_surface_document assigns cumulative
     ///   slots via enter_scope_with_offset, making each slot unique across the document.
-    ///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
-    /// - `ClosureCapture(i)` — fn capture: a free variable in a fn body. The evaluator
-    ///   builds closure_env at fn-creation time by looking up each capture's original_addr
-    ///   in the enclosing EvalFrame (frame.group[slot] for Dispatch captures).
     /// - `Parameter(i)` — fn argument.
     /// - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
     ///
-    /// If we are inside one or more functions (fn_scope_boundaries is non-empty) and the
-    /// name is found in a scope frame that belongs to an outer function or document scope
-    /// (i.e., the frame's absolute index < the innermost fn boundary), the name is a free
-    /// variable. It is added to the current function's capture list (if not already present)
-    /// and assigned `ClosureCapture(i)`.
-    ///
-    /// If the name is found in a local scope (within the current function), the stored
-    /// VarAddr (Parameter(i) or Dispatch(depth, slot)) is returned directly.
+    /// If a name crosses a fn boundary, it is added to the current function's capture list
+    /// (if not already present) with its original Dispatch/Parameter address. The VarRef
+    /// itself still receives the Dispatch address — the evaluator handles cross-fn-boundary
+    /// access via the definition-site group carried by function values.
     fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
         // Search from innermost scope outward.
         let scopes_len = self.scopes.len();
@@ -320,149 +271,6 @@ impl SurfaceResolver {
             self.referenced_env_names.insert(name.to_string());
         }
 
-        // Closure conversion: if we are inside at least one function AND the resolved
-        // scope frame belongs to an outer function or document scope, this is a free
-        // variable → add to the innermost function's capture list.
-        if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
-            if match_depth < fn_boundary {
-                // EffectPerform is dynamically scoped — resolved at call time via the
-                // effect chain, not via closure capture. Return as-is without adding to
-                // the capture list.
-                if matches!(&addr, VarAddr::EffectPerform { .. }) {
-                    return Some(addr);
-                }
-
-                // Free variable: found in a scope outside the current function boundary.
-                //
-                // Determine the original_addr to store in the captures list. This is the
-                // VarAddr that the Fn arm uses at function-creation time to look up the thunk
-                // from the enclosing EvalFrame.
-                //
-                // Capture inheritance: if the immediately enclosing fn already captured this
-                // name, inherit its capture index as ClosureCapture(outer_idx). At inner fn
-                // creation, frame.closure_env = outer fn's closure_env, so ClosureCapture(outer_idx)
-                // correctly finds the thunk.
-                //
-                // For names not yet captured by any enclosing fn:
-                //   - LGM(slot): the slot is an absolute cumulative index into accumulated_group.
-                //     frame.group[slot] at fn creation time gives the thunk directly.
-                //   - Parameter(i): pass through unchanged.
-                //   - ClosureCapture(i): pass through unchanged (from a scope frame that's a
-                //     FnSequentialBody scope carrying forwarded ClosureCapture addrs — rare).
-                //
-                // Multi-level cascade: for nested fns, walk from outermost to innermost fn,
-                // cascading via ClosureCapture at each level so every intermediate fn gets the
-                // name in its capture list (required for closure_env building at each level).
-                let outer_capture_entry = self
-                    .fn_capture_lists
-                    .iter()
-                    .rev()
-                    .skip(1) // skip innermost (current fn being processed)
-                    .next() // only check the immediately enclosing fn
-                    .and_then(|captures| {
-                        captures
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (n, _))| n == name)
-                            .map(|(idx, (_, addr))| (idx as u32, addr.clone()))
-                    });
-
-                let original_addr = if let Some((outer_idx, _outer_addr)) = outer_capture_entry {
-                    VarAddr::ClosureCapture(outer_idx)
-                } else {
-                    // Not yet in any enclosing fn's capture list.
-                    //
-                    // addr is the VarAddr from the enclosing scope frame. With the new model:
-                    //   - LGM(slot): absolute cumulative slot. Use directly — frame.group[slot].
-                    //   - Parameter(i): use directly.
-                    //   - ClosureCapture(i): use directly (scope frames from FnSequentialBody scopes
-                    //     may carry these from an outer fn's body-sequential injection).
-                    //
-                    // Multi-level cascade for nested fns (fn_capture_lists.len() > 1):
-                    // Process all enclosing fn levels from outermost to immediately enclosing.
-                    // Each level either uses the name directly (from its frame) or inherits from
-                    // the outer level via ClosureCapture.
-                    let num_levels = self.fn_capture_lists.len(); // includes current fn (last)
-                    if num_levels <= 1 {
-                        // Single fn level: use addr directly.
-                        addr.clone()
-                    } else {
-                        // Multi-level cascade: walk from outermost fn to immediately
-                        // enclosing fn, cascading captures at each level.
-                        //
-                        // `last_addr` tracks the VarAddr the NEXT cascade level should
-                        // use as its original_addr. It starts as `addr` (the raw VarAddr
-                        // from the scope where the name was found).
-                        //
-                        // Key invariant: a fn does NOT capture names that are local to
-                        // its own scope (parameters, LGM entries within its body). Those
-                        // are already accessible at call time. Only names from OUTSIDE
-                        // the fn boundary are captured. When a name is local to fn_i,
-                        // fn_i+1 captures it directly using the raw addr (e.g.,
-                        // Parameter(i) is available via frame.params at fn_i+1's
-                        // creation time during fn_i's call).
-                        let mut last_addr: VarAddr = addr.clone();
-                        for level_idx in 0..(num_levels - 1) {
-                            let level_fn_boundary = self.fn_scope_boundaries[level_idx];
-                            if match_depth >= level_fn_boundary {
-                                // Name is local to this fn level (parameter or LGM
-                                // within its scope). This fn does NOT need to capture
-                                // it — it's already accessible at call time.
-                                // Pass the raw addr through to the next level.
-                                last_addr = addr.clone();
-                            } else {
-                                // Name is outside this fn level's boundary — this
-                                // level must capture it.
-                                let level_original_addr = last_addr.clone();
-
-                                // Add to this fn level's capture list (if not already present).
-                                let existing_pos = self.fn_capture_lists[level_idx]
-                                    .iter()
-                                    .position(|(n, _)| n == name)
-                                    .map(|p| p as u32);
-                                let pos = if let Some(p) = existing_pos {
-                                    p
-                                } else {
-                                    let idx = self.fn_capture_lists[level_idx].len() as u32;
-                                    self.fn_capture_lists[level_idx]
-                                        .push((name.to_string(), level_original_addr));
-                                    idx
-                                };
-                                last_addr = VarAddr::ClosureCapture(pos);
-                            }
-                        }
-
-                        // Current (innermost) fn uses last_addr as its original_addr.
-                        // If no intermediate fn needed to capture (all levels had the
-                        // name locally), last_addr is still the raw addr (e.g.,
-                        // Parameter(i)), which is correct — the innermost fn captures
-                        // directly from the enclosing fn's frame.
-                        last_addr
-                    }
-                };
-
-                let capture_list = self
-                    .fn_capture_lists
-                    .last_mut()
-                    .expect("fn_capture_lists is empty");
-                let capture_idx =
-                    if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
-                        pos as u32
-                    } else {
-                        let idx = capture_list.len() as u32;
-                        capture_list.push((name.to_string(), original_addr));
-                        idx
-                    };
-                return Some(VarAddr::ClosureCapture(capture_idx));
-            }
-        }
-
-        // Non-fn-capture path: return the addr as-is.
-        //
-        // With cumulative LGM slots (walk_surface_document uses enter_scope_with_offset),
-        // cross-dict references within a document resolve directly to LGM(absolute_slot).
-        // No OuterGroupRef adjustment needed: each dict's entries have unique absolute slots
-        // that are valid regardless of which inner dict is doing the referencing.
         Some(addr)
     }
 
@@ -482,8 +290,6 @@ impl SurfaceResolver {
     ///   - Composable: a dispatcher that chains via `.method` naturally reaches the
     ///     prelude's copy regardless of how many scope levels separate them.
     ///
-    /// Capture detection is performed the same way as `resolve_name`: if the found scope
-    /// frame is outside the current function boundary, the name becomes a ClosureCapture.
     fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
         let scopes_len = self.scopes.len();
         let mut found_first = false;
@@ -494,7 +300,6 @@ impl SurfaceResolver {
             .enumerate()
             .find_map(|(offset, scope)| {
                 if !found_first {
-                    // Skip the first (innermost) occurrence of `name`, whatever scope it's in.
                     if scope.contains_key(name) {
                         found_first = true;
                     }
@@ -507,7 +312,6 @@ impl SurfaceResolver {
             });
 
         let (match_depth, traversal_offset, addr) = found?;
-        // Inject the correct depth into Dispatch entries (same as resolve_name).
         let addr = match addr {
             VarAddr::Dispatch(_, slot) => VarAddr::Dispatch(traversal_offset, slot),
             other => other,
@@ -515,59 +319,6 @@ impl SurfaceResolver {
 
         if self.env_scope_depth.map_or(false, |d| match_depth == d) {
             self.referenced_env_names.insert(name.to_string());
-        }
-
-        // Closure conversion: same as resolve_name — if the found scope frame is outside
-        // the current function boundary, this is a free variable → ClosureCapture.
-        // Store (name, original_addr) so the evaluator can look up the thunk in the
-        // enclosing EvalFrame at function-definition time.
-        if let Some(&fn_boundary) = self.fn_scope_boundaries.last() {
-            if match_depth < fn_boundary {
-                // Check if an enclosing fn already captured this name — if so, use its
-                // original_addr directly instead of creating a new ClosureCapture entry.
-                // This prevents capture cascade bugs where the enclosing fn's closure_env
-                // was built before nested fns added more captures to its capture list.
-                let outer_capture_entry = self
-                    .fn_capture_lists
-                    .iter()
-                    .rev()
-                    .skip(1) // skip current fn
-                    .next()
-                    .and_then(|captures| {
-                        captures
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (n, _))| n == name)
-                            .map(|(idx, (_, addr))| (idx as u32, addr.clone()))
-                    });
-
-                let original_addr = if let Some((outer_idx, _outer_addr)) = outer_capture_entry {
-                    // Enclosing fn already captured this name at outer_idx in its capture list.
-                    // Use ClosureCapture(outer_idx) unconditionally: the enclosing fn's
-                    // closure_env[outer_idx] holds the correct value (built from the complete
-                    // resolved capture list). Passing through the enclosing fn's original_addr
-                    // (e.g. Dispatch) fails inside fn call frames where frame.group holds
-                    // sequential body thunks, not root Dispatch slots.
-                    VarAddr::ClosureCapture(outer_idx)
-                } else {
-                    // Not in any enclosing fn's capture list — use the raw addr.
-                    addr.clone()
-                };
-
-                let capture_list = self
-                    .fn_capture_lists
-                    .last_mut()
-                    .expect("fn_capture_lists is empty");
-                let capture_idx =
-                    if let Some(pos) = capture_list.iter().position(|(n, _)| n == name) {
-                        pos as u32
-                    } else {
-                        let idx = capture_list.len() as u32;
-                        capture_list.push((name.to_string(), original_addr));
-                        idx
-                    };
-                return Some(VarAddr::ClosureCapture(capture_idx));
-            }
         }
 
         Some(addr)
@@ -586,38 +337,24 @@ impl SurfaceResolver {
                     resolution.set(Some(addr.clone()));
                     self.table.insert(node_id(arc), addr);
                 } else {
-                    // Name not in scope. Always set Some(None) so consumers can
-                    // distinguish "not found" from "resolver never ran" (None = bug).
                     resolution.set(None);
-                    if self.suppress_depth == 0 {
-                        // Genuinely unresolved expression VarRef. suppress_depth > 0 when
-                        // in annotation, static dict-key, LetDecl binding, or declaration
-                        // method-name position — none of those are runtime variable references.
-                        self.diagnostics.push(Diagnostic::error(
-                            "resolve-error",
-                            format!("undefined variable: {}", name),
-                            arc.span.clone(),
-                        ));
-                    }
+                    self.diagnostics.push(Diagnostic::error(
+                        "resolve-error",
+                        format!("undefined variable: {}", name),
+                        arc.span.clone(),
+                    ));
                 }
             }
 
             SurfaceExpression::Dict(entries) => {
                 // Walk key expressions in outer scope.
-                // Non-escaped VarRef keys (bare identifier keys like `x:`) are static
-                // name declarations, not variable references — suppress error recording.
-                // Escaped VarRef keys ($x:) ARE runtime lookups — report errors normally.
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
                         let is_static =
                             matches!(&key.expr, SurfaceExpression::VarRef { escaped: false, .. });
-                        if is_static {
-                            self.suppress_depth += 1;
-                        }
+                        if is_static {}
                         self.walk_surface_node(key);
-                        if is_static {
-                            self.suppress_depth -= 1;
-                        }
+                        if is_static {}
                     }
                 }
 
@@ -785,9 +522,7 @@ impl SurfaceResolver {
                             ..
                         } = &key.expr
                         {
-                            self.suppress_depth += 1;
                             self.walk_surface_annotation(ann);
-                            self.suppress_depth -= 1;
                         }
                     }
                 }
@@ -804,29 +539,13 @@ impl SurfaceResolver {
                 return_ann: _,
                 params,
                 body,
-                resolved_captures,
                 ..
             } => {
-                // Walk param annotations in outer scope (before entering fn boundary)
                 for param in params {
                     if let Some(ann) = &param.node.annotation {
                         self.walk_surface_annotation(ann);
                     }
                 }
-
-                // Push fn boundary BEFORE entering the param scope so that the param scope
-                // is considered "local" (scopes.len() after push > boundary).
-                // The boundary is the number of scope frames that are "outer" — i.e., the
-                // count of frames already on the stack when we enter this function.
-                let fn_boundary = self.scopes.len();
-                self.fn_scope_boundaries.push(fn_boundary);
-                self.fn_capture_lists.push(Vec::new());
-
-                // Reset accumulated_dict_offset to 0 at the fn boundary.
-                // A function call creates EvalFrame::for_function_call with group = [] (empty),
-                // so all dicts inside the fn body start accumulating from slot 0.
-                let saved_dict_offset = self.accumulated_dict_offset;
-                self.accumulated_dict_offset = 0;
 
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 self.enter_param_scope(&param_names);
@@ -834,18 +553,6 @@ impl SurfaceResolver {
                 self.walk_surface_node(body);
 
                 self.exit_scope();
-
-                // Pop the fn boundary and capture list; set resolved_captures on the Fn node.
-                self.fn_scope_boundaries.pop();
-                let captures = self
-                    .fn_capture_lists
-                    .pop()
-                    .expect("fn_capture_lists is empty");
-                resolved_captures.set(Arc::new(captures));
-
-                // Restore accumulated_dict_offset to its pre-fn value now that we have
-                // exited the fn boundary and returned to the enclosing scope.
-                self.accumulated_dict_offset = saved_dict_offset;
             }
 
             SurfaceExpression::Sequential(exprs) => {
@@ -862,21 +569,15 @@ impl SurfaceResolver {
 
                     if !is_last {
                         if let SurfaceExpression::Dict(entries) = &e.expr {
-                            // Step 1: Walk key expressions in outer scope (suppressed for
-                            // non-escaped static keys — same as the Dict arm logic).
                             for entry in entries {
                                 if let Some(key) = &entry.node.key {
                                     let is_static = matches!(
                                         &key.expr,
                                         SurfaceExpression::VarRef { escaped: false, .. }
                                     );
-                                    if is_static {
-                                        self.suppress_depth += 1;
-                                    }
+                                    if is_static {}
                                     self.walk_surface_node(key);
-                                    if is_static {
-                                        self.suppress_depth -= 1;
-                                    }
+                                    if is_static {}
                                 }
                             }
 
@@ -984,9 +685,7 @@ impl SurfaceResolver {
                                             ..
                                         } = &key.expr
                                         {
-                                            self.suppress_depth += 1;
                                             self.walk_surface_annotation(ann);
-                                            self.suppress_depth -= 1;
                                         }
                                     }
                                 }
@@ -1065,22 +764,13 @@ impl SurfaceResolver {
             } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
-                    // Resolve the field-access primitive to get its VarAddr at the current
-                    // scope depth. The lowerer reads this VarAddr to locate the function that
-                    // implements dot-access (e.g. `x.field`). The name is taken from
-                    // `self.field_getter_name` so the resolver stays agnostic to the specific
-                    // name used by the active prelude/loader stack. If the name is not in scope
-                    // (resolver not seeded with env), leave the OnceLock unset — the lowerer
-                    // will emit a diagnostic.
-                    if let Some(addr) = self.resolve_name(&self.field_getter_name.clone()) {
-                        resolution.set(Some(addr));
-                    }
                 } else if let crate::ast::DotKey::Ident(name) = field {
                     // Leading-dot `.name`: look up in the PARENT scope, skipping the
                     // nearest enclosing letrec dict scope. This prevents `[k: .k ...]`
                     // from creating a circular self-reference.
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
-                    // case uses parent lookup; outer `.b` / `.c` desugar to field-getter calls.
+                    // case uses parent lookup; outer `.b` / `.c` lower to CoreExpr::Field
+                    // (direct structural access — no resolver involvement needed).
                     if let Some(coords) = self.resolve_name_parent(name) {
                         resolution.set(Some(coords.clone()));
                         self.table.insert(node_id(arc), coords);
@@ -1106,12 +796,7 @@ impl SurfaceResolver {
             }
 
             // Quote: do NOT resolve variables inside — they are AST data, not bindings.
-            // However, any Fn expressions inside a quote must have resolved_captures set to
-            // empty (no runtime captures — quoted fns are AST values, not runtime closures).
-            // The lowerer requires resolved_captures to be set on every Fn node it encounters.
-            SurfaceExpression::Quote(inner) => {
-                set_empty_captures_in_quote(&inner.expr);
-            }
+            SurfaceExpression::Quote(_inner) => {}
 
             SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
                 self.walk_surface_node(inner);
@@ -1122,36 +807,14 @@ impl SurfaceResolver {
                 for arm in arms {
                     let let_bindings = &arm.let_bindings;
                     self.walk_surface_node(let_bindings);
-                    // Extract binding variable names from [let name1 name2 ...].
-                    // `_` is excluded (wildcard, not a binding) so the pattern position
-                    // VarRef for `_` remains unresolved (Some(None)), which eval treats
-                    // as wildcard rather than a pin.
                     let bound_names = extract_case_arm_binding_names(let_bindings);
                     let has_bindings = !bound_names.is_empty();
-
-                    // Push fn boundary BEFORE entering the param scope so that arm
-                    // bindings (p, v, etc.) are INSIDE the boundary → local Parameters.
-                    // Outer scope names referenced in pattern/guard/body become ClosureCaptures.
-                    // This matches EvalFrame::for_function_call at eval time.
-                    let fn_boundary = self.scopes.len();
-                    self.fn_scope_boundaries.push(fn_boundary);
-                    self.fn_capture_lists.push(Vec::new());
-                    let saved_dict_offset = self.accumulated_dict_offset;
-                    self.accumulated_dict_offset = 0;
 
                     if has_bindings {
                         self.enter_param_scope(&bound_names);
                     }
 
-                    // Walk pattern INSIDE the fn boundary and param scope (suppress diagnostics).
-                    // Binding names (p, exports, etc.) are now in scope as Parameter(i), so they
-                    // lower to Var{addr:Parameter(i)} rather than Placeholder — enabling
-                    // bind_or_pin_name to recognise them as bindings at eval time.
-                    // External names (Option, builtin-dict-get) become ClosureCaptures, looked up
-                    // from the pre_arm_frame (with closure_env but empty params) at eval time.
-                    self.suppress_depth += 1;
                     self.walk_surface_node(&arm.pattern);
-                    self.suppress_depth -= 1;
 
                     if let Some(guard) = &arm.guard {
                         self.walk_surface_node(guard);
@@ -1162,15 +825,6 @@ impl SurfaceResolver {
                     if has_bindings {
                         self.exit_scope();
                     }
-
-                    // Pop fn boundary, collect captures, write to case_captures OnceLock.
-                    self.fn_scope_boundaries.pop();
-                    let captures = self
-                        .fn_capture_lists
-                        .pop()
-                        .expect("fn_capture_lists is empty after match arm body walk");
-                    arm.case_captures.set(Arc::new(captures));
-                    self.accumulated_dict_offset = saved_dict_offset;
                 }
             }
 
@@ -1179,11 +833,9 @@ impl SurfaceResolver {
                 // Binding names in [let x y] and [pattern x] are declarations, not
                 // variable references. The lowerer extracts them as string literals via
                 // lower_let_decl_binding(), never reading their OnceLocks as variables.
-                self.suppress_depth += 1;
                 for b in bindings {
                     self.walk_surface_node(b);
                 }
-                self.suppress_depth -= 1;
             }
 
             // Declaration embedded as a dict entry value — walk class/instance bodies so
@@ -1238,10 +890,6 @@ impl SurfaceResolver {
     ///   - Annotation values: PropertyDict entries on constructor VarRefs/funcs — runtime
     ///     expressions stored via builtin-make-annotated, returned by annotation-of at runtime.
     ///
-    /// Walking the type structure would generate false "undefined variable" errors for
-    /// constructor names and type parameters. We surgically walk ONLY annotation values,
-    /// at the current suppress_depth (no blanket suppression), so genuine errors in
-    /// annotation bodies ARE reported while the type structure is left untouched.
     /// Walk the body of a TypeAlias declaration, resolving VarRefs inside constructor
     /// annotations. After expansion, TypeAlias declarations are replaced with TypeDecl
     /// nodes, so this function is only needed for pre-expand ASTs (e.g., type-stage
@@ -1282,7 +930,7 @@ impl SurfaceResolver {
                 annotation: Some(ann),
                 ..
             } if crate::eval::is_constructor_name(name) => {
-                self.walk_ctor_annotation_values(ann);
+                self.walk_surface_annotation(ann);
             }
             SurfaceExpression::VarRef {
                 name,
@@ -1305,7 +953,7 @@ impl SurfaceResolver {
                 {
                     if crate::eval::is_constructor_name(name) {
                         if let Some(ann) = annotation {
-                            self.walk_ctor_annotation_values(ann);
+                            self.walk_surface_annotation(ann);
                         }
                     }
                 }
@@ -1314,25 +962,7 @@ impl SurfaceResolver {
         }
     }
 
-    /// Walk PropertyDict annotation VALUES as runtime expressions, without adding
-    /// suppress_depth. This is the key difference from walk_surface_annotation: annotation
-    /// values on constructors ARE runtime closures (stored via builtin-make-annotated),
-    /// so undefined names in them must produce errors, not be silently swallowed.
-    fn walk_ctor_annotation_values(&mut self, ann: &Spanned<crate::ast::Annotation>) {
-        if let crate::ast::Annotation::PropertyDict(entries) = &ann.node {
-            for entry in entries {
-                // Keys are static strings — no resolution needed.
-                // Values are runtime expressions: walk them at current suppress_depth
-                // so the Fn handler can enter parameter scopes and resolve body VarRefs.
-                self.walk_surface_node(&entry.node.value);
-            }
-        }
-    }
-
     fn walk_surface_annotation(&mut self, ann: &Spanned<crate::ast::Annotation>) {
-        // Annotation nodes contain type names (String, Int, type vars like `a`),
-        // not runtime variable references. Suppress unresolved-error recording.
-        self.suppress_depth += 1;
         match &ann.node {
             crate::ast::Annotation::Simple(_) => {}
             crate::ast::Annotation::Quote => {}
@@ -1351,7 +981,6 @@ impl SurfaceResolver {
                 self.walk_surface_annotation(&inner_spanned);
             }
         }
-        self.suppress_depth -= 1;
     }
 
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
@@ -1369,15 +998,11 @@ impl SurfaceResolver {
                 for (pattern, methods) in arms {
                     // Instance patterns like `[let a@String b@String c]` are type-matching
                     // context, not runtime variable references.
-                    self.suppress_depth += 1;
                     self.walk_surface_node(pattern);
-                    self.suppress_depth -= 1;
                     for method in methods {
                         if let Some(key) = &method.node.key {
                             // Method implementation names are declarations, not references.
-                            self.suppress_depth += 1;
                             self.walk_surface_node(key);
-                            self.suppress_depth -= 1;
                         }
                         self.walk_surface_node(&method.node.value);
                     }
@@ -1492,73 +1117,6 @@ impl SurfaceResolver {
 /// - `diagnostics`: unified bag of resolve diagnostics (errors only).
 ///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
 /// - `new_frames`: scope frames ADDED by this document (not including `initial_frames`).
-/// Recursively set `resolved_captures = []` on every Fn node inside a Quote body.
-///
-/// The resolver intentionally skips Quote bodies (variables inside quotes are AST data,
-/// not runtime bindings). However, the lowerer requires every Fn node to have
-/// `resolved_captures` set. Quoted Fn nodes are AST values, not runtime closures, so
-/// their captures are always empty.
-fn set_empty_captures_in_quote(expr: &crate::ast::SurfaceExpression) {
-    use crate::ast::SurfaceExpression;
-    match expr {
-        SurfaceExpression::Fn {
-            resolved_captures,
-            body,
-            ..
-        } => {
-            // Set empty captures — quoted fns are AST values with no runtime closure.
-            // CapturesCell::set uses get_or_init internally: first writer wins, so re-visits
-            // of shared AST nodes during resolution do not overwrite a previously set value.
-            resolved_captures.set(std::sync::Arc::new(vec![]));
-            // Recurse into body in case it contains nested fns.
-            set_empty_captures_in_quote(&body.expr);
-        }
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            set_empty_captures_in_quote(&func.expr);
-            for a in args {
-                set_empty_captures_in_quote(&a.expr);
-            }
-            for na in named_args {
-                set_empty_captures_in_quote(&na.node.value.expr);
-            }
-        }
-        SurfaceExpression::Dict(entries) => {
-            for e in entries {
-                if let Some(k) = &e.node.key {
-                    set_empty_captures_in_quote(&k.expr);
-                }
-                set_empty_captures_in_quote(&e.node.value.expr);
-            }
-        }
-        SurfaceExpression::Sequential(exprs) => {
-            for e in exprs {
-                set_empty_captures_in_quote(&e.expr);
-            }
-        }
-        SurfaceExpression::Pipe { lhs, rhs, .. } => {
-            set_empty_captures_in_quote(&lhs.expr);
-            set_empty_captures_in_quote(&rhs.expr);
-        }
-        SurfaceExpression::Quote(inner) => {
-            // Nested quote — still recurse.
-            set_empty_captures_in_quote(&inner.expr);
-        }
-        SurfaceExpression::Unquote(inner) | SurfaceExpression::UnquoteSplice(inner) => {
-            set_empty_captures_in_quote(&inner.expr);
-        }
-        SurfaceExpression::TypeAssert { expr, .. } => {
-            set_empty_captures_in_quote(&expr.expr);
-        }
-        // Leaf nodes: VarRef, Str, Int, Float, Placeholder, Field, etc. — nothing to do.
-        _ => {}
-    }
-}
-
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
     initial_frames: &[indexmap::IndexMap<String, u32>],
@@ -2470,12 +2028,13 @@ mod tests {
         );
     }
 
-    /// A VarRef inside a fn body that refers to an outer dict key (closure capture)
-    /// resolves to ClosureCapture(0) — the first free variable captured by this fn.
+    /// A VarRef inside a fn body that refers to an outer dict key resolves to
+    /// Dispatch — the resolver does not do closure conversion.
+    /// The evaluator handles cross-fn-boundary access mechanics.
     #[test]
     fn fn_body_captures_outer_dict_key() {
         // outer: 42  inner: [fn [] $outer]
-        // $outer is a free variable in the fn body — first capture → ClosureCapture(0)
+        // $outer is a free variable in the fn body — resolves to Dispatch(depth, slot)
         let (program, table) = parse_and_resolve("[outer: 42  inner: [fn [let] $outer]]");
         let refs = find_varref_nodes(&program, "outer");
         assert!(
@@ -2486,10 +2045,10 @@ mod tests {
         let addr = table
             .get(id)
             .expect("$outer should be resolved (captured from dict scope)");
-        assert_eq!(
-            addr,
-            &VarAddr::ClosureCapture(0),
-            "$outer is the first capture in the fn, should be ClosureCapture(0)"
+        assert!(
+            matches!(addr, VarAddr::Dispatch(_, _)),
+            "$outer should resolve to Dispatch (no closure conversion), got {:?}",
+            addr
         );
     }
 
@@ -2568,23 +2127,16 @@ mod tests {
             "expected at least 2 VarRefs for $x, got {}",
             x_refs.len()
         );
-        // S-1043: The scrutinee $x (outside arm bodies) resolves to Dispatch(0, 0).
-        // The $x inside arm bodies resolves to ClosureCapture because the resolver
-        // now pushes fn boundaries for ALL match arms. Both are correct.
+        // The resolver does not do closure conversion.
+        // All $x references resolve to Dispatch — either Dispatch(0, 0) for the scrutinee
+        // or Dispatch(depth, 0) for references inside arm bodies.
         for (id, _) in &x_refs {
             let addr = table.get(id).expect("$x should be resolved (dict binding)");
-            match addr {
-                VarAddr::Dispatch(0, 0) => {
-                    // Correct: direct reference (scrutinee or pre-arm-boundary position)
-                }
-                VarAddr::ClosureCapture(_) => {
-                    // Correct: captured through arm fn boundary (arm body position)
-                }
-                other => panic!(
-                    "$x should be Dispatch(0, 0) or ClosureCapture, got {:?}",
-                    other
-                ),
-            }
+            assert!(
+                matches!(addr, VarAddr::Dispatch(_, 0)),
+                "$x should be Dispatch(_, 0), got {:?}",
+                addr
+            );
         }
     }
 
@@ -2898,204 +2450,47 @@ mod tests {
         }
     }
 
-    // --- Helpers for Fn capture inspection ---
+    // --- B-577: nested fn referencing outer fn's parameter ---
 
-    /// Recursively collect all Fn nodes from the program, returning each Fn's
-    /// resolved_captures list (if set by the resolver).
-    fn collect_fn_captures(
-        program: &crate::ast::SurfaceProgram,
-    ) -> Vec<(Vec<String>, Arc<Vec<(String, VarAddr)>>)> {
-        let mut results = Vec::new();
-        for doc_spanned in &program.documents {
-            for item in &doc_spanned.node.items {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    collect_fn_nodes(node, &mut results);
-                }
-            }
-        }
-        results
-    }
-
-    fn collect_fn_nodes(
-        arc: &Arc<SurfaceNode>,
-        out: &mut Vec<(Vec<String>, Arc<Vec<(String, VarAddr)>>)>,
-    ) {
-        match &arc.expr {
-            SurfaceExpression::Fn {
-                params,
-                body,
-                resolved_captures,
-                ..
-            } => {
-                let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
-                if let Some(captures) = resolved_captures.get() {
-                    out.push((param_names, Arc::clone(captures)));
-                }
-                collect_fn_nodes(body, out);
-            }
-            SurfaceExpression::Dict(entries) => {
-                for entry in entries {
-                    if let Some(key) = &entry.node.key {
-                        collect_fn_nodes(key, out);
-                    }
-                    collect_fn_nodes(&entry.node.value, out);
-                }
-            }
-            SurfaceExpression::Call {
-                func,
-                args,
-                named_args,
-                ..
-            } => {
-                collect_fn_nodes(func, out);
-                for arg in args {
-                    collect_fn_nodes(arg, out);
-                }
-                for na in named_args {
-                    collect_fn_nodes(&na.node.value, out);
-                }
-            }
-            SurfaceExpression::Sequential(exprs) => {
-                for e in exprs {
-                    collect_fn_nodes(e, out);
-                }
-            }
-            SurfaceExpression::Match { scrutinee, arms } => {
-                collect_fn_nodes(scrutinee, out);
-                for arm in arms {
-                    collect_fn_nodes(&arm.pattern, out);
-                    collect_fn_nodes(&arm.let_bindings, out);
-                    if let Some(guard) = &arm.guard {
-                        collect_fn_nodes(guard, out);
-                    }
-                    for body_expr in &arm.body {
-                        collect_fn_nodes(body_expr, out);
-                    }
-                }
-            }
-            SurfaceExpression::Pipe { lhs, rhs, .. } => {
-                collect_fn_nodes(lhs, out);
-                collect_fn_nodes(rhs, out);
-            }
-            SurfaceExpression::TypeAssert { expr, .. } => collect_fn_nodes(expr, out),
-            SurfaceExpression::Field {
-                expr: Some(expr), ..
-            } => collect_fn_nodes(expr, out),
-            _ => {}
-        }
-    }
-
-    // --- B-577: nested fn capturing outer fn's parameter ---
-
-    /// When fn_B is nested inside fn_A and captures fn_A's parameter,
-    /// fn_A must NOT have that parameter in its own capture list (it's already
-    /// available as a parameter). fn_B must capture it with original_addr = Parameter(i).
+    /// When fn_B is nested inside fn_A and references fn_A's parameter,
+    /// the reference resolves to Parameter (the outer fn's param index).
+    /// With closure conversion removed, the resolver preserves the original
+    /// address; the evaluator handles cross-fn-boundary access via definition_scope.
     #[test]
-    fn nested_fn_does_not_capture_outer_fn_own_param() {
-        // [outer: [fn [let x] [fn [let y] $x]]]
-        // outer fn (params: [x]) should have NO captures related to x.
-        // inner fn (params: [y]) should capture x with original_addr = Parameter(0).
-        let (program, table) = parse_and_resolve("[outer: [fn [let x] [fn [let y] $x]]]");
+    fn nested_fn_references_outer_fn_param() {
+        let (_program, table) = parse_and_resolve("[outer: [fn [let x] [fn [let y] $x]]]");
 
-        // $x inside inner fn should be ClosureCapture(0).
-        let x_refs = find_varref_nodes(&program, "x");
+        // $x inside inner fn should resolve — the resolver assigns an address.
+        let x_refs = find_varref_nodes(&_program, "x");
         assert!(
             !x_refs.is_empty(),
             "expected VarRef for $x in inner fn body"
         );
         let (id, _) = &x_refs[0];
         let addr = table.get(id).expect("$x should be resolved");
-        assert_eq!(
-            addr,
-            &VarAddr::ClosureCapture(0),
-            "$x in inner fn body should be ClosureCapture(0)"
-        );
-
-        // Now check the capture lists. Collect all Fn nodes.
-        let fns = collect_fn_captures(&program);
-        assert_eq!(fns.len(), 2, "expected 2 Fn nodes (outer and inner)");
-
-        // outer fn (params: [x]): should have NO captures (x is its own parameter).
-        let (ref outer_params, ref outer_captures) = fns[0];
+        // x is the outer fn's parameter — resolver produces Parameter(0) or Dispatch.
         assert!(
-            outer_params.contains(&"x".to_string()),
-            "outer fn should have param x"
-        );
-        assert!(
-            !outer_captures.iter().any(|(n, _)| n == "x"),
-            "outer fn must NOT capture its own parameter x — captures: {:?}",
-            outer_captures
-        );
-
-        // inner fn (params: [y]): should capture x with original_addr = Parameter(0).
-        let (ref inner_params, ref inner_captures) = fns[1];
-        assert!(
-            inner_params.contains(&"y".to_string()),
-            "inner fn should have param y"
-        );
-        let x_capture = inner_captures
-            .iter()
-            .find(|(n, _)| n == "x")
-            .expect("inner fn must capture x");
-        assert_eq!(
-            x_capture.1,
-            VarAddr::Parameter(0),
-            "inner fn's capture of x should have original_addr = Parameter(0) \
-             (from outer fn's parameter, available at inner fn creation time)"
+            matches!(addr, VarAddr::Parameter(_) | VarAddr::Dispatch(_, _)),
+            "$x in inner fn body should be Parameter or Dispatch, got {:?}",
+            addr
         );
     }
 
-    /// Triple nesting: fn_A → fn_B → fn_C, where fn_C captures fn_A's parameter.
-    /// fn_A must not capture its own param. fn_B must capture via Parameter(i).
-    /// fn_C must capture via ClosureCapture from fn_B.
+    /// Triple nesting: fn_A -> fn_B -> fn_C, where fn_C references fn_A's parameter.
+    /// With closure conversion removed, the resolver preserves the original address.
     #[test]
-    fn triple_nested_fn_captures_outermost_param() {
-        // [f: [fn [let x] [fn [let y] [fn [let z] $x]]]]
-        let (program, table) = parse_and_resolve("[f: [fn [let x] [fn [let y] [fn [let z] $x]]]]");
+    fn triple_nested_fn_references_outermost_param() {
+        let (_program, table) = parse_and_resolve("[f: [fn [let x] [fn [let y] [fn [let z] $x]]]]");
 
-        // $x in innermost fn should be ClosureCapture.
-        let x_refs = find_varref_nodes(&program, "x");
+        let x_refs = find_varref_nodes(&_program, "x");
         assert!(!x_refs.is_empty());
         let (id, _) = &x_refs[0];
         let addr = table.get(id).expect("$x should be resolved");
-        assert_eq!(
-            addr,
-            &VarAddr::ClosureCapture(0),
-            "$x in fn_C should be ClosureCapture(0)"
-        );
-
-        let fns = collect_fn_captures(&program);
-        assert_eq!(fns.len(), 3, "expected 3 Fn nodes");
-
-        // fn_A (params: [x]): no captures of x.
+        // x is the outermost fn's parameter — resolver produces Parameter(0) or Dispatch.
         assert!(
-            !fns[0].1.iter().any(|(n, _)| n == "x"),
-            "fn_A must not capture its own parameter x"
-        );
-
-        // fn_B (params: [y]): captures x with original_addr = Parameter(0).
-        let b_x_capture = fns[1]
-            .1
-            .iter()
-            .find(|(n, _)| n == "x")
-            .expect("fn_B must capture x");
-        assert_eq!(
-            b_x_capture.1,
-            VarAddr::Parameter(0),
-            "fn_B captures x from fn_A's Parameter(0)"
-        );
-
-        // fn_C (params: [z]): captures x with original_addr = ClosureCapture(pos_in_fn_B).
-        let c_x_capture = fns[2]
-            .1
-            .iter()
-            .find(|(n, _)| n == "x")
-            .expect("fn_C must capture x");
-        let b_x_pos = fns[1].1.iter().position(|(n, _)| n == "x").unwrap() as u32;
-        assert_eq!(
-            c_x_capture.1,
-            VarAddr::ClosureCapture(b_x_pos),
-            "fn_C captures x via ClosureCapture from fn_B"
+            matches!(addr, VarAddr::Parameter(_) | VarAddr::Dispatch(_, _)),
+            "$x in fn_C should be Parameter or Dispatch, got {:?}",
+            addr
         );
     }
 
@@ -3142,33 +2537,14 @@ mod tests {
         assert_eq!(span.start_col, 5);
     }
 
-    /// B-724: Case arm capture cascade bug.
+    /// B-724: Case arm cross-fn reference consistency (historical).
     ///
     /// When a match has both a [case [let bindings] ...] arm and a keyed arm (...:),
     /// and both arms contain nested functions that reference the same outer name,
-    /// the capture cascade must NOT let the keyed arm's fn inherit a ClosureCapture
-    /// from the case arm's fn — the case arm's fn boundary is popped before the
-    /// keyed arm is processed, so the ClosureCapture indices won't match at runtime.
-    ///
-    /// Simplified repro from loader.llt line 392-398:
-    /// ```tinct
-    /// [
-    ///   exports: value
-    ///   result: [match condition
-    ///     [case [let] pattern-0 [make-entry name $exports]]  # fn in case arm
-    ///     ...:                  []]                          # keyed arm (no fn here, but could have)
-    /// ]
-    /// ```
-    ///
-    /// The bug: when the case arm fn is popped, it adds ('exports', original_addr) to
-    /// the ENCLOSING fn's capture list (the implicit fn wrapping the whole dict).
-    /// When a sibling keyed arm's fn tries to reference 'exports', the outer_capture_idx
-    /// check (lines 322-333) finds 'exports' in the enclosing fn's capture list and
-    /// returns ClosureCapture(pos). But the original_addr for that entry was set during
-    /// the case arm's cascade — it references ClosureCapture indices in the case arm's
-    /// closure_env, which no longer exists at runtime.
+    /// both fns must resolve the reference consistently. With closure conversion
+    /// removed, all references resolve to Dispatch.
     #[test]
-    fn case_arm_capture_sibling_keyed_arm_fn() {
+    fn case_arm_sibling_keyed_arm_fn_dispatch_consistent() {
         let src = r#"
 [
   exports: 42
@@ -3187,117 +2563,25 @@ mod tests {
             "expected 2 VarRefs for exports (one in case arm fn, one in keyed arm fn)"
         );
 
-        // Both should resolve to the same address — Dispatch to the outer dict entry.
-        // The bug would manifest as ClosureCapture with mismatched indices.
+        // Both should resolve to Dispatch (no closure conversion).
         for (id, _) in &exports_refs {
             let addr = table.get(id).expect("exports should be resolved");
-            match addr {
-                VarAddr::Dispatch(_, _) => {
-                    // Correct: direct reference to outer dict entry
-                }
-                VarAddr::ClosureCapture(_) => {
-                    // Also acceptable IF the original_addr is correct.
-                    // The bug is when original_addr is ClosureCapture from a
-                    // now-defunct case arm boundary. We can't easily test that
-                    // here without inspecting the fn's capture list.
-                }
-                _ => panic!(
-                    "exports should be Dispatch or ClosureCapture, got {:?}",
-                    addr
-                ),
-            }
-        }
-
-        // Stronger check: inspect the resolved_captures of each fn to ensure
-        // they're consistent. The two fns have different capture paths because
-        // the case arm fn is inside a case-arm fn boundary (multi-level cascade),
-        // while the keyed arm fn is inside only its own fn boundary.
-        let fn_captures = collect_fn_captures(&program);
-        assert_eq!(
-            fn_captures.len(),
-            2,
-            "expected 2 fns (one in case arm, one in keyed arm)"
-        );
-
-        // Extract original_addr for 'exports' from each fn.
-        let case_arm_fn_captures = &fn_captures[0].1;
-        let keyed_arm_fn_captures = &fn_captures[1].1;
-
-        let case_exports_addr = case_arm_fn_captures
-            .iter()
-            .find(|(n, _)| n == "exports")
-            .map(|(_, addr)| addr);
-        let keyed_exports_addr = keyed_arm_fn_captures
-            .iter()
-            .find(|(n, _)| n == "exports")
-            .map(|(_, addr)| addr);
-
-        assert!(
-            case_exports_addr.is_some(),
-            "case arm fn should capture exports"
-        );
-        assert!(
-            keyed_exports_addr.is_some(),
-            "keyed arm fn should capture exports"
-        );
-
-        // The case arm fn is inside TWO fn boundaries (case arm boundary + its own fn),
-        // so its original_addr is ClosureCapture(pos) pointing into the case arm's
-        // closure_env — this is correct multi-level cascade behavior.
-        match case_exports_addr.unwrap() {
-            VarAddr::ClosureCapture(_) | VarAddr::Dispatch(_, _) => {
-                // Both are valid: ClosureCapture if multi-level cascade through the
-                // case arm boundary, Dispatch if the resolver bypassed it.
-            }
-            other => panic!(
-                "case arm fn: expected ClosureCapture or Dispatch for exports, got {:?}",
-                other
-            ),
-        }
-
-        // S-1043: The keyed arm now has a fn boundary (same as case arms),
-        // so its fn captures `exports` via ClosureCapture through the arm
-        // boundary. Both case arm fn and keyed arm fn should use ClosureCapture
-        // — this is the correct unified behavior.
-        match keyed_exports_addr.unwrap() {
-            VarAddr::ClosureCapture(_) => {
-                // Correct: captured through the arm's fn boundary.
-            }
-            VarAddr::Dispatch(_, _) => {
-                // Also acceptable — direct reference if resolver optimized away
-                // the capture chain (no intermediate fn boundary).
-            }
-            other => panic!(
-                "keyed arm fn: expected ClosureCapture or Dispatch for exports, got {:?}",
-                other
-            ),
+            assert!(
+                matches!(addr, VarAddr::Dispatch(_, _)),
+                "exports should be Dispatch, got {:?}",
+                addr
+            );
         }
     }
 
-    /// B-732: Deeply nested sibling fn capture miss when outer fn's original_addr is Dispatch.
+    /// B-732 (historical): Deeply nested sibling fn reference — verifies that both
+    /// sibling fns inside an outer fn resolve root-name consistently.
     ///
-    /// When a name from root scope is captured by an enclosing fn (original_addr = Dispatch),
-    /// and a sibling fn inside that enclosing fn also references the same name, the B-724 fix
-    /// would return Dispatch as the sibling fn's original_addr. This is wrong: inside a fn
-    /// call frame, frame.group only contains sequential body entries — Dispatch(depth, slot)
-    /// referring to root scope entries does not exist there.
-    ///
-    /// Correct fix (B-732): when the enclosing fn's original_addr is Dispatch, use
-    /// ClosureCapture(outer_idx) instead. The enclosing fn captured the name at outer_idx in
-    /// its closure_env, which IS available in the current call frame.
-    ///
-    /// Scenario:
-    /// ```tinct
-    /// [
-    ///   root-name: 42
-    ///   outer: [fn []
-    ///     [match 0
-    ///       [case [let] 0 [fn [] $root-name]]   # case arm fn: first reference
-    ///       ...:          [fn [] $root-name]]]   # sibling fn: was broken
-    /// ]
-    /// ```
+    /// With closure conversion removed, the resolver always produces Dispatch
+    /// addresses. The evaluator handles cross-fn-boundary access mechanics
+    /// via the definition-site group carried by functions.
     #[test]
-    fn sibling_fn_dispatch_original_addr_uses_closure_capture() {
+    fn sibling_fn_dispatch_addr_consistent() {
         let src = r#"
 [
   root-name: 42
@@ -3317,78 +2601,14 @@ mod tests {
             "expected 2 VarRefs for root-name (one in case arm fn, one in sibling fn)"
         );
 
-        // Both should resolve (to ClosureCapture since both fns are inside the outer fn).
+        // Both should resolve to Dispatch (no closure conversion).
         for (id, _) in &root_refs {
             let addr = table.get(id).expect("root-name should be resolved");
-            match addr {
-                VarAddr::ClosureCapture(_) => {
-                    // Correct: inside an enclosing fn, root-name is captured via closure.
-                }
-                VarAddr::Dispatch(_, _) => {
-                    // Also technically valid at the VarRef level if the resolver
-                    // inlines a Dispatch from some scope — the critical invariant is in
-                    // the fn's capture list (checked below).
-                }
-                other => panic!(
-                    "root-name should be ClosureCapture or Dispatch, got {:?}",
-                    other
-                ),
-            }
-        }
-
-        // Critical check: inspect the fn capture lists. Inner fns' original_addr for
-        // root-name must NOT be Dispatch — it must be ClosureCapture pointing into the
-        // outer fn's closure_env. Using Dispatch would cause a capture miss at runtime
-        // because fn call frames' group only contains sequential body entries, not root
-        // scope slots.
-        let fn_captures = collect_fn_captures(&program);
-        // Find fns (inside the outer fn) that capture root-name.
-        let capturing_fns: Vec<_> = fn_captures
-            .iter()
-            .filter(|(_, caps)| caps.iter().any(|(n, _)| n == "root-name"))
-            .collect();
-
-        assert!(
-            !capturing_fns.is_empty(),
-            "at least one fn should capture root-name"
-        );
-
-        // Inner fns (depth ≥ 2) must use ClosureCapture for root-name.
-        // The outermost fn (depth 1) correctly uses Dispatch because it's defined at document
-        // level where frame.group has all root-scope entries. We identify inner fns by checking
-        // whether ANY of their captures use ClosureCapture as original_addr (indicating they
-        // are nested inside another fn that already captured from the outer scope).
-        for (_, caps) in &capturing_fns {
-            let is_inner_fn = caps
-                .iter()
-                .any(|(_, addr)| matches!(addr, VarAddr::ClosureCapture(_)));
-            if !is_inner_fn {
-                // This is the outermost fn capturing from root scope — Dispatch is correct here.
-                continue;
-            }
-            let (_, original_addr) = caps
-                .iter()
-                .find(|(n, _)| n == "root-name")
-                .expect("root-name must be in capture list");
-            match original_addr {
-                VarAddr::Dispatch(_, _) => {
-                    // B-732 regression: a fn inside the outer fn should NOT have Dispatch
-                    // as its original_addr for a name from root scope. At fn definition time
-                    // inside a fn call, frame.group won't contain root scope slots.
-                    panic!(
-                        "B-732 regression: inner fn's original_addr for root-name is Dispatch \
-                         — this will cause a capture miss at runtime (frame.group won't have \
-                         the root scope slot). Should be ClosureCapture(outer_idx)."
-                    );
-                }
-                VarAddr::ClosureCapture(_) | VarAddr::Parameter(_) => {
-                    // Correct: references the outer fn's closure_env entry.
-                }
-                other => panic!(
-                    "unexpected original_addr for root-name in inner fn: {:?}",
-                    other
-                ),
-            }
+            assert!(
+                matches!(addr, VarAddr::Dispatch(_, _)),
+                "root-name should be Dispatch, got {:?}",
+                addr
+            );
         }
     }
 }

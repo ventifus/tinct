@@ -43,7 +43,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::builtins::{ok_val, reject_named};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::eval::materialize;
 use crate::rust_span;
 use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT};
@@ -55,7 +55,7 @@ fn value_to_hashable_key(
     builtin_name: &str,
     span: crate::ast::Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<HashableValue> {
+) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
     match val {
         Value::Int { n, .. } => Ok(HashableValue::Int(*n)),
         Value::Float { n: f, .. } => Ok(HashableValue::Float(f.to_bits())),
@@ -79,7 +79,7 @@ fn value_to_hashable_key(
                         Some(Ok(v)) => v,
                         Some(Err(e)) => return Err(Box::new((**e).clone())),
                         None => {
-                            return Err(EvalError::internal(
+                            return Err(Diagnostic::internal(
                                 format!("{builtin_name}: variant payload not materialized"),
                                 span.clone(),
                             )
@@ -100,7 +100,7 @@ fn value_to_hashable_key(
                 payload: hv_payload,
             })
         }
-        other => Err(EvalError::type_mismatch_ctx(
+        other => Err(Diagnostic::type_mismatch_ctx(
             builtin_name.to_string(),
             "Int, Float, String, or Variant",
             ctx.type_display_name(other.type_decl_id_of()),
@@ -165,7 +165,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
 /// Inherently materializing: must access IndexMap to enumerate keys.
 pub(crate) fn builtin_keys(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -176,7 +176,7 @@ pub(crate) fn builtin_keys(
     Box::pin(async move {
         reject_named("keys", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
@@ -197,7 +197,7 @@ pub(crate) fn builtin_keys(
             let thunk = Arc::new(Thunk::value(key_value, origin.clone()));
             result.insert(
                 HashableValue::Int(i64::try_from(i).map_err(|_| {
-                    EvalError::internal("collection index overflow".to_string(), call_span.clone())
+                    Diagnostic::internal("collection index overflow".to_string(), call_span.clone())
                 })?),
                 thunk,
             );
@@ -220,7 +220,7 @@ pub(crate) fn builtin_keys(
 /// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters or bytes.
 pub(crate) fn builtin_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -231,7 +231,7 @@ pub(crate) fn builtin_length(
     Box::pin(async move {
         reject_named("length", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
@@ -243,7 +243,7 @@ pub(crate) fn builtin_length(
                 let s = &source[start..end];
                 let len = s.chars().count();
                 let len_i64 = i64::try_from(len).map_err(|_| {
-                    EvalError::resource_limit_exceeded(
+                    Diagnostic::resource_limit_exceeded(
                         "length: string length exceeds i64::MAX".to_string(),
                         call_span.clone(),
                     )
@@ -261,7 +261,7 @@ pub(crate) fn builtin_length(
             Value::Bytes { start, end, .. } => {
                 let len = end - start;
                 let len_i64 = i64::try_from(len).map_err(|_| {
-                    EvalError::resource_limit_exceeded(
+                    Diagnostic::resource_limit_exceeded(
                         "length: byte length exceeds i64::MAX".to_string(),
                         call_span.clone(),
                     )
@@ -309,10 +309,10 @@ pub(crate) fn builtin_length(
 /// - Variant (with payload): auto-unpacks payload dict and looks up key; falls back to
 ///   TyConDef constructor constants (T-1358) if not found in payload
 /// Dict-only key lookup. Type error on non-Dict values.
-/// The lowerer desugars dot-access to `[builtin-dict-get key target]`.
+/// Used by `[get key dict]` via the Indexable typeclass in prelude.
 pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -323,7 +323,7 @@ pub(crate) fn builtin_get(
     Box::pin(async move {
         reject_named("builtin-dict-get", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         let thunk0 = args[0].clone();
@@ -343,7 +343,7 @@ pub(crate) fn builtin_get(
                         let available_keys: Vec<String> =
                             map.keys().map(|k| k.to_string()).collect();
                         let mut err =
-                            EvalError::key_not_found(&key_str, available_keys, target_span);
+                            Diagnostic::key_not_found(&key_str, available_keys, target_span);
                         err.labels.push(crate::error::SpanLabel {
                             span: call_span,
                             message: "accessed here".to_string(),
@@ -353,7 +353,7 @@ pub(crate) fn builtin_get(
                     }
                 }
             }
-            other => Err(EvalError::type_mismatch(
+            other => Err(Diagnostic::type_mismatch(
                 "Dict",
                 ctx.type_display_name(other.type_decl_id_of()),
                 target_span,
@@ -371,7 +371,7 @@ pub(crate) fn builtin_get(
 /// Prelude composes this with `builtin-dict-get` to implement `get?` without Rust knowing Absent.
 pub(crate) fn builtin_has_key(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -382,7 +382,7 @@ pub(crate) fn builtin_has_key(
     Box::pin(async move {
         reject_named("builtin-has-key?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         // Materialize the key
@@ -422,7 +422,7 @@ pub(crate) fn builtin_has_key(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -433,7 +433,7 @@ pub(crate) fn builtin_dict_has_nth(
     Box::pin(async move {
         reject_named("builtin-dict-has-nth?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -448,7 +448,7 @@ pub(crate) fn builtin_dict_has_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -457,7 +457,7 @@ pub(crate) fn builtin_dict_has_nth(
             }
         };
         if idx < 0 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "builtin-dict-has-nth?: dict index must be non-negative".to_string(),
                 call_span,
             )
@@ -499,7 +499,7 @@ pub(crate) fn builtin_dict_has_nth(
 /// `Dict a → Int → a`
 pub(crate) fn builtin_dict_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -510,7 +510,7 @@ pub(crate) fn builtin_dict_nth(
     Box::pin(async move {
         reject_named("builtin-dict-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -525,7 +525,7 @@ pub(crate) fn builtin_dict_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -539,7 +539,7 @@ pub(crate) fn builtin_dict_nth(
         };
         match entry {
             Some((_, thunk)) => Ok(Arc::clone(thunk)),
-            None => Err(EvalError::user_error(
+            None => Err(Diagnostic::user_error(
                 format!(
                     "builtin-dict-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
@@ -558,7 +558,7 @@ pub(crate) fn builtin_dict_nth(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -573,7 +573,7 @@ pub(crate) fn builtin_dict_has_key_nth(
             call_span.clone(),
         )?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -588,7 +588,7 @@ pub(crate) fn builtin_dict_has_key_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -597,7 +597,7 @@ pub(crate) fn builtin_dict_has_key_nth(
             }
         };
         if idx < 0 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "builtin-dict-has-key-nth?: dict index must be non-negative".to_string(),
                 call_span,
             )
@@ -638,7 +638,7 @@ pub(crate) fn builtin_dict_has_key_nth(
 /// `Dict a → Int → Key`
 pub(crate) fn builtin_dict_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -649,7 +649,7 @@ pub(crate) fn builtin_dict_key_nth(
     Box::pin(async move {
         reject_named("builtin-dict-key-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -664,7 +664,7 @@ pub(crate) fn builtin_dict_key_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -681,7 +681,7 @@ pub(crate) fn builtin_dict_key_nth(
                 let key_val = hashable_value_to_value(key);
                 ok_val(key_val, call_span)
             }
-            None => Err(EvalError::user_error(
+            None => Err(Diagnostic::user_error(
                 format!(
                     "builtin-dict-key-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
@@ -700,7 +700,7 @@ pub(crate) fn builtin_dict_key_nth(
 /// `Dict a → Int → Int`
 pub(crate) fn builtin_dict_has_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -715,7 +715,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
             call_span.clone(),
         )?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -730,7 +730,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -739,7 +739,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
             }
         };
         if idx < 0 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "builtin-dict-has-kv-nth?: dict index must be non-negative".to_string(),
                 call_span,
             )
@@ -780,7 +780,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
 /// `Dict a → Int → [key: Key  value: a]`
 pub(crate) fn builtin_dict_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -791,7 +791,7 @@ pub(crate) fn builtin_dict_kv_nth(
     Box::pin(async move {
         reject_named("builtin-dict-kv-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let dict_val = thunk0.require_value()?.clone();
@@ -806,7 +806,7 @@ pub(crate) fn builtin_dict_kv_nth(
         let idx = match args[1].require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -838,7 +838,7 @@ pub(crate) fn builtin_dict_kv_nth(
                     call_span,
                 )
             }
-            None => Err(EvalError::user_error(
+            None => Err(Diagnostic::user_error(
                 format!(
                     "builtin-dict-kv-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
@@ -862,7 +862,7 @@ pub(crate) fn builtin_dict_kv_nth(
 /// Usage pattern: `[builder-set k [cons x [builder-get-or k [] b]] b]`
 pub(crate) fn builtin_builder_get_or(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -873,7 +873,7 @@ pub(crate) fn builtin_builder_get_or(
     Box::pin(async move {
         reject_named("builder-get-or", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
@@ -892,7 +892,7 @@ pub(crate) fn builtin_builder_get_or(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-get-or".to_string(),
                     "Int, Float, or String (for key)",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -911,7 +911,7 @@ pub(crate) fn builtin_builder_get_or(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-get-or".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -924,7 +924,7 @@ pub(crate) fn builtin_builder_get_or(
         // Atomic get-or-insert: single mutex acquisition
         let result_thunk = builder
             .get_or(key, default_thunk)
-            .map_err(|_| EvalError::builder_already_finished("builder-get-or", call_span))?;
+            .map_err(|_| Diagnostic::builder_already_finished("builder-get-or", call_span))?;
 
         Ok(result_thunk)
     })
@@ -945,7 +945,7 @@ pub(crate) fn builtin_builder_get_or(
 /// `from-entries`, `map-entries`, `walk`, `transpose`, `collect-kv`, etc.
 pub(crate) fn builtin_build_dict(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -956,7 +956,7 @@ pub(crate) fn builtin_build_dict(
     Box::pin(async move {
         reject_named("build-dict", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
 
         // args[0] is pre-materialized by force_count=1.
@@ -984,12 +984,12 @@ pub(crate) fn builtin_build_dict(
                     let key_thunk = entry_map
                         .get(&HashableValue::Str("key".into()))
                         .ok_or_else(|| {
-                            EvalError::key_not_found("key", vec![], call_span.clone())
+                            Diagnostic::key_not_found("key", vec![], call_span.clone())
                         })?;
                     let value_thunk = entry_map
                         .get(&HashableValue::Str("value".into()))
                         .ok_or_else(|| {
-                            EvalError::key_not_found("value", vec![], call_span.clone())
+                            Diagnostic::key_not_found("value", vec![], call_span.clone())
                         })?;
                     let key_val = materialize(key_thunk, None, &ctx).await?;
                     let key = match key_val {
@@ -1002,7 +1002,7 @@ pub(crate) fn builtin_build_dict(
                             ..
                         } => HashableValue::Str((&source[start..end]).into()),
                         other => {
-                            return Err(EvalError::type_mismatch_ctx(
+                            return Err(Diagnostic::type_mismatch_ctx(
                                 "build-dict".to_string(),
                                 "Int, Float, or String (for key)",
                                 ctx.type_display_name(other.type_decl_id_of()),
@@ -1025,7 +1025,7 @@ pub(crate) fn builtin_build_dict(
                 )
             }
 
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "build-dict".to_string(),
                 "Dict of [key: K  value: V] pairs",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -1040,7 +1040,7 @@ pub(crate) fn builtin_build_dict(
 /// Takes 0 args. Returns a new Builder.
 pub(crate) fn builtin_make_builder(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1050,7 +1050,7 @@ pub(crate) fn builtin_make_builder(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::arity_mismatch(0, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(0, args.len(), call_span.clone()).into());
         }
         // Optional named arg: capacity: <Int> — pre-allocates the inner IndexMap.
         // Any other named arg is rejected.
@@ -1070,7 +1070,7 @@ pub(crate) fn builtin_make_builder(
                 match cap_val {
                     Value::Int { n, .. } if n >= 0 => n as usize,
                     Value::Int { n, .. } => {
-                        return Err(EvalError::type_mismatch_ctx(
+                        return Err(Diagnostic::type_mismatch_ctx(
                             "make-builder".to_string(),
                             "non-negative Int",
                             &format!("Int({})", n),
@@ -1079,7 +1079,7 @@ pub(crate) fn builtin_make_builder(
                         .into())
                     }
                     other => {
-                        return Err(EvalError::type_mismatch_ctx(
+                        return Err(Diagnostic::type_mismatch_ctx(
                             "make-builder".to_string(),
                             "Int",
                             ctx.type_display_name(other.type_decl_id_of()),
@@ -1108,7 +1108,7 @@ pub(crate) fn builtin_make_builder(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1119,7 +1119,7 @@ pub(crate) fn builtin_builder_set(
     Box::pin(async move {
         reject_named("builder-set", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
@@ -1138,7 +1138,7 @@ pub(crate) fn builtin_builder_set(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-set".to_string(),
                     "Int, Float, or String (for key)",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1157,7 +1157,7 @@ pub(crate) fn builtin_builder_set(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-set".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1170,7 +1170,7 @@ pub(crate) fn builtin_builder_set(
         // Set the key-value pair
         builder
             .set(key, value_thunk)
-            .map_err(|_| EvalError::builder_already_finished("builder-set", call_span))?;
+            .map_err(|_| Diagnostic::builder_already_finished("builder-set", call_span))?;
 
         // Return the builder for chaining
         Ok(args[2].clone())
@@ -1182,7 +1182,7 @@ pub(crate) fn builtin_builder_set(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_delete(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1193,7 +1193,7 @@ pub(crate) fn builtin_builder_delete(
     Box::pin(async move {
         reject_named("builder-delete", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
@@ -1212,7 +1212,7 @@ pub(crate) fn builtin_builder_delete(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-delete".to_string(),
                     "Int, Float, or String (for key)",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1228,7 +1228,7 @@ pub(crate) fn builtin_builder_delete(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-delete".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1241,7 +1241,7 @@ pub(crate) fn builtin_builder_delete(
         // Delete the key
         builder
             .delete(&key)
-            .map_err(|_| EvalError::builder_already_finished("builder-delete", call_span))?;
+            .map_err(|_| Diagnostic::builder_already_finished("builder-delete", call_span))?;
 
         // Return the builder for chaining
         Ok(args[1].clone())
@@ -1253,7 +1253,7 @@ pub(crate) fn builtin_builder_delete(
 /// Errors if the builder is already frozen.
 pub(crate) fn builtin_builder_finish(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1264,7 +1264,7 @@ pub(crate) fn builtin_builder_finish(
     Box::pin(async move {
         reject_named("builder-finish", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
 
         // args[0] (builder) is pre-forced by force_count
@@ -1273,7 +1273,7 @@ pub(crate) fn builtin_builder_finish(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-finish".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1285,7 +1285,7 @@ pub(crate) fn builtin_builder_finish(
 
         // Take the inner dict, freezing the builder
         let dict = builder.finish().map_err(|_| {
-            EvalError::builder_already_finished("builder-finish", call_span.clone())
+            Diagnostic::builder_already_finished("builder-finish", call_span.clone())
         })?;
 
         ok_val(
@@ -1306,7 +1306,7 @@ pub(crate) fn builtin_builder_finish(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_snapshot(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1317,7 +1317,7 @@ pub(crate) fn builtin_builder_snapshot(
     Box::pin(async move {
         reject_named("builder-snapshot", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
 
         // args[0] (builder) is pre-forced by force_count
@@ -1326,7 +1326,7 @@ pub(crate) fn builtin_builder_snapshot(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-snapshot".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1338,7 +1338,7 @@ pub(crate) fn builtin_builder_snapshot(
 
         // Clone the inner dict
         let dict = builder.snapshot().map_err(|_| {
-            EvalError::builder_already_finished("builder-snapshot", call_span.clone())
+            Diagnostic::builder_already_finished("builder-snapshot", call_span.clone())
         })?;
 
         ok_val(
@@ -1358,7 +1358,7 @@ pub(crate) fn builtin_builder_snapshot(
 /// Takes 2 args: key (Int or String), builder. Returns Bool.
 pub(crate) fn builtin_builder_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1369,7 +1369,7 @@ pub(crate) fn builtin_builder_has(
     Box::pin(async move {
         reject_named("builder-has?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
@@ -1388,7 +1388,7 @@ pub(crate) fn builtin_builder_has(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-has?".to_string(),
                     "Int, Float, or String (for key)",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1404,7 +1404,7 @@ pub(crate) fn builtin_builder_has(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-has?".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1417,7 +1417,7 @@ pub(crate) fn builtin_builder_has(
         // Frozen builder: has? is an error, not a silent false
         if builder.is_frozen() {
             return Err(
-                EvalError::builder_already_finished("builder-has?", call_span.clone()).into(),
+                Diagnostic::builder_already_finished("builder-has?", call_span.clone()).into(),
             );
         }
 
@@ -1439,7 +1439,7 @@ pub(crate) fn builtin_builder_has(
 /// Takes 2 args: key (Int or String), builder. Returns the value or errors if key not found.
 pub(crate) fn builtin_builder_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1450,7 +1450,7 @@ pub(crate) fn builtin_builder_get(
     Box::pin(async move {
         reject_named("builder-get", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
@@ -1469,7 +1469,7 @@ pub(crate) fn builtin_builder_get(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-get".to_string(),
                     "Int, Float, or String (for key)",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1485,7 +1485,7 @@ pub(crate) fn builtin_builder_get(
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builder-get".to_string(),
                     "Builder",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1498,7 +1498,7 @@ pub(crate) fn builtin_builder_get(
         // Frozen builder: get is an error distinct from key-not-found
         if builder.is_frozen() {
             return Err(
-                EvalError::builder_already_finished("builder-get", call_span.clone()).into(),
+                Diagnostic::builder_already_finished("builder-get", call_span.clone()).into(),
             );
         }
 
@@ -1507,7 +1507,7 @@ pub(crate) fn builtin_builder_get(
             Some(thunk) => Ok(thunk),
             None => {
                 let key_str = key.to_string();
-                Err(EvalError::key_not_found(&key_str, vec![], call_span).into())
+                Err(Diagnostic::key_not_found(&key_str, vec![], call_span).into())
             }
         }
     })
@@ -1529,7 +1529,7 @@ pub(crate) fn builtin_builder_get(
 /// via the `get` wrapper in prelude.
 pub(crate) fn builtin_get_by_field(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1540,7 +1540,7 @@ pub(crate) fn builtin_get_by_field(
     Box::pin(async move {
         reject_named("builtin-get-by-field", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
 
         // arg[0]: field-name (String) — pre-forced by pos_strictness
@@ -1554,7 +1554,7 @@ pub(crate) fn builtin_get_by_field(
                 ..
             } => source[start..end].to_string(),
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-get-by-field".to_string(),
                     "String",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1582,7 +1582,7 @@ pub(crate) fn builtin_get_by_field(
                 })
                 .collect(),
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-get-by-field".to_string(),
                     "Dict",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1593,7 +1593,7 @@ pub(crate) fn builtin_get_by_field(
         };
 
         if dict_entries.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "builtin-get-by-field: type dict is empty".to_string(),
                 call_span,
             )
@@ -1613,7 +1613,7 @@ pub(crate) fn builtin_get_by_field(
         let variant_type_id = match variant_type_id {
             Some(id) => id,
             None => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "builtin-get-by-field: type dict contains no Variant values".to_string(),
                     call_span,
                 )
@@ -1624,7 +1624,7 @@ pub(crate) fn builtin_get_by_field(
         let tycon_env = match ctx.tycon_env.get() {
             Some(env) => env,
             None => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!(
                         "builtin-get-by-field: type info not available for type {} \
                          (--no-typecheck mode)",
@@ -1639,7 +1639,7 @@ pub(crate) fn builtin_get_by_field(
         let def = match tycon_env.get(&variant_type_id) {
             Some(d) => d,
             None => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!(
                         "builtin-get-by-field: type {} not found in type environment",
                         ctx.type_display_name(variant_type_id)
@@ -1675,7 +1675,7 @@ pub(crate) fn builtin_get_by_field(
         }
 
         // No match found — error
-        Err(EvalError::user_error(
+        Err(Diagnostic::user_error(
             format!(
                 "builtin-get-by-field: no constructor of {} has field \"{field_name}\" \
                  matching the given value",
@@ -1699,7 +1699,7 @@ pub(crate) fn builtin_get_by_field(
 /// Args: (a: Dict, b: Dict) — both pre-materialized to Spine.
 pub(crate) fn builtin_dict_merge(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1710,7 +1710,7 @@ pub(crate) fn builtin_dict_merge(
         } = ctx_arg;
         reject_named("builtin-dict-merge", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
         let thunk_a = args[0].clone();
@@ -1771,7 +1771,7 @@ pub(crate) fn builtin_dict_merge(
 /// Args: (n, xs)
 pub(crate) fn builtin_take(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1782,14 +1782,14 @@ pub(crate) fn builtin_take(
         } = ctx_arg;
         reject_named("take", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let n = args[0].require_value()?.clone();
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "take".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1834,7 +1834,7 @@ pub(crate) fn builtin_take(
                     call_span,
                 )
             }
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "take".to_string(),
                 "Dict",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -1853,7 +1853,7 @@ pub(crate) fn builtin_take(
 /// Args: (n, xs)
 pub(crate) fn builtin_drop(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1864,14 +1864,14 @@ pub(crate) fn builtin_drop(
         } = ctx_arg;
         reject_named("drop", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let n = args[0].require_value()?.clone();
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "drop".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1907,7 +1907,7 @@ pub(crate) fn builtin_drop(
                     call_span,
                 )
             }
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "drop".to_string(),
                 "Dict",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -1931,7 +1931,7 @@ pub(crate) fn builtin_drop(
 /// Args: (xs, ys)
 pub(crate) fn builtin_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1942,7 +1942,7 @@ pub(crate) fn builtin_concat(
         } = ctx_arg;
         reject_named("concat", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let thunk0 = args[0].clone();
@@ -1974,13 +1974,19 @@ pub(crate) fn builtin_concat(
                         for (_key, thunk) in xs_map {
                             result.insert(HashableValue::Int(idx), Arc::clone(thunk));
                             idx = idx.checked_add(1).ok_or_else(|| {
-                                EvalError::integer_overflow("concat".to_string(), call_span.clone())
+                                Diagnostic::integer_overflow(
+                                    "concat".to_string(),
+                                    call_span.clone(),
+                                )
                             })?;
                         }
                         for (_key, thunk) in ys_map {
                             result.insert(HashableValue::Int(idx), Arc::clone(thunk));
                             idx = idx.checked_add(1).ok_or_else(|| {
-                                EvalError::integer_overflow("concat".to_string(), call_span.clone())
+                                Diagnostic::integer_overflow(
+                                    "concat".to_string(),
+                                    call_span.clone(),
+                                )
                             })?;
                         }
                         ok_val(
@@ -1994,7 +2000,7 @@ pub(crate) fn builtin_concat(
                             call_span,
                         )
                     }
-                    other => Err(EvalError::type_mismatch_ctx(
+                    other => Err(Diagnostic::type_mismatch_ctx(
                         "concat".to_string(),
                         "Dict",
                         ctx.type_display_name(other.type_decl_id_of()),
@@ -2004,7 +2010,7 @@ pub(crate) fn builtin_concat(
                     .into()),
                 }
             }
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "concat".to_string(),
                 "Dict",
                 ctx.type_display_name(other.type_decl_id_of()),

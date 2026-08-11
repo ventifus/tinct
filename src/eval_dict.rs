@@ -11,13 +11,17 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
 
-fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResult<HashableValue> {
+fn value_to_key(
+    value: &Value,
+    span: &Span,
+    ctx: &Arc<EvalContext>,
+) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
     match value {
         Value::String {
             ref source,
@@ -40,7 +44,7 @@ fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResul
                         Some(Ok(v)) => v,
                         Some(Err(e)) => return Err(Box::new((**e).clone())),
                         None => {
-                            return Err(EvalError::internal(
+                            return Err(Diagnostic::internal(
                                 "variant payload not materialized".to_string(),
                                 span.clone(),
                             )
@@ -56,7 +60,7 @@ fn value_to_key(value: &Value, span: &Span, ctx: &Arc<EvalContext>) -> EvalResul
                 payload: hv_payload,
             })
         }
-        _ => Err(EvalError::type_mismatch(
+        _ => Err(Diagnostic::type_mismatch(
             "String, Int, Float, or Variant",
             &ctx.type_display_name(value.type_decl_id_of()),
             span.clone(),
@@ -89,7 +93,7 @@ async fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
     _parent_env_id: u32,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Value> {
+) -> Result<Value, Box<crate::error::Diagnostic>> {
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
@@ -118,7 +122,7 @@ async fn eval_annotation_property_dict(
                     if let Ok(i) = i64::try_from(*n) {
                         HashableValue::Int(i)
                     } else {
-                        return Err(Box::new(EvalError::internal(
+                        return Err(Box::new(Diagnostic::internal(
                             format!(
                                 "u64 key {n} is too large for a dict integer key (max i64::MAX)"
                             ),
@@ -133,7 +137,7 @@ async fn eval_annotation_property_dict(
                     // Annotation property dict keys must be string literals, int literals,
                     // or bare words. Complex key expressions (calls, fn, pipes) are not
                     // valid annotation syntax.
-                    return Err(Box::new(EvalError::user_error(
+                    return Err(Box::new(Diagnostic::user_error(
                         format!(
                             "annotation property dict keys must be string literals, int literals, or bare words, got: {:?}",
                             key_node.expr
@@ -146,7 +150,7 @@ async fn eval_annotation_property_dict(
             // Auto-indexed entry
             let k = HashableValue::Int(auto_index);
             auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                EvalError::integer_overflow(
+                Diagnostic::integer_overflow(
                     "annotation dict auto-index".to_string(),
                     entry.span.clone(),
                 )
@@ -198,27 +202,19 @@ async fn eval_annotation_property_dict(
                 let display_names = ctx.type_display_names_snapshot();
                 let core_expr =
                     crate::lower::lower_inner(&entry.node.value, &mut lower_diags, &display_names);
-                {
-                    let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                        .into_iter()
-                        .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-                    for d in info_diags {
-                        ctx.runtime_diagnostics
-                            .lock()
-                            .expect("runtime_diagnostics mutex poisoned")
-                            .push(d);
-                    }
-                    let (err_opt, warnings) =
-                        crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-                    for w in warnings {
-                        ctx.runtime_diagnostics
-                            .lock()
-                            .expect("runtime_diagnostics mutex poisoned")
-                            .push(w);
-                    }
-                    if let Some(err) = err_opt {
-                        return Err(err);
-                    }
+                let has_errors = lower_diags
+                    .iter()
+                    .any(|d| d.level == crate::error::DiagnosticLevel::Err);
+                ctx.runtime_diagnostics
+                    .lock()
+                    .expect("runtime_diagnostics mutex poisoned")
+                    .extend(lower_diags);
+                if has_errors {
+                    return Err(Box::new(crate::error::Diagnostic::error(
+                        "lower-error",
+                        "expression lowering failed",
+                        entry.node.value.span.clone(),
+                    )));
                 }
                 match eval_core_expr(&core_expr, &EvalFrame::empty(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
@@ -245,7 +241,7 @@ async fn eval_annotation_property_dict(
                 None => (auto_index - 1).to_string(),
             };
             return Err(Box::new(
-                EvalError::duplicate_key(&key_str, entry.span.clone())
+                Diagnostic::duplicate_key(&key_str, entry.span.clone())
                     .with_secondary_span(prev_span, "previously defined here"),
             ));
         }
@@ -325,7 +321,7 @@ pub(crate) async fn eval_dict_core(
     outer_frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     // EvalFrame-based letrec state is initialized here; the legacy Arc<RwLock<Env>> has been removed.
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
@@ -335,10 +331,10 @@ pub(crate) async fn eval_dict_core(
     // once after the loop and patched into each non-literal CoreExpr thunk via try_claim/reset.
     //
     // ALL non-literal thunks (both static-key and computed-key) are patched with the
-    // letrec frame so that computed-key entry values can access function parameters,
-    // closure captures, and static-key siblings. For dicts with no static keys (e.g.,
+    // letrec frame so that computed-key entry values can access function parameters
+    // and static-key siblings. For dicts with no static keys (e.g.,
     // [$k: v] where $k is a computed key), the letrec frame is created with an empty
-    // group but still carries params and closure_env from the outer frame.
+    // group but still carries params from the outer frame.
     //
     // Clone parent scope: static-key entries are placed at their resolver-assigned slot
     // positions. Computed-key entries (no static key name) are appended sequentially.
@@ -354,13 +350,13 @@ pub(crate) async fn eval_dict_core(
     for entry in entries {
         // Keys are evaluated in the parent frame (Key Isolation Invariant): key expressions
         // must not see letrec sibling bindings. Pass outer_frame so computed keys can
-        // reference outer-scope ClosureCapture variables.
+        // reference outer-scope variables.
         let key = match &entry.node.key {
             Some(key_expr) => eval_key_core(key_expr, outer_frame, ctx).await?,
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                    EvalError::integer_overflow("dict auto-index".to_string(), entry.span.clone())
+                    Diagnostic::integer_overflow("dict auto-index".to_string(), entry.span.clone())
                 })?;
                 k
             }
@@ -517,7 +513,7 @@ pub(crate) async fn eval_dict_core(
                 None => (auto_index - 1).to_string(),
             };
             return Err(Box::new(
-                EvalError::duplicate_key(&key_str, entry.span.clone())
+                Diagnostic::duplicate_key(&key_str, entry.span.clone())
                     .with_secondary_span(prev_span, "previously defined here"),
             ));
         }
@@ -562,10 +558,9 @@ pub(crate) async fn eval_dict_core(
     //   - Cross-dict refs (e.g., LGM(N) for a root or prior-dict entry) → scope_vec[N]
     //   - Self-refs within this dict → scope_vec[assigned_slot]
     //
-    // closure_env: for document-level dicts (outer_frame.closure_env.is_empty()), carry
-    // the outer_frame.group so that fns defined in this dict can capture cross-dict names via
-    // frame.group[slot] at fn-creation time. For fn-body dicts (closure_env non-empty),
-    // carry outer_frame.closure_env unchanged — the fn's own captures are already materialized.
+    // definition_scope: for document-level dicts, carry the outer_frame.group so that fns
+    // defined in this dict can access cross-dict names via frame.group[slot] at fn-creation
+    // time. For fn-body dicts, carry the outer frame's definition scope unchanged.
     //
     // Patch is safe here: the thunks were just created in this function and have not been
     // shared with any other task yet (they are not in the dict map until after patch, and
@@ -582,20 +577,11 @@ pub(crate) async fn eval_dict_core(
         // placed at their assigned_slot positions.
         let group: crate::value::Scope = std::sync::Arc::new(scope_vec);
 
-        // closure_env: document-level dicts carry the outer group for fn captures;
-        // fn-body dicts carry the fn's closure_env unchanged.
-        let closure_env = if outer_frame.closure_env.is_empty() {
-            std::sync::Arc::clone(&outer_frame.group)
-        } else {
-            std::sync::Arc::clone(&outer_frame.closure_env)
-        };
-
         // Inherit outer_frame.params so that function parameters remain accessible
         // from within intermediate dict bodies inside a function. Without this, an
         // intermediate dict `[x: [fn-param-ref]]` inside `[fn [let p] [x: p] body]`
         // would fail because the dict's letrec_frame has empty params.
         let letrec_frame = std::sync::Arc::new(EvalFrame {
-            closure_env,
             group,
             params: std::sync::Arc::clone(&outer_frame.params),
             caller_evidence: std::sync::Arc::clone(&outer_frame.caller_evidence),
@@ -648,7 +634,7 @@ pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
     frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<HashableValue> {
+) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
     match &key_expr.node {
         CoreExpr::Str { value: s, .. } => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
@@ -659,7 +645,7 @@ pub(crate) async fn eval_key_core(
             if let Ok(i) = i64::try_from(*n) {
                 return Ok(HashableValue::Int(i));
             }
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
                 key_expr.span.clone(),
             )

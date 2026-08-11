@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::ast::{Span, Spanned, SurfaceNode, SurfaceProgram};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::rust_span;
 use crate::type_tags::*;
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
@@ -78,7 +78,7 @@ pub(crate) async fn eval_document_exprs_with_env(
     expr_nodes: &[Arc<SurfaceNode>],
     ctx: &Arc<EvalContext>,
     initial_group: Option<Vec<Arc<Thunk>>>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     if expr_nodes.is_empty() {
         return Ok(Arc::new(Thunk::value(
             Value::Dict {
@@ -112,35 +112,14 @@ pub(crate) async fn eval_document_exprs_with_env(
 
     for (i, node) in expr_nodes.iter().enumerate() {
         let display_names = ctx.type_display_names_snapshot();
-        let (core_spanned, lower_diags) = crate::lower::lower(node, &display_names);
-        {
-            let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                .into_iter()
-                .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-            for d in info_diags {
-                ctx.runtime_diagnostics
-                    .lock()
-                    .expect("runtime_diagnostics mutex poisoned")
-                    .push(d);
-            }
-            let (err_opt, warnings) =
-                crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-            for w in warnings {
-                ctx.runtime_diagnostics
-                    .lock()
-                    .expect("runtime_diagnostics mutex poisoned")
-                    .push(w);
-            }
-            if let Some(err) = err_opt {
-                return Err(err);
-            }
-        }
+        let core_spanned = crate::lower::lower(node, &display_names)
+            .take(&ctx.runtime_diagnostics)
+            .expect("lowering always succeeds");
         let node_span = node.span.clone();
 
         // Build the frame from the current accumulated_group.
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
             type_inst: std::collections::HashMap::new(),
@@ -175,7 +154,7 @@ pub(crate) async fn eval_document_exprs_with_env(
                 ..
             } => dict_map.clone(),
             other => {
-                return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
+                return Err(Box::new(crate::error::Diagnostic::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
                     &ctx.type_display_name(other.type_decl_id_of()),
@@ -231,11 +210,14 @@ pub(crate) async fn eval_core_document_exprs(
     ctx: &Arc<EvalContext>,
     initial_group: Vec<Arc<Thunk>>,
     initial_names: Option<IndexMap<String, u32>>,
-) -> EvalResult<(
-    Arc<Thunk>,
-    crate::value::Scope,
-    Option<IndexMap<String, u32>>,
-)> {
+) -> Result<
+    (
+        Arc<Thunk>,
+        crate::value::Scope,
+        Option<IndexMap<String, u32>>,
+    ),
+    Box<crate::error::Diagnostic>,
+> {
     if core_entries.is_empty() {
         let spine = crate::value::scope_from_flat(initial_group);
         return Ok((
@@ -266,7 +248,6 @@ pub(crate) async fn eval_core_document_exprs(
     for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            closure_env: crate::value::empty_scope(),
             params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
             type_inst: std::collections::HashMap::new(),
@@ -291,7 +272,7 @@ pub(crate) async fn eval_core_document_exprs(
                 ..
             } => dict_map.clone(),
             other => {
-                return Err(Box::new(crate::error::EvalError::type_mismatch_ctx(
+                return Err(Box::new(crate::error::Diagnostic::type_mismatch_ctx(
                     "document expression".to_string(),
                     "Dict",
                     &ctx.type_display_name(other.type_decl_id_of()),
@@ -338,7 +319,7 @@ pub(crate) async fn eval_core_document_exprs(
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     eval_surface_file_with_initial_group(program, ctx, None).await
 }
 
@@ -357,7 +338,7 @@ pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     initial_input: Option<Arc<Thunk>>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let initial_group = initial_input.map(|thunk| vec![thunk]);
     eval_surface_file_with_initial_group(program, ctx, initial_group).await
 }
@@ -371,7 +352,7 @@ async fn eval_surface_file_with_initial_group(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     initial_group: Option<Vec<Arc<Thunk>>>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     // Evaluate all documents sequentially, returning the last result.
     // The resolver assigned slots based on the full program — the evaluator must
     // see the same documents to keep slot indices aligned.
@@ -512,7 +493,7 @@ pub struct EvalConfig {
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
 /// Config is immutable (Arc without Mutex). Variable bindings are now managed via
-/// EvalFrame (closure-converted, Arc<Vec<Arc<Thunk>>>) rather than a scope arena.
+/// EvalFrame (Arc<Vec<Arc<Thunk>>>) rather than a scope arena.
 /// Thread as `&Arc<EvalContext>` through eval/materialize; thunks capture `Arc::clone(ctx)`.
 #[derive(Debug)]
 pub struct EvalContext {
@@ -2088,7 +2069,7 @@ pub(crate) fn validate_and_wrap_record(
     data_span: Span,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
-) -> EvalResult<IndexMap<HashableValue, Arc<Thunk>>> {
+) -> Result<IndexMap<HashableValue, Arc<Thunk>>, Box<crate::error::Diagnostic>> {
     // Shape check: verify all required fields exist.
     // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback.
     for field_name in fields.keys() {
@@ -2133,7 +2114,7 @@ pub(crate) fn validate_and_wrap_record(
                 field_path_prefix, actual_fields
             );
 
-            return Err(EvalError::type_assert_failed(
+            return Err(Diagnostic::type_assert_failed(
                 &format!("{}record with field \"{}\"", field_path_prefix, field_name),
                 // "got" now shows what's actually present, not just repeating the missing field.
                 &format!(
@@ -2246,7 +2227,7 @@ async fn call_to_match_by_name(
     ctx: &Arc<EvalContext>,
     span: &Span,
     caller_evidence: crate::value::Scope,
-) -> EvalResult<bool> {
+) -> Result<bool, Box<crate::error::Diagnostic>> {
     // Step 1: get the init accumulated group snapshot.
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
         return Ok(false);
@@ -2268,14 +2249,14 @@ async fn call_to_match_by_name(
     // Step 4: materialize the thunk to get the to-match function value.
     let fn_val = materialize(fn_thunk, Some(span), ctx).await?;
     // Step 5: destructure as a user-defined function.
-    let (clauses, closure_env) = match fn_val {
+    let (clauses, definition_scope) = match fn_val {
         Value::Function {
             clauses,
-            closure_env,
+            definition_scope,
             ..
-        } => (clauses, closure_env),
+        } => (clauses, definition_scope),
         other => {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 format!("call_to_match_by_name({name})"),
                 "Function",
                 &ctx.type_display_name(other.type_decl_id_of()),
@@ -2289,7 +2270,7 @@ async fn call_to_match_by_name(
     // Step 7: invoke the function with val as the sole positional argument.
     let call_ctx = CallContext {
         clauses: &clauses,
-        closure_env,
+        definition_scope,
         positional: std::slice::from_ref(&val_thunk),
         named: None,
         call_span: span.clone(),
@@ -2301,7 +2282,7 @@ async fn call_to_match_by_name(
     // Step 8: materialize the call result and check if it is a nonzero Int.
     match materialize(&result_thunk, Some(span), ctx).await? {
         Value::Int { n, .. } => Ok(n != 0),
-        other => Err(EvalError::type_mismatch_ctx(
+        other => Err(Diagnostic::type_mismatch_ctx(
             format!("call_to_match_by_name({name}) result"),
             "Int",
             &ctx.type_display_name(other.type_decl_id_of()),
@@ -2343,7 +2324,7 @@ pub async fn call_to_match(
     ctx: &Arc<EvalContext>,
     span: &Span,
     caller_evidence: crate::value::Scope,
-) -> EvalResult<bool> {
+) -> Result<bool, Box<crate::error::Diagnostic>> {
     call_to_match_by_name("to-match", val, ctx, span, caller_evidence).await
 }
 
@@ -2366,7 +2347,7 @@ pub async fn call_to_match_resolved(
     ctx: &Arc<EvalContext>,
     span: &Span,
     caller_evidence: crate::value::Scope,
-) -> EvalResult<bool> {
+) -> Result<bool, Box<crate::error::Diagnostic>> {
     call_to_match_by_name(binding_name, val, ctx, span, caller_evidence).await
 }
 
@@ -2387,6 +2368,27 @@ pub async fn call_to_match_resolved(
 /// The class name is discovered by scanning the environment for an instance binding whose
 /// key ends with `∷to-match⟨type_name⟩⧽` — the Rust-level protocol name `"to-match"` is
 /// fixed, and the class name is whatever class declared that method in the prelude.
+/// Evaluate a surface expression in the given scope, returning a lazy thunk.
+///
+/// This is the canonical entry point for expression evaluation. It lowers the
+/// surface node to a core expression and wraps it in a thunk bound to `frame`.
+/// The thunk is not forced — the caller decides when (or whether) to materialize.
+pub fn eval_expr(
+    node: &Arc<crate::ast::SurfaceNode>,
+    frame: &Arc<crate::value::EvalFrame>,
+    ctx: &Arc<EvalContext>,
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let display_names = ctx.type_display_names_snapshot();
+    crate::lower::lower(node, &display_names).map(|core_spanned| {
+        Arc::new(Thunk::core_expr(
+            Arc::new(core_spanned),
+            Arc::clone(frame),
+            Arc::clone(ctx),
+            node.span.clone(),
+        ))
+    })
+}
+
 ///
 /// Concurrent evaluation protocol: forces a thunk to a terminal state.
 ///
@@ -2399,7 +2401,9 @@ pub fn materialize<'a>(
     thunk: &'a Arc<Thunk>,
     mat_span: Option<&'a Span>,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Value>> + Send + 'a>> {
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Value, Box<crate::error::Diagnostic>>> + Send + 'a>,
+> {
     Box::pin(async move {
         loop {
             // Check terminal states first (result is set).
@@ -2442,7 +2446,7 @@ pub fn materialize<'a>(
                 if same {
                     let cycle_path =
                         crate::eval_materialize::TASK_EVAL_STACK.with(|s| s.borrow().clone());
-                    let err = EvalError::circular_dependency(
+                    let err = Diagnostic::circular_dependency(
                         thunk.span.name.as_deref().unwrap_or("thunk"),
                         thunk.span.clone(),
                         cycle_path,
@@ -2580,32 +2584,13 @@ mod tests {
         node: Arc<SurfaceNode>,
         _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
+    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         let display_names = ctx.type_display_names_snapshot();
-        let (core_expr, lower_diags) = crate::lower::lower(&node, &display_names);
-        {
-            let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-                .into_iter()
-                .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-            for d in info_diags {
-                ctx.runtime_diagnostics
-                    .lock()
-                    .expect("runtime_diagnostics mutex poisoned")
-                    .push(d);
-            }
-            let (err_opt, warnings) =
-                crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-            for w in warnings {
-                ctx.runtime_diagnostics
-                    .lock()
-                    .expect("runtime_diagnostics mutex poisoned")
-                    .push(w);
-            }
-            if let Some(err) = err_opt {
-                return Err(err);
-            }
-        }
-        crate::eval_core::eval_core_expr(&core_expr, &crate::value::EvalFrame::empty(), ctx).await
+        let core_spanned = crate::lower::lower(&node, &display_names)
+            .take(&ctx.runtime_diagnostics)
+            .expect("lowering always succeeds");
+        crate::eval_core::eval_core_expr(&core_spanned, &crate::value::EvalFrame::empty(), ctx)
+            .await
     }
 
     /// Test-only: evaluate a SurfaceNode after running the resolver against the root env.
@@ -2613,7 +2598,7 @@ mod tests {
     async fn eval_for_test_resolved(
         node: Arc<SurfaceNode>,
         ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
+    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         use crate::resolve::resolve_surface_program;
         let doc = SurfaceDocument {
             header: indexmap::IndexMap::new(),
@@ -2654,14 +2639,17 @@ mod tests {
         expr: Spanned<CoreExpr>,
         _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Arc<Thunk>> {
+    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         crate::eval_core::eval_core_expr(&expr, &crate::value::EvalFrame::empty(), ctx).await
     }
 
     /// Parse a surface expression from text and evaluate it.
     /// Convenience for most test cases — avoids constructing SurfaceNode by hand.
     /// Runs the resolver so $name variable references work correctly.
-    async fn eval_str(src: &str, ctx: &Arc<EvalContext>) -> EvalResult<Arc<Thunk>> {
+    async fn eval_str(
+        src: &str,
+        ctx: &Arc<EvalContext>,
+    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         let node = crate::parser::parse_surface_expression(src)
             .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
         eval_for_test_resolved(node, ctx).await
@@ -2679,12 +2667,15 @@ mod tests {
         thunk: &Arc<Thunk>,
         mat_span: Option<&Span>,
         ctx: &Arc<EvalContext>,
-    ) -> EvalResult<Value> {
+    ) -> Result<Value, Box<crate::error::Diagnostic>> {
         super::materialize(thunk, mat_span, ctx).await
     }
 
     /// Materialize an `Arc<Thunk>` from a dict entry (after T-1772, dict values are Arc<Thunk>).
-    async fn mat_id(thunk: &Arc<Thunk>, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
+    async fn mat_id(
+        thunk: &Arc<Thunk>,
+        ctx: &Arc<EvalContext>,
+    ) -> Result<Value, Box<crate::error::Diagnostic>> {
         materialize(thunk, None, ctx).await
     }
 
@@ -2752,10 +2743,10 @@ mod tests {
         assert_eq!(val, string_val("hello"));
     }
 
-    // VarRef dispatch — covers the four VarAddr paths in eval_core.rs CoreExpr::Var.
+    // VarRef dispatch — covers the three VarAddr paths in eval_core.rs CoreExpr::Var.
     // Dispatch(_, slot) path: covered by test_dict_letrec_sibling_reference and
     // test_dict_letrec_forward_reference below.
-    // Parameter and ClosureCapture paths: covered by corpus tests
+    // Parameter path: covered by corpus tests
     // tests/corpus/eval/varref_parameter_dispatch.llt-eval and
     // tests/corpus/eval/varref_closure_capture_dispatch.llt-eval.
 
@@ -3105,7 +3096,7 @@ mod tests {
         }
     }
 
-    // test_fn_captures_closure_env, test_call_simple, test_call_multiple_args,
+    // test_fn_captures_definition_scope, test_call_simple, test_call_multiple_args,
     // test_call_on_non_function, test_call_too_few_args, test_call_too_many_args,
     // test_call_named_arg_with_default, test_call_named_arg_overridden,
     // test_call_unexpected_named_arg, test_call_duplicate_positional_and_named_error,
@@ -3789,12 +3780,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_func_label_dot_access() {
-        // Dot access compiles to Call(builtin-dict-get, [key, target]).
-        // The function position is a Var("builtin-dict-get") so func_label_core returns "builtin-dict-get".
+        // func_label_core on a Var returns the variable name.
         use crate::eval_call::func_label_core;
         let func_var = CoreExpr::Var {
             name: "builtin-dict-get".to_string(),
-            addr: crate::ast::VarAddr::ClosureCapture(0),
+            addr: crate::ast::VarAddr::Dispatch(0, 0),
             annotation: None,
             inferred_type: crate::type_infer::make_typevalue_unknown(),
         };
@@ -3824,7 +3814,7 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::Var {
                 name: "missing".to_string(),
-                addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
+                addr: crate::ast::VarAddr::Dispatch(0, u32::MAX),
                 annotation: None,
                 inferred_type: crate::type_infer::make_typevalue_unknown(),
             },
@@ -3966,7 +3956,7 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Var {
                     name: "undefined_var".to_string(),
-                    addr: crate::ast::VarAddr::ClosureCapture(u32::MAX),
+                    addr: crate::ast::VarAddr::Dispatch(0, u32::MAX),
                     annotation: None,
                     inferred_type: crate::type_infer::make_typevalue_unknown(),
                 },
@@ -5977,7 +5967,7 @@ mod tests {
         let def_span = test_span(1, 1, 1, 10);
         let frame_span = test_span(5, 1, 5, 10);
 
-        let mut err = EvalError::key_not_found("key", vec![], def_span);
+        let mut err = Diagnostic::key_not_found("key", vec![], def_span);
 
         // Add the frame once
         err.push_frame("first access".to_string(), frame_span.clone());
@@ -6137,7 +6127,7 @@ mod tests {
     async fn test_pm3_match_expr_pin_pattern_does_not_bind() {
         // `[a: x  b: x]: "body"` — `x` is undefined in the dict pattern values.
         // Each `x` has resolution=Some(None) →
-        //   lowerer emits CoreExpr::Var { addr: ClosureCapture(u32::MAX) } (sentinel) →
+        //   lowerer emits CoreExpr::Var { addr: Dispatch(0, u32::MAX) } (sentinel) →
         //   bind_or_pin_name returns Ok(false) → arm doesn't match.
         // No wildcard fallback → MatchExhaustion when forced.
         // (Note: `...` inside a dict pattern requires scope_frames for spread desugaring;

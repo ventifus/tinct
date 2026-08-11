@@ -27,7 +27,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::builtins::{check_float_result, ok_val, reject_named};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Maximum safe integer for Int→Float promotion (2^53).
@@ -37,9 +37,12 @@ const MAX_SAFE_INT: i64 = 9007199254740992;
 /// Check if an Int→Float promotion would lose precision.
 /// Returns Err if |n| > 2^53, suggesting explicit [float n] cast.
 /// Used by `builtin-int-to-float` and `builtin-div` for Int→Float conversion.
-fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()> {
+fn check_int_to_float_precision(
+    n: i64,
+    span: crate::ast::Span,
+) -> Result<(), Box<crate::error::Diagnostic>> {
     if n.abs() > MAX_SAFE_INT {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!(
                 "implicit Int→Float promotion loses precision for {}; use [float {}] for intentional cast",
                 n, n
@@ -55,7 +58,7 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
 /// Always returns Float (even Int / Int). Division by zero is an error.
 pub(crate) fn builtin_div_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -66,7 +69,7 @@ pub(crate) fn builtin_div_float(
     Box::pin(async move {
         reject_named("/", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let thunk0 = args[0].clone();
@@ -78,7 +81,7 @@ pub(crate) fn builtin_div_float(
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => {
                 if *b == 0 {
                     return Err(
-                        EvalError::division_by_zero("/".to_string(), call_span.clone()).into(),
+                        Diagnostic::division_by_zero("/".to_string(), call_span.clone()).into(),
                     );
                 }
                 check_float_result(*a as f64 / *b as f64, "/", call_span)
@@ -94,7 +97,7 @@ pub(crate) fn builtin_div_float(
                 check_int_to_float_precision(*b, thunk1.span.clone())?;
                 check_float_result(a / (*b as f64), "/", call_span)
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Int or Float",
                 &format!(
                     "{} and {}",
@@ -114,7 +117,7 @@ pub(crate) fn builtin_div_float(
 /// No cross-type comparison — both args must be Int.
 pub(crate) fn builtin_eq_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -125,7 +128,7 @@ pub(crate) fn builtin_eq_int(
     Box::pin(async move {
         reject_named("builtin-eq-int", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -139,7 +142,7 @@ pub(crate) fn builtin_eq_int(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Int",
                 &format!(
                     "{} and {}",
@@ -159,7 +162,7 @@ pub(crate) fn builtin_eq_int(
 /// No cross-type comparison — both args must be Float.
 pub(crate) fn builtin_eq_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -170,7 +173,7 @@ pub(crate) fn builtin_eq_float(
     Box::pin(async move {
         reject_named("builtin-eq-float", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -184,7 +187,7 @@ pub(crate) fn builtin_eq_float(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -204,7 +207,7 @@ pub(crate) fn builtin_eq_float(
 /// No cross-type comparison — both args must be String.
 pub(crate) fn builtin_eq_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -215,7 +218,7 @@ pub(crate) fn builtin_eq_string(
     Box::pin(async move {
         reject_named("builtin-eq-string", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -245,7 +248,7 @@ pub(crate) fn builtin_eq_string(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "String",
                 &format!(
                     "{} and {}",
@@ -269,7 +272,7 @@ pub(crate) fn builtin_eq_string(
 /// Cross-type comparisons belong in typeclass instances, not here.
 pub(crate) fn builtin_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -280,7 +283,7 @@ pub(crate) fn builtin_lt(
     Box::pin(async move {
         reject_named("builtin-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let left = args[0].require_value()?.clone();
@@ -296,7 +299,7 @@ pub(crate) fn builtin_lt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -313,7 +316,7 @@ pub(crate) fn builtin_lt(
 /// `builtin-float-lt`: Float less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_float_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -324,7 +327,7 @@ pub(crate) fn builtin_float_lt(
     Box::pin(async move {
         reject_named("builtin-float-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -338,7 +341,7 @@ pub(crate) fn builtin_float_lt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -355,7 +358,7 @@ pub(crate) fn builtin_float_lt(
 /// `builtin-str-lt`: String lexicographic less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_str_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -366,7 +369,7 @@ pub(crate) fn builtin_str_lt(
     Box::pin(async move {
         reject_named("builtin-str-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -393,7 +396,7 @@ pub(crate) fn builtin_str_lt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "String",
                 &format!(
                     "{} and {}",
@@ -412,7 +415,7 @@ pub(crate) fn builtin_str_lt(
 /// Implemented as `!(b < a)` (negation of `>`).
 pub(crate) fn builtin_lte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -425,7 +428,7 @@ pub(crate) fn builtin_lte(
     Box::pin(async move {
         reject_named("<=", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         // a <= b ≡ !(b < a)
@@ -465,9 +468,9 @@ fn extract_single_float(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> EvalResult<f64> {
+) -> Result<f64, Box<crate::error::Diagnostic>> {
     if args.len() != 1 {
-        return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -475,7 +478,7 @@ fn extract_single_float(
     match val {
         Value::Int { n, .. } => Ok(n as f64),
         Value::Float { n: f, .. } => Ok(f),
-        _ => Err(EvalError::type_mismatch_ctx(
+        _ => Err(Diagnostic::type_mismatch_ctx(
             name.to_string(),
             "Int or Float",
             ctx.type_display_name(val.type_decl_id_of()),
@@ -492,9 +495,9 @@ fn extract_two_floats(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> EvalResult<(f64, f64)> {
+) -> Result<(f64, f64), Box<crate::error::Diagnostic>> {
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -506,7 +509,7 @@ fn extract_two_floats(
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
                 ctx.type_display_name(left.type_decl_id_of()),
@@ -520,7 +523,7 @@ fn extract_two_floats(
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 name.to_string(),
                 "Int or Float",
                 ctx.type_display_name(right.type_decl_id_of()),
@@ -537,7 +540,7 @@ fn extract_two_floats(
 /// Inherently materializing: must extract numeric values to compute power.
 pub(crate) fn builtin_pow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -557,7 +560,7 @@ pub(crate) fn builtin_pow(
 /// Inherently materializing: must extract numeric value to compute square root.
 pub(crate) fn builtin_sqrt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -584,7 +587,7 @@ pub(crate) fn builtin_sqrt(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -610,7 +613,7 @@ pub(crate) fn builtin_log(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -628,7 +631,7 @@ pub(crate) fn builtin_log2(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log10(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -646,7 +649,7 @@ pub(crate) fn builtin_log10(
 /// Inherently materializing: must extract numeric value to compute exponential.
 pub(crate) fn builtin_exp(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -664,7 +667,7 @@ pub(crate) fn builtin_exp(
 /// Inherently materializing: must extract numeric value to compute sine.
 pub(crate) fn builtin_sin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -682,7 +685,7 @@ pub(crate) fn builtin_sin(
 /// Inherently materializing: must extract numeric value to compute cosine.
 pub(crate) fn builtin_cos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -700,7 +703,7 @@ pub(crate) fn builtin_cos(
 /// Inherently materializing: must extract numeric value to compute tangent.
 pub(crate) fn builtin_tan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -718,7 +721,7 @@ pub(crate) fn builtin_tan(
 /// Inherently materializing: must extract numeric value to compute arcsine.
 pub(crate) fn builtin_asin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -736,7 +739,7 @@ pub(crate) fn builtin_asin(
 /// Inherently materializing: must extract numeric value to compute arccosine.
 pub(crate) fn builtin_acos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -754,7 +757,7 @@ pub(crate) fn builtin_acos(
 /// Inherently materializing: must extract numeric value to compute arctangent.
 pub(crate) fn builtin_atan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -772,7 +775,7 @@ pub(crate) fn builtin_atan(
 /// Inherently materializing: must extract numeric values to compute arctangent.
 pub(crate) fn builtin_atan2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -790,7 +793,7 @@ pub(crate) fn builtin_atan2(
 /// Inherently materializing: must extract numeric value to check for NaN.
 pub(crate) fn builtin_nan_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -816,7 +819,7 @@ pub(crate) fn builtin_nan_check(
 /// Inherently materializing: must extract numeric value to check for infinity.
 pub(crate) fn builtin_inf_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -842,7 +845,7 @@ pub(crate) fn builtin_inf_check(
 /// Inherently materializing: must extract numeric value to check for finiteness.
 pub(crate) fn builtin_finite_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -871,9 +874,9 @@ fn extract_int_pair(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> EvalResult<(i64, i64)> {
+) -> Result<(i64, i64), Box<crate::error::Diagnostic>> {
     if args.len() != 2 {
-        return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -884,7 +887,7 @@ fn extract_int_pair(
     let a = match left {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
                 ctx.type_display_name(left.type_decl_id_of()),
@@ -897,7 +900,7 @@ fn extract_int_pair(
     let b = match right {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 name.to_string(),
                 "Int",
                 ctx.type_display_name(right.type_decl_id_of()),
@@ -914,7 +917,7 @@ fn extract_int_pair(
 /// Inherently materializing: must extract numeric values to compute bitwise AND.
 pub(crate) fn builtin_band(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -940,7 +943,7 @@ pub(crate) fn builtin_band(
 /// Inherently materializing: must extract numeric values to compute bitwise OR.
 pub(crate) fn builtin_bor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -966,7 +969,7 @@ pub(crate) fn builtin_bor(
 /// Inherently materializing: must extract numeric values to compute bitwise XOR.
 pub(crate) fn builtin_bxor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -992,7 +995,7 @@ pub(crate) fn builtin_bxor(
 /// Inherently materializing: must extract numeric values to compute left shift.
 pub(crate) fn builtin_shl(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1006,7 +1009,7 @@ pub(crate) fn builtin_shl(
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!("shl: negative shift count {}", bits),
                 call_span,
             )
@@ -1041,7 +1044,7 @@ pub(crate) fn builtin_shl(
 /// Inherently materializing: must extract numeric values to compute right shift.
 pub(crate) fn builtin_shr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1055,7 +1058,7 @@ pub(crate) fn builtin_shr(
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!("shr: negative shift count {}", bits),
                 call_span,
             )
@@ -1096,7 +1099,7 @@ pub(crate) fn builtin_shr(
 /// Inherently materializing: must inspect value to determine type and perform conversion.
 pub(crate) fn builtin_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1107,7 +1110,7 @@ pub(crate) fn builtin_float(
     Box::pin(async move {
         reject_named("float", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let val = thunk0.require_value()?.clone();
@@ -1130,7 +1133,7 @@ pub(crate) fn builtin_float(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch_ctx(
+            _ => Err(Diagnostic::type_mismatch_ctx(
                 "float".to_string(),
                 "Int or Float",
                 ctx.type_display_name(val.type_decl_id_of()),
@@ -1147,7 +1150,7 @@ pub(crate) fn builtin_float(
 
 pub(crate) fn builtin_int_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1158,7 +1161,7 @@ pub(crate) fn builtin_int_add(
     Box::pin(async move {
         reject_named("builtin-int-add", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1177,9 +1180,9 @@ pub(crate) fn builtin_int_add(
                     ))
                 })
                 .ok_or_else(|| {
-                    EvalError::integer_overflow("builtin-int-add".to_string(), call_span).into()
+                    Diagnostic::integer_overflow("builtin-int-add".to_string(), call_span).into()
                 }),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -1195,7 +1198,7 @@ pub(crate) fn builtin_int_add(
 
 pub(crate) fn builtin_float_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1206,7 +1209,7 @@ pub(crate) fn builtin_float_add(
     Box::pin(async move {
         reject_named("builtin-float-add", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1214,7 +1217,7 @@ pub(crate) fn builtin_float_add(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -1230,7 +1233,7 @@ pub(crate) fn builtin_float_add(
 
 pub(crate) fn builtin_int_to_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1241,7 +1244,7 @@ pub(crate) fn builtin_int_to_float(
     Box::pin(async move {
         reject_named("builtin-int-to-float", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let v = thunk0.require_value()?.clone();
@@ -1259,7 +1262,7 @@ pub(crate) fn builtin_int_to_float(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 ctx.type_display_name(v.type_decl_id_of()),
                 call_span,
@@ -1271,7 +1274,7 @@ pub(crate) fn builtin_int_to_float(
 
 pub(crate) fn builtin_float_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1282,28 +1285,28 @@ pub(crate) fn builtin_float_to_int(
     Box::pin(async move {
         reject_named("builtin-float-to-int", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
         let thunk0 = args[0].clone();
         let v = thunk0.require_value()?.clone();
         match v {
             Value::Float { n, .. } => {
                 if n.is_nan() {
-                    return Err(EvalError::user_error(
+                    return Err(Diagnostic::user_error(
                         "Float→Integer cast: NaN has no integer representation".to_string(),
                         call_span,
                     )
                     .into());
                 }
                 if n.is_infinite() {
-                    return Err(EvalError::user_error(
+                    return Err(Diagnostic::user_error(
                         "Float→Integer cast: infinity has no integer representation".to_string(),
                         call_span,
                     )
                     .into());
                 }
                 if n > i64::MAX as f64 || n < i64::MIN as f64 {
-                    return Err(EvalError::user_error(
+                    return Err(Diagnostic::user_error(
                         format!("Float→Integer cast: {} is out of Integer range", n),
                         call_span,
                     )
@@ -1319,7 +1322,7 @@ pub(crate) fn builtin_float_to_int(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 ctx.type_display_name(v.type_decl_id_of()),
                 call_span,
@@ -1331,7 +1334,7 @@ pub(crate) fn builtin_float_to_int(
 
 pub(crate) fn builtin_int_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1342,7 +1345,7 @@ pub(crate) fn builtin_int_sub(
     Box::pin(async move {
         reject_named("builtin-int-sub", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1361,9 +1364,9 @@ pub(crate) fn builtin_int_sub(
                     ))
                 })
                 .ok_or_else(|| {
-                    EvalError::integer_overflow("builtin-int-sub".to_string(), call_span).into()
+                    Diagnostic::integer_overflow("builtin-int-sub".to_string(), call_span).into()
                 }),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -1379,7 +1382,7 @@ pub(crate) fn builtin_int_sub(
 
 pub(crate) fn builtin_float_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1390,7 +1393,7 @@ pub(crate) fn builtin_float_sub(
     Box::pin(async move {
         reject_named("builtin-float-sub", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1398,7 +1401,7 @@ pub(crate) fn builtin_float_sub(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -1414,7 +1417,7 @@ pub(crate) fn builtin_float_sub(
 
 pub(crate) fn builtin_int_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1425,7 +1428,7 @@ pub(crate) fn builtin_int_mul(
     Box::pin(async move {
         reject_named("builtin-int-mul", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1444,9 +1447,9 @@ pub(crate) fn builtin_int_mul(
                     ))
                 })
                 .ok_or_else(|| {
-                    EvalError::integer_overflow("builtin-int-mul".to_string(), call_span).into()
+                    Diagnostic::integer_overflow("builtin-int-mul".to_string(), call_span).into()
                 }),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -1462,7 +1465,7 @@ pub(crate) fn builtin_int_mul(
 
 pub(crate) fn builtin_float_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1473,7 +1476,7 @@ pub(crate) fn builtin_float_mul(
     Box::pin(async move {
         reject_named("builtin-float-mul", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1481,7 +1484,7 @@ pub(crate) fn builtin_float_mul(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -1500,7 +1503,7 @@ pub(crate) fn builtin_float_mul(
 
 pub(crate) fn builtin_int_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1511,7 +1514,7 @@ pub(crate) fn builtin_int_gt(
     Box::pin(async move {
         reject_named("builtin-int-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1525,7 +1528,7 @@ pub(crate) fn builtin_int_gt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -1541,7 +1544,7 @@ pub(crate) fn builtin_int_gt(
 
 pub(crate) fn builtin_float_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1552,7 +1555,7 @@ pub(crate) fn builtin_float_gt(
     Box::pin(async move {
         reject_named("builtin-float-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1566,7 +1569,7 @@ pub(crate) fn builtin_float_gt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -1582,7 +1585,7 @@ pub(crate) fn builtin_float_gt(
 
 pub(crate) fn builtin_str_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1593,7 +1596,7 @@ pub(crate) fn builtin_str_gt(
     Box::pin(async move {
         reject_named("builtin-str-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1620,7 +1623,7 @@ pub(crate) fn builtin_str_gt(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "String",
                 &format!(
                     "{} and {}",
@@ -1636,7 +1639,7 @@ pub(crate) fn builtin_str_gt(
 
 pub(crate) fn builtin_int_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1647,7 +1650,7 @@ pub(crate) fn builtin_int_gte(
     Box::pin(async move {
         reject_named("builtin-int-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1661,7 +1664,7 @@ pub(crate) fn builtin_int_gte(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Integer",
                 &format!(
                     "{} and {}",
@@ -1677,7 +1680,7 @@ pub(crate) fn builtin_int_gte(
 
 pub(crate) fn builtin_float_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1688,7 +1691,7 @@ pub(crate) fn builtin_float_gte(
     Box::pin(async move {
         reject_named("builtin-float-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1702,7 +1705,7 @@ pub(crate) fn builtin_float_gte(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Float",
                 &format!(
                     "{} and {}",
@@ -1718,7 +1721,7 @@ pub(crate) fn builtin_float_gte(
 
 pub(crate) fn builtin_str_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1729,7 +1732,7 @@ pub(crate) fn builtin_str_gte(
     Box::pin(async move {
         reject_named("builtin-str-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1756,7 +1759,7 @@ pub(crate) fn builtin_str_gte(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "String",
                 &format!(
                     "{} and {}",
@@ -1959,7 +1962,9 @@ mod tests {
     }
 
     /// Drive an async builtin to completion synchronously in tests.
-    fn run(f: impl std::future::Future<Output = EvalResult<Arc<Thunk>>>) -> EvalResult<Arc<Thunk>> {
+    fn run(
+        f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
+    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         crate::async_rt::block_on(f)
     }
 

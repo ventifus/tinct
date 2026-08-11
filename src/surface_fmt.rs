@@ -58,7 +58,8 @@ pub fn fmt_dict(
             } => {
                 let empty = std::collections::HashMap::new();
                 let tycon_env = ctx.and_then(|c| c.tycon_env()).unwrap_or(&empty);
-                let display = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
+                let display =
+                    crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
                 match payload {
                     None => {
                         out.push_str(&display);
@@ -337,6 +338,11 @@ fn collect_free_vars(
             }
         }
 
+        // Field access: recurse into target expression
+        CoreExpr::Field { target, .. } => {
+            collect_free_vars(&target.node, param_scope, stdlib_env, out);
+        }
+
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
         CoreExpr::Sequential { exprs, .. } => {
             // Mirror the resolver's sequential scope injection (resolve.rs:118-134):
@@ -571,6 +577,10 @@ fn collect_free_vars_in_quote(
                 collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
             }
         }
+        // Field access: recurse into target expression
+        CoreExpr::Field { target, .. } => {
+            collect_free_vars_in_quote(&target.node, depth, param_scope, stdlib_env, out);
+        }
         // ReprDecl: recurse into inner dict and optional is: predicate even inside quotes.
         CoreExpr::ReprDecl { is_pred, inner, .. } => {
             collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
@@ -641,6 +651,13 @@ fn core_expr_to_tinct(
                     .cloned()
                     .unwrap_or_else(|| name.clone()))
             }
+        }
+
+        // Field access: format as `target.key`
+        CoreExpr::Field { target, key, .. } => {
+            let target_str =
+                core_expr_to_tinct(&target.node, param_scope, substitutions, rename_map, ctx)?;
+            Ok(format!("{}.{}", target_str, key))
         }
 
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
@@ -962,7 +979,8 @@ fn core_expr_to_tinct(
         } => {
             let empty = std::collections::HashMap::new();
             let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
+            let qualified_tag =
+                crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             if let Some(inner) = payload {
                 let inner_str =
                     core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
@@ -979,7 +997,11 @@ fn core_expr_to_tinct(
         } => {
             let empty = std::collections::HashMap::new();
             let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-            Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env))
+            Ok(crate::type_tags::ctor_display_name(
+                *type_decl_id,
+                *ctor_index,
+                tycon_env,
+            ))
         }
 
         // ReprDecl: transparent for serialization — emit the inner constructor dict.
@@ -1081,6 +1103,19 @@ fn core_expr_to_tinct_raw(
         // Inside quotes: variables are opaque AST data — emit their names as-is.
         // Annotated Var (Var { annotation: Some(_) }) also uses the name field.
         CoreExpr::Var { name, .. } => Ok(name.clone()),
+
+        // Field access inside quotes: emit as `target.key`
+        CoreExpr::Field { target, key, .. } => {
+            let target_str = core_expr_to_tinct_in_quote(
+                &target.node,
+                depth,
+                param_scope,
+                substitutions,
+                rename_map,
+                ctx,
+            )?;
+            Ok(format!("{}.{}", target_str, key))
+        }
 
         CoreExpr::Sequential { exprs, .. } => {
             let mut parts = Vec::new();
@@ -1337,7 +1372,8 @@ fn core_expr_to_tinct_raw(
         } => {
             let empty = std::collections::HashMap::new();
             let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-            let qualified_tag = crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
+            let qualified_tag =
+                crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             if let Some(inner) = payload {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
@@ -1360,7 +1396,11 @@ fn core_expr_to_tinct_raw(
         } => {
             let empty = std::collections::HashMap::new();
             let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-            Ok(crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env))
+            Ok(crate::type_tags::ctor_display_name(
+                *type_decl_id,
+                *ctor_index,
+                tycon_env,
+            ))
         }
 
         // ReprDecl: transparent in quote context — emit the inner constructor dict.

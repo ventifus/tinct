@@ -15,13 +15,13 @@ use crate::ast::{
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
     SurfaceProgram,
 };
-use crate::error::EvalResult;
 use crate::rust_span;
 use crate::type_tags::{
-    EXPR_CALL, EXPR_CLASS_DECL, EXPR_DICT, EXPR_ENTRY, EXPR_ERROR, EXPR_FN, EXPR_INSTANCE_DECL,
-    EXPR_LET_DECL, EXPR_LITERAL, EXPR_MATCH, EXPR_NAMED_ARG, EXPR_PARAMETER, EXPR_PATTERN_DECL,
-    EXPR_PLACEHOLDER, EXPR_QUOTE, EXPR_REST, EXPR_SEQUENTIAL, EXPR_SPLICE, EXPR_SYNTAX_CLASS,
-    EXPR_TYPE_ALIAS, EXPR_TYPE_ASSERT, EXPR_UNQUOTE, EXPR_UNQUOTE_SPLICE, EXPR_VARREF,
+    EXPR_CALL, EXPR_CLASS_DECL, EXPR_DICT, EXPR_DOT_ACCESS, EXPR_ENTRY, EXPR_ERROR, EXPR_FN,
+    EXPR_INSTANCE_DECL, EXPR_LET_DECL, EXPR_LITERAL, EXPR_MATCH, EXPR_NAMED_ARG, EXPR_PARAMETER,
+    EXPR_PATTERN_DECL, EXPR_PLACEHOLDER, EXPR_QUOTE, EXPR_REST, EXPR_SEQUENTIAL, EXPR_SPLICE,
+    EXPR_SYNTAX_CLASS, EXPR_TYPE_ALIAS, EXPR_TYPE_ASSERT, EXPR_UNQUOTE, EXPR_UNQUOTE_SPLICE,
+    EXPR_VARREF,
 };
 use crate::value::{
     string_val, HashableValue, Thunk, Value, TYPE_ID_DICT, TYPE_ID_EXPR, TYPE_ID_FLOAT,
@@ -402,6 +402,15 @@ pub fn core_expr_to_expr_value(
             let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
             payload.insert(HashableValue::Str("name".into()), mk(string_val(name)));
             make_variant(EXPR_VARREF, payload)
+        }
+
+        // ── Field ────────────────────────────────────────────────────────────────
+        CoreExpr::Field { target, key, .. } => {
+            let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            payload.insert(HashableValue::Str("target".into()), recurse(target));
+            let key_str = key.to_string();
+            payload.insert(HashableValue::Str("key".into()), mk(string_val(&key_str)));
+            make_variant(EXPR_DOT_ACCESS, payload)
         }
 
         // ── Call ─────────────────────────────────────────────────────────────────
@@ -1895,7 +1904,6 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
             guard,
             body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
-            case_captures: crate::ast::CapturesCell::new(),
         });
     }
     Ok(arms)
@@ -2024,7 +2032,7 @@ pub fn surface_program_to_dict(
     program: &SurfaceProgram,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let span = program
         .documents
         .first()
@@ -2053,7 +2061,7 @@ pub fn surface_program_to_dict(
         .documents
         .iter()
         .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx))
-        .collect::<EvalResult<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
 
     root.insert(
         HashableValue::Str("documents".into()),
@@ -2086,7 +2094,10 @@ fn get_char_at(source: &str, line: u32, col: u32) -> Option<char> {
     line_text.chars().nth(target_col.checked_sub(1)?)
 }
 
-fn span_to_thunk_id(span: Span, _ctx: &Arc<crate::eval::EvalContext>) -> EvalResult<Arc<Thunk>> {
+fn span_to_thunk_id(
+    span: Span,
+    _ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     // start position
@@ -2173,7 +2184,7 @@ pub(crate) fn list_to_thunk_id(
     items: impl ExactSizeIterator<Item = Arc<Thunk>>,
     span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
@@ -2199,7 +2210,7 @@ fn surface_document_to_thunk_id(
     span: Span,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     dict.insert(
@@ -2217,7 +2228,7 @@ fn surface_document_to_thunk_id(
                 surface_decl_to_thunk_id(&decl.node, decl.span.clone(), opts, ctx)
             }
         })
-        .collect::<EvalResult<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
 
     dict.insert(
         HashableValue::Str("expressions".into()),
@@ -2234,7 +2245,7 @@ fn surface_document_to_thunk_id(
                 surface_node_to_thunk_id(v, opts, ctx)?,
             ))
         })
-        .collect::<EvalResult<_>>()?;
+        .collect::<Result<_, Box<crate::error::Diagnostic>>>()?;
     dict.insert(
         HashableValue::Str("header".into()),
         Arc::new(Thunk::value(
@@ -2292,7 +2303,7 @@ fn surface_decl_to_thunk_id(
     span: Span,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let mut dict = IndexMap::new();
     let variant_idx: u32;
 
@@ -2393,7 +2404,10 @@ fn surface_decl_to_thunk_id(
             let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
                 .iter()
                 .map(
-                    |method| -> EvalResult<Option<(HashableValue, Arc<Thunk>)>> {
+                    |method| -> Result<
+                        Option<(HashableValue, Arc<Thunk>)>,
+                        Box<crate::error::Diagnostic>,
+                    > {
                         if let Some(key) = method.node.key.as_ref() {
                             if let SurfaceExpression::StringLiteral {
                                 content: key_str, ..
@@ -2410,7 +2424,7 @@ fn surface_decl_to_thunk_id(
                         Ok(None)
                     },
                 )
-                .collect::<EvalResult<Vec<_>>>()?
+                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
                 .into_iter()
                 .flatten()
                 .collect();
@@ -2427,18 +2441,24 @@ fn surface_decl_to_thunk_id(
             );
             // determines: optional integer-keyed list of expression dicts
             if !determines.is_empty() {
-                let determines_dict: IndexMap<HashableValue, Arc<Thunk>> = determines
-                    .iter()
-                    .enumerate()
-                    .map(|(i, fd_node)| -> EvalResult<(HashableValue, Arc<Thunk>)> {
-                        Ok((
-                            HashableValue::Int(i as i64),
-                            surface_node_to_thunk_id(fd_node, opts, ctx)?,
-                        ))
-                    })
-                    .collect::<EvalResult<Vec<_>>>()?
-                    .into_iter()
-                    .collect();
+                let determines_dict: IndexMap<HashableValue, Arc<Thunk>> =
+                    determines
+                        .iter()
+                        .enumerate()
+                        .map(
+                            |(i, fd_node)| -> Result<
+                                (HashableValue, Arc<Thunk>),
+                                Box<crate::error::Diagnostic>,
+                            > {
+                                Ok((
+                                    HashableValue::Int(i as i64),
+                                    surface_node_to_thunk_id(fd_node, opts, ctx)?,
+                                ))
+                            },
+                        )
+                        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
+                        .into_iter()
+                        .collect();
                 dict.insert(
                     HashableValue::Str("determines".into()),
                     Arc::new(Thunk::value(
@@ -2489,7 +2509,7 @@ fn surface_decl_to_thunk_id(
                 .iter()
                 .enumerate()
                 .map(
-                    |(i, (pattern_node, methods))| -> EvalResult<(HashableValue, Arc<Thunk>)> {
+                    |(i, (pattern_node, methods))| -> Result<(HashableValue, Arc<Thunk>), Box<crate::error::Diagnostic>> {
                         let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                         arm_dict.insert(
                             HashableValue::Str("pattern".into()),
@@ -2499,7 +2519,7 @@ fn surface_decl_to_thunk_id(
                         let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
                             .iter()
                             .map(
-                                |method| -> EvalResult<Option<(HashableValue, Arc<Thunk>)>> {
+                                |method| -> Result<Option<(HashableValue, Arc<Thunk>)>, Box<crate::error::Diagnostic>> {
                                     if let Some(key) = method.node.key.as_ref() {
                                         if let SurfaceExpression::StringLiteral {
                                             content: key_str,
@@ -2520,7 +2540,7 @@ fn surface_decl_to_thunk_id(
                                     Ok(None)
                                 },
                             )
-                            .collect::<EvalResult<Vec<_>>>()?
+                            .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
                             .into_iter()
                             .flatten()
                             .collect();
@@ -2552,7 +2572,7 @@ fn surface_decl_to_thunk_id(
                         ))
                     },
                 )
-                .collect::<EvalResult<Vec<_>>>()?
+                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
                 .into_iter()
                 .collect();
             dict.insert(
@@ -2595,7 +2615,7 @@ fn surface_decl_to_thunk_id(
             let form_arcs: Vec<Arc<Thunk>> = forms
                 .iter()
                 .map(|form| surface_node_to_thunk_id(form, opts, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
+                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
             dict.insert(
                 HashableValue::Str("forms".into()),
                 Arc::new(Thunk::value(
@@ -2703,7 +2723,7 @@ fn alloc_entry_list_with_opts(
     entries: &[Spanned<SurfaceEntry>],
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // key: Some(node) → Expr.* variant with corrected bare flag, None → null
@@ -2828,7 +2848,7 @@ fn surface_node_to_thunk_id(
     node: &Arc<SurfaceNode>,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
     // so that bare flags and comment fields are correctly populated.
     let val = if let SurfaceExpression::Dict(entries) = &node.expr {

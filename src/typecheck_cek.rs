@@ -346,6 +346,12 @@ pub(crate) enum TypeCheckCont {
     /// mechanism annotates the source node when this fires.
     PassThrough,
 
+    /// Inferred the target of a field projection — apply structural field lookup.
+    FieldProject {
+        field: crate::ast::DotKey,
+        span: crate::ast::Span,
+    },
+
     /// Inferred the inner expression of a TypeAssert — validate against expected TypeValue.
     TypeAssertInner {
         expected: TypeValue,
@@ -497,15 +503,12 @@ async fn infer_step(
             TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
         }
 
-        // ===== Field access — desugar to [builtin-dict-get "field" base] for type checking =====
+        // ===== Field access — structural TV_RECORD projection =====
         //
-        // foo.bar lowers to [builtin-dict-get "field" base] in lower.rs (the protocol entry
-        // for field access, per doc/16b-rust-tinct-protocol.md §7). The type checker uses
-        // the same protocol entry so that the Indexable constraint fires through
-        // builtin-dict-get's annotation (constraint: [$Indexable c k v]), exactly as it
-        // does when the user writes [get key base] or [builtin-dict-get key base].
-        // Using the protocol name rather than the prelude wrapper "get" satisfies Axiom 1
-        // (Prelude speaks the Rust protocol) and Axiom 4 (Loader/prelude agnosticism).
+        // foo.bar pushes a FieldProject continuation and evaluates the base expression.
+        // When the base type arrives, FieldProject looks up the field in the TV_RECORD
+        // field map, then checks the row tail (RT_CLOSED → error, RT_VAR → Unknown,
+        // RT_UNIFORM → value type). No dependency on builtin-dict-get or Indexable.
         //
         // Leading-dot form (expr: None) is a scope-chain lookup that lowers to a VarRef
         // — it is not a field access and returns Unknown from the type checker.
@@ -523,48 +526,15 @@ async fn infer_step(
                 TypeCheckAction::Done(make_typevalue_unknown())
             }
             Some(base) => {
-                let span = node.span.clone();
-                // Build synthetic VarRef("builtin-dict-get") with unresolved state — the
-                // type checker will resolve it from the env and apply its annotation
-                // constraints ([$Indexable c k v]), producing the precise field type.
-                let get_node = Arc::new(crate::ast::SurfaceNode::new(
-                    crate::ast::SurfaceExpression::VarRef {
-                        name: "builtin-dict-get".to_string(),
-                        escaped: false,
-                        resolution: crate::ast::Resolution::new(),
-                        annotation: None,
-                        do_infer_placeholder: false,
+                stack.push((
+                    TypeCheckCont::FieldProject {
+                        field: field.clone(),
+                        span: node.span.clone(),
                     },
-                    span.clone(),
-                ));
-                // Build synthetic key node: string key for ident fields, integer key for
-                // integer fields (foo.0 → [builtin-dict-get 0 foo], not [builtin-dict-get "0" foo]).
-                let key_node = Arc::new(crate::ast::SurfaceNode::new(
-                    match field {
-                        crate::ast::DotKey::Ident(s) => {
-                            crate::ast::SurfaceExpression::StringLiteral {
-                                prefix: String::new(),
-                                delimiter: "\"".to_string(),
-                                content: s.clone(),
-                            }
-                        }
-                        crate::ast::DotKey::Int(n) => crate::ast::SurfaceExpression::Int(*n as i64),
-                    },
-                    span.clone(),
-                ));
-                // Evaluate the synthetic [builtin-dict-get key base] call.
-                let call_node = Arc::new(crate::ast::SurfaceNode::new(
-                    crate::ast::SurfaceExpression::Call {
-                        func: get_node,
-                        args: vec![key_node, Arc::clone(base)],
-                        named_args: vec![],
-                        implied: true,
-                        pipe_span: None,
-                    },
-                    span,
+                    Arc::clone(node),
                 ));
                 stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
-                TypeCheckAction::Eval(call_node, Arc::clone(env))
+                TypeCheckAction::Eval(Arc::clone(base), Arc::clone(env))
             }
         },
 
@@ -1598,6 +1568,86 @@ async fn apply_cont(
         // ===== PassThrough =====
         TypeCheckCont::PassThrough => TypeCheckAction::Done(child_ty),
 
+        // ===== FieldProject =====
+        TypeCheckCont::FieldProject { field, span } => {
+            // Apply substitution to get the settled type
+            let settled = state.apply(&child_ty);
+
+            // Check if it's a TV_RECORD
+            match typevalue_ctor_index(&settled) {
+                Some(TV_RECORD) => {
+                    // Extract the field map
+                    let field_map = typevalue_record_fields_pub(&settled);
+
+                    // Convert DotKey to string for lookup
+                    let field_name = match &field {
+                        crate::ast::DotKey::Ident(s) => s.clone(),
+                        crate::ast::DotKey::Int(n) => n.to_string(),
+                    };
+
+                    // Try to find the field in the field map
+                    if let Some(field_ty) = field_map.get(&field_name) {
+                        // Field found — return its type
+                        TypeCheckAction::Done(Arc::clone(field_ty))
+                    } else {
+                        // Field not found in the explicit fields — check the tail
+                        if let Some(tail) =
+                            crate::type_infer::typevalue_payload_field(&settled, FIELD_TAIL)
+                        {
+                            match typevalue_ctor_index(&tail) {
+                                Some(RT_CLOSED) => {
+                                    // Closed record — field doesn't exist
+                                    errors.push(Diagnostic::error(
+                                        "field-not-found",
+                                        &format!(
+                                            "field '{}' not found in closed record",
+                                            field_name
+                                        ),
+                                        span.clone(),
+                                    ));
+                                    TypeCheckAction::Done(make_typevalue_never())
+                                }
+                                Some(RT_VAR) => {
+                                    // Open row variable — any field is possible
+                                    TypeCheckAction::Done(make_typevalue_unknown())
+                                }
+                                Some(RT_UNIFORM) => {
+                                    // Uniform row — extract the value type
+                                    if let Some(value_ty) =
+                                        crate::type_infer::typevalue_payload_field(
+                                            &tail,
+                                            RT_FIELD_VALUE_TYPE,
+                                        )
+                                    {
+                                        TypeCheckAction::Done(value_ty)
+                                    } else {
+                                        // Malformed RT_UNIFORM — fallback to Unknown
+                                        TypeCheckAction::Done(make_typevalue_unknown())
+                                    }
+                                }
+                                _ => {
+                                    // Unknown tail variant — gradual fallback
+                                    TypeCheckAction::Done(make_typevalue_unknown())
+                                }
+                            }
+                        } else {
+                            // No tail field (malformed TV_RECORD) — treat as closed
+                            errors.push(Diagnostic::error(
+                                "field-not-found",
+                                &format!("field '{}' not found in record", field_name),
+                                span.clone(),
+                            ));
+                            TypeCheckAction::Done(make_typevalue_never())
+                        }
+                    }
+                }
+                _ => {
+                    // Not a TV_RECORD — gradual: can't type-check field access on unknown/non-record types
+                    TypeCheckAction::Done(make_typevalue_unknown())
+                }
+            }
+        }
+
         // ===== Unquote =====
         TypeCheckCont::Unquote => TypeCheckAction::Done(child_ty),
 
@@ -1778,7 +1828,7 @@ async fn infer_var_ref(
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
     // Resolver-address primary: resolution_table → direct frame lookup.
-    // LGM/ClosureCapture: slot-based via get_scheme_at; miss is a type-checker setup error.
+    // Dispatch: slot-based via get_scheme_at; miss is a type-checker setup error.
     // Parameter: direct lookup in state.current_parameter_frame (set by infer_fn_push_cont
     //   and MatchScrutinee/MatchArm arm setup) — no level arithmetic needed.
     // No resolver address: type-checker-internal only (narrowing overrides, class dispatch).
@@ -1839,33 +1889,6 @@ async fn infer_var_ref(
                     ));
                     None
                 }
-            }
-            crate::ast::VarAddr::ClosureCapture(_) => {
-                // Nested-function reference: the surface resolver assigns ClosureCapture(i)
-                // when a name is used inside a function but defined in an outer function.
-                // The type checker has no separate closure capture env; look up by name
-                // in the env parent chain, which includes the outer function's scope.
-                let scheme = env.read().unwrap().get_scheme(name);
-                if scheme.is_some() {
-                    env.write().unwrap().mark_referenced_by_name(name);
-                    if let Some(def_span) = Env::find_def_span_by_name(env, name) {
-                        let dep_id = BindingId {
-                            def_span,
-                            name: name.to_string(),
-                        };
-                        state.closure_captures.push(dep_id.clone());
-                        if let Some(ref binder) = state.current_binding {
-                            if *binder != dep_id {
-                                state
-                                    .use_def
-                                    .entry(binder.clone())
-                                    .or_default()
-                                    .insert(dep_id);
-                            }
-                        }
-                    }
-                }
-                scheme
             }
             crate::ast::VarAddr::EffectPerform { slot } => {
                 // Typeclass method call — resolved at runtime by scanning the accumulated group
@@ -2014,14 +2037,36 @@ async fn infer_var_ref(
                     }
                     slot_scheme
                 } else {
-                    errors.push(Diagnostic::error(
+                    let mut diag = Diagnostic::error(
                         "resolver-slot-miss",
                         format!(
                             "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address",
                             resolver_level, slot, name
                         ),
                         node.span.clone(),
-                    ));
+                    );
+                    let mut depth = 0u32;
+                    let mut current_env = Some(Arc::clone(env));
+                    while let Some(env_arc) = current_env {
+                        let e = env_arc.read().unwrap();
+                        let slot_count = e.slots_len();
+                        let names: Vec<String> =
+                            e.iter_slots().map(|(n, _)| n.to_string()).take(5).collect();
+                        let preview = if names.is_empty() {
+                            "(empty)".to_string()
+                        } else if slot_count > 5 {
+                            format!("[{}, ... +{} more]", names.join(", "), slot_count - 5)
+                        } else {
+                            format!("[{}]", names.join(", "))
+                        };
+                        diag = diag.with_note(format!(
+                            "env depth {}: {} slots {}",
+                            depth, slot_count, preview
+                        ));
+                        current_env = e.parent.as_ref().map(Arc::clone);
+                        depth += 1;
+                    }
+                    errors.push(diag);
                     None
                 }
             }
@@ -4024,33 +4069,6 @@ fn extract_typevalue_constructors(body: &TypeValue) -> Vec<(String, usize)> {
 /// Recursively scan a pattern AST node for VarRef nodes with resolution Some(None).
 /// These are resolver errors (undefined variable references) that should make the arm
 /// opaque to coverage analysis.
-fn arm_has_unresolved_varrefs(node: &SurfaceNode) -> bool {
-    match &node.expr {
-        SurfaceExpression::VarRef { resolution, .. } => {
-            matches!(resolution.get(), Some(None))
-        }
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            arm_has_unresolved_varrefs(func)
-                || args.iter().any(|a| arm_has_unresolved_varrefs(a))
-                || named_args
-                    .iter()
-                    .any(|na| arm_has_unresolved_varrefs(&na.node.value))
-        }
-        SurfaceExpression::Dict(entries) => entries
-            .iter()
-            .any(|e| arm_has_unresolved_varrefs(&e.node.value)),
-        SurfaceExpression::Field { expr, .. } => expr
-            .as_ref()
-            .map_or(false, |e| arm_has_unresolved_varrefs(e)),
-        _ => false,
-    }
-}
-
 async fn run_match_exhaustiveness_check(
     scrutinee_ty: &TypeValue,
     arms: &[SurfaceMatchArm],
@@ -4187,18 +4205,20 @@ async fn run_match_exhaustiveness_check(
 
     if let Some(sig) = sig {
         let mut coverage_patterns: Vec<coverage::CoveragePattern> = Vec::with_capacity(arms.len());
+        let mut had_errors = false;
         for arm in arms {
-            coverage_patterns
-                .push(coverage::ast_pattern_to_coverage(&arm.pattern, Some(tycon_env_ref)).await);
+            match coverage::ast_pattern_to_coverage(&arm.pattern, state).await {
+                Ok(pat) => coverage_patterns.push(pat),
+                Err(diag) => {
+                    errors.push(diag);
+                    had_errors = true;
+                }
+            }
         }
-        // Mark arms with explicit guards OR unresolved VarRefs as opaque to coverage.
-        // Unresolved VarRefs are resolver errors — treating them as wildcards would mask
-        // non-exhaustiveness. Making them opaque means they neither contribute to coverage
-        // nor are flagged as redundant.
-        let has_guards: Vec<bool> = arms
-            .iter()
-            .map(|arm| arm.guard.is_some() || arm_has_unresolved_varrefs(&arm.pattern))
-            .collect();
+        if had_errors {
+            return;
+        }
+        let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
         let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
 
         if !result.exhaustive {
@@ -4218,7 +4238,11 @@ async fn run_match_exhaustiveness_check(
             for (i, arm) in arms.iter().enumerate() {
                 diag = diag.with_label(
                     arm.pattern.span.clone(),
-                    format!("arm {}: {}", i + 1, result.resolved[i].render(tycon_env_ref)),
+                    format!(
+                        "arm {}: {}",
+                        i + 1,
+                        result.resolved[i].render(tycon_env_ref)
+                    ),
                 );
             }
             errors.push(diag);
@@ -6160,7 +6184,6 @@ mod tests {
             params,
             body,
             desugared: false,
-            resolved_captures: crate::ast::CapturesCell::new(),
             resolved_return_annotation: crate::ast::TypeAnnotation::new(),
         })
     }

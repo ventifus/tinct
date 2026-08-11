@@ -120,7 +120,7 @@ pub async fn format_source_tinct(
             .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — the formatter script must return a bare String.
-    // If it raises (calls `raise`), the error propagates as an EvalError here.
+    // If it raises (calls `raise`), the error propagates as an Diagnostic here.
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)
         .await
         .map_err(|e| format!("formatter error: {e}"))?;

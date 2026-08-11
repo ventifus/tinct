@@ -8,7 +8,7 @@
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (TypeAssertCheck::Resolved when type checker ran, Source otherwise)
-//! - `Field` → `Call(builtin-dict-get, [Str/Int(key), target])` (unified key-based lookup)
+//! - `Field { expr: Some(inner) }` → `CoreExpr::Field { target, key }` (structural field access)
 //! - `UnitVariant` → `CoreExpr::UnitVariant` (1:1 structural lowering)
 //! - `MakeVariant` → `CoreExpr::Variant` (1:1 structural lowering)
 //! - `TypeDecl` → `CoreExpr::TypeDecl` (1:1 structural lowering)
@@ -28,16 +28,6 @@ use crate::rust_span;
 use crate::type_infer::{
     make_typevalue_fn_with_flags, make_typevalue_nominal, make_typevalue_unknown,
 };
-
-/// The tinct name of the dict-field accessor builtin.
-///
-/// Every dot-access (`expr.field`) desugars to `[FIELD_GETTER_NAME key target]`. The
-/// resolver writes the VarAddr for this name into `Field.resolution` (via a seed frame
-/// built from `root_group_resolver_map()`); the lowerer reads it out and emits a
-/// `CoreExpr::Var` referencing the builtin at its correct runtime slot. Centralising the
-/// name here prevents the string from drifting between the resolver, the lowerer, and
-/// diagnostic messages.
-pub(crate) const FIELD_GETTER_NAME: &str = "builtin-dict-get";
 
 /// Name of the raise builtin — used in tests to verify consistency with builtins_core.rs
 /// registration. The MethodDispatcher was removed in S-1024; EffectPerform now handles dispatch.
@@ -123,10 +113,10 @@ pub(crate) fn process_escapes(content: &str, delimiter: &str) -> String {
 pub fn lower(
     arc: &Arc<SurfaceNode>,
     type_display_names: &std::collections::HashMap<u64, String>,
-) -> (Spanned<CoreExpr>, Vec<Diagnostic>) {
+) -> crate::error::DiagnosticResult<Spanned<CoreExpr>> {
     let mut diagnostics = Vec::new();
     let spanned = lower_inner(arc, &mut diagnostics, type_display_names);
-    (spanned, diagnostics)
+    crate::error::DiagnosticResult::ok(spanned).with_diagnostics(diagnostics)
 }
 
 /// Internal lowering entry point that threads the diagnostics accumulator.
@@ -247,12 +237,12 @@ fn lower_expr(
                     // `x: body` where `x` is out of scope should produce a non-matching
                     // pin (MatchExhaustion), not a match-everything arm.
                     //
-                    // The sentinel addr ClosureCapture(u32::MAX) is never assigned by
-                    // the resolver to real bindings (capture indices are assigned 0..N-1).
+                    // The sentinel addr Dispatch(0, u32::MAX) is never assigned by
+                    // the resolver to real bindings (slot indices are assigned 0..N-1).
                     // In pattern position, bind_or_pin_name detects this sentinel and
                     // returns Ok(false) (non-match). In body position, eval_core's Var
-                    // arm looks up closure_env[u32::MAX as usize] → None →
-                    // EvalError::undefined_variable, which is the correct deferred error
+                    // arm looks up group[u32::MAX as usize] → None →
+                    // Diagnostic (undefined variable), which is the correct deferred error
                     // for referencing an undefined name.
                     if name == "_" {
                         CoreExpr::Placeholder {
@@ -261,7 +251,7 @@ fn lower_expr(
                     } else {
                         CoreExpr::Var {
                             name: name.clone(),
-                            addr: VarAddr::ClosureCapture(u32::MAX),
+                            addr: VarAddr::Dispatch(0, u32::MAX),
                             annotation: annotation.clone(),
                             inferred_type: make_typevalue_unknown(),
                         }
@@ -274,12 +264,7 @@ fn lower_expr(
                     inferred_type: make_typevalue_unknown(),
                 },
                 None => {
-                    // Resolver did not run on this VarRef (OnceLock unset = internal error).
-                    // This occurs if the resolver skipped this node entirely — e.g., inside a
-                    // Quote body that wasn't suppressed, or a newly constructed node that bypassed
-                    // the resolver pass. Emit a diagnostic and produce a Placeholder so the error
-                    // surfaces at force time rather than silently producing wrong output.
-                    let message = format!("undefined variable: {}", name);
+                    let message = format!("VarRef: \"{}\" not resolved", name);
                     diagnostics.push(Diagnostic::error("lower-error", message, arc.span.clone()));
                     CoreExpr::Placeholder {
                         inferred_type: make_typevalue_unknown(),
@@ -291,89 +276,29 @@ fn lower_expr(
         SurfaceExpression::Field {
             expr: Some(inner),
             field,
-            resolution,
             ..
-        } => {
-            let getter_addr = match resolution.get() {
-                Some(Some(addr)) => addr.clone(),
-                _ => {
-                    diagnostics.push(Diagnostic::error(
-                        "lower-error",
-                        format!("unresolved dot-access `.{}`", field),
-                        arc.span.clone(),
-                    ));
-                    return CoreExpr::Placeholder {
-                        inferred_type: make_typevalue_unknown(),
-                    };
-                }
-            };
+        } => CoreExpr::Field {
+            target: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
+            key: field.clone(),
+            inferred_type: make_typevalue_unknown(),
+        },
 
-            let key_core = match field {
-                crate::ast::DotKey::Int(n) => CoreExpr::Int {
-                    value: *n,
-                    inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_INT),
-                },
-                crate::ast::DotKey::Ident(s) => CoreExpr::Str {
-                    value: s.clone(),
-                    inferred_type: make_typevalue_nominal(crate::value::TYPE_ID_STRING),
-                },
-            };
-
-            let getter_var = Arc::new(crate::ast::Spanned::new(
-                CoreExpr::Var {
-                    name: FIELD_GETTER_NAME.to_string(),
-                    addr: getter_addr,
-                    annotation: None,
-                    inferred_type: make_typevalue_unknown(),
-                },
-                arc.span.clone(),
-            ));
-            let key_node = Arc::new(crate::ast::Spanned::new(key_core, arc.span.clone()));
-            let target_node = Arc::new(lower_inner(inner, diagnostics, type_display_names));
-
-            CoreExpr::Call {
-                func: getter_var,
-                args: vec![key_node, target_node],
-                named_args: vec![],
-                implied: true,
-                inferred_type: make_typevalue_unknown(),
-                type_instantiation: None,
-            }
-        }
-
-        // Leading-dot form: `.name` with no preceding expression.
-        // The resolver has written parent-scope coordinates into the node's `resolution` field.
-        // Read them directly — the lowered result is indistinguishable from a normal variable reference.
         SurfaceExpression::Field {
             expr: None,
-            field: crate::ast::DotKey::Ident(name),
+            field,
             resolution,
             ..
         } => match resolution.get() {
             Some(Some(addr)) => CoreExpr::Var {
-                name: name.clone(),
+                name: field.to_string(),
                 addr: addr.clone(),
                 annotation: None,
                 inferred_type: make_typevalue_unknown(),
             },
-            Some(None) => {
+            _ => {
                 diagnostics.push(Diagnostic::error(
                     "lower-error",
-                    format!("undefined variable: .{}", name),
-                    arc.span.clone(),
-                ));
-                CoreExpr::Placeholder {
-                    inferred_type: make_typevalue_unknown(),
-                }
-            }
-            None => {
-                // Resolver ran but did not set coordinates for this leading-dot reference.
-                // This happens when the resolver skipped this node's enclosing scope
-                // (e.g. inside a TypeAlias body). The name cannot be resolved — emit
-                // a diagnostic rather than silently producing a MAX/MAX sentinel.
-                diagnostics.push(Diagnostic::error(
-                    "lower-error",
-                    format!("undefined variable: .{}", name),
+                    format!("Field: \"{}\" not resolved", field),
                     arc.span.clone(),
                 ));
                 CoreExpr::Placeholder {
@@ -381,23 +306,6 @@ fn lower_expr(
                 }
             }
         },
-
-        // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
-        // rejects this at parse time, so this is a safety fallback only.
-        SurfaceExpression::Field {
-            expr: None,
-            field: crate::ast::DotKey::Int(_),
-            ..
-        } => {
-            diagnostics.push(Diagnostic::error(
-                "lower-error",
-                "leading-dot integer access is not supported".to_string(),
-                arc.span.clone(),
-            ));
-            CoreExpr::Placeholder {
-                inferred_type: make_typevalue_unknown(),
-            }
-        }
 
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
@@ -540,7 +448,6 @@ fn lower_expr(
             params,
             body,
             desugared,
-            resolved_captures,
             resolved_return_annotation,
         } => {
             // Lower the body first to get its span for wrapping.
@@ -721,21 +628,15 @@ fn lower_expr(
                 diagnostics.push(Diagnostic::info("trace-lower", sig, arc.span.clone()));
             }
 
-            let fn_captures = resolved_captures
-                .get()
-                .expect("resolved_captures not set")
-                .clone();
             let clause = crate::ast::CoreClause {
                 params: params_built,
                 lowered_pattern: None,
                 guard: None,
                 body: Arc::new(final_body),
                 guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                captures: fn_captures.clone(),
             };
             CoreExpr::Fn {
                 clauses: vec![clause],
-                captures: fn_captures,
                 desugared: *desugared,
                 resolved_fn_type,
                 // Carry return_ann into CoreExpr::Fn so the evaluator can populate
@@ -832,11 +733,6 @@ fn lower_expr(
                         diagnostics,
                         type_display_names,
                     )));
-                    let captures: Arc<Vec<(String, VarAddr)>> = arm
-                        .case_captures
-                        .get()
-                        .expect("resolver must set case_captures for every match arm")
-                        .clone();
                     CoreClause {
                         params,
                         lowered_pattern,
@@ -850,7 +746,6 @@ fn lower_expr(
                             diagnostics,
                             type_display_names,
                         )),
-                        captures,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
                     }
                 })
@@ -1022,6 +917,11 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             annotation: annotation.clone(),
             do_infer_placeholder: false,
         },
+        CoreExpr::Field { target, key, .. } => SurfaceExpression::Field {
+            expr: Some(core_expr_to_surface_node(target)),
+            field: key.clone(),
+            resolution: crate::ast::Resolution::new(),
+        },
         CoreExpr::Sequential { exprs, .. } => SurfaceExpression::Sequential(
             exprs.iter().map(|e| core_expr_to_surface_node(e)).collect(),
         ),
@@ -1080,7 +980,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                     .collect(),
                 body: core_expr_to_surface_node(&clause.body),
                 desugared: *desugared,
-                resolved_captures: crate::ast::CapturesCell::new(),
                 resolved_return_annotation: crate::ast::TypeAnnotation::new(),
             }
         }
@@ -1149,16 +1048,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                             syn_span.clone(),
                         )),
                     };
-                    // Reconstruct case_captures cell — set to the clause's captures.
-                    let case_captures = crate::ast::CapturesCell::new();
-                    case_captures.set(Arc::clone(&arm.captures));
                     SurfaceMatchArm {
                         pattern,
                         let_bindings,
                         guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                         body: vec![core_expr_to_surface_node(&arm.body)],
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
-                        case_captures,
                     }
                 })
                 .collect(),
@@ -1297,11 +1192,17 @@ mod tests {
         let span = rust_span!();
         let node = make_node(SurfaceExpression::Int(42), span.clone());
 
-        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (result, diagnostics) = lower_result.into_parts();
+        let value = result.expect("lowering always succeeds");
 
-        assert_eq!(lowered.span, span);
-        assert!(matches!(lowered.node, CoreExpr::Int { value: 42, .. }));
-        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+        assert_eq!(value.span, span);
+        assert!(matches!(value.node, CoreExpr::Int { value: 42, .. }));
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -1322,16 +1223,22 @@ mod tests {
             span,
         );
 
-        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (result, diagnostics) = lower_result.into_parts();
+        let value = result.expect("lowering always succeeds");
 
-        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
-        match lowered.node {
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        match value.node {
             CoreExpr::Var { name, addr, .. } => {
                 assert_eq!(name, "x");
                 // resolution was Dispatch(0, 3) → addr is the same
                 assert_eq!(addr, VarAddr::Dispatch(0, 3));
             }
-            _ => panic!("expected CoreExpr::Var, got {:?}", lowered.node),
+            _ => panic!("expected CoreExpr::Var, got {:?}", value.node),
         }
     }
 
@@ -1351,29 +1258,31 @@ mod tests {
             span.clone(),
         );
 
-        let (lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (result, diagnostics) = lower_result.into_parts();
+        let value = result.expect("lowering always succeeds");
 
         // Unresolvable VarRef produces CoreExpr::Placeholder and a diagnostic.
         assert!(
-            matches!(lowered.node, CoreExpr::Placeholder { .. }),
+            matches!(value.node, CoreExpr::Placeholder { .. }),
             "expected CoreExpr::Placeholder for unresolvable VarRef, got {:?}",
-            lowered.node
+            value.node
         );
         // The error must be reported as a diagnostic.
         assert_eq!(
-            diags.len(),
+            diagnostics.len(),
             1,
             "expected exactly one diagnostic for unresolvable VarRef"
         );
         assert!(
-            diags[0].level == crate::error::DiagnosticLevel::Err,
+            diagnostics[0].level == crate::error::DiagnosticLevel::Err,
             "expected Error diagnostic, got {:?}",
-            diags[0].level
+            diagnostics[0].level
         );
         assert!(
-            diags[0].message.contains("unbound"),
+            diagnostics[0].message.contains("unbound"),
             "diagnostic message should mention the variable name: {}",
-            diags[0].message
+            diagnostics[0].message
         );
     }
 
@@ -1404,12 +1313,14 @@ mod tests {
             span,
         );
 
-        let (lowered, _diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (result, _diagnostics) = lower_result.into_parts();
+        let value = result.expect("lowering always succeeds");
 
         assert!(
-            matches!(lowered.node, CoreExpr::Placeholder { .. }),
+            matches!(value.node, CoreExpr::Placeholder { .. }),
             "standalone Decl(TypeAlias) must lower to Placeholder, got {:?}",
-            lowered.node
+            value.node
         );
     }
 
@@ -1453,8 +1364,10 @@ mod tests {
                 SurfaceItem::Expr(n) => n,
                 SurfaceItem::Decl(_) => continue,
             };
-            let (core_spanned, _diags) = lower(node, &std::collections::HashMap::new());
-            entries.push((format!("{expr_idx}"), Arc::new(core_spanned)));
+            let lower_result = lower(node, &std::collections::HashMap::new());
+            let (result, _diagnostics) = lower_result.into_parts();
+            let value = result.expect("lowering always succeeds");
+            entries.push((format!("{expr_idx}"), Arc::new(value)));
             expr_idx += 1;
         }
 
@@ -1559,11 +1472,8 @@ mod tests {
     /// Build a minimal `SurfaceExpression::Fn` whose return annotation is
     /// `@[trace: N]` (a PropertyDict with a single `trace` key).
     ///
-    /// `resolved_captures` is pre-set to an empty capture list so `lower()` does not panic
-    /// with "resolved_captures not set". In practice the resolver sets this; in unit tests
-    /// we must set it manually before calling `lower()`.
     fn make_trace_fn_node(trace_value: i64, span: crate::ast::Span) -> Arc<SurfaceNode> {
-        use crate::ast::{Annotation, CapturesCell, SurfaceEntry, SurfaceParam, TypeAnnotation};
+        use crate::ast::{Annotation, SurfaceEntry, SurfaceParam, TypeAnnotation};
 
         // Build the `trace: N` entry for the PropertyDict annotation.
         // get_property() matches SurfaceExpression::StringLiteral { content, .. } as key.
@@ -1598,17 +1508,12 @@ mod tests {
         // Empty param list — no typed params means no param TypeAssert checks.
         let params: Vec<Spanned<SurfaceParam>> = Vec::new();
 
-        // resolved_captures MUST be pre-set; lower() panics with expect() if not set.
-        let captures_cell = CapturesCell::new();
-        captures_cell.set(Arc::new(Vec::new()));
-
         Arc::new(SurfaceNode::new(
             SurfaceExpression::Fn {
                 return_ann,
                 params,
                 body,
                 desugared: false,
-                resolved_captures: captures_cell,
                 resolved_return_annotation: TypeAnnotation::new(),
             },
             span,
@@ -1632,13 +1537,17 @@ mod tests {
         let span = rust_span!();
         let node = make_trace_fn_node(1, span);
 
-        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        let trace_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.kind == "trace-lower")
+            .collect();
         assert!(
             !trace_diags.is_empty(),
             "Expected at least one trace-lower diagnostic for @[trace: 1] fn; got: {:?}",
-            diags
+            diagnostics
         );
         assert_eq!(
             trace_diags[0].level,
@@ -1659,13 +1568,17 @@ mod tests {
         // trace: 0 — value 0 must NOT trigger trace-lower (value-based guard, same as typecheck)
         let node = make_trace_fn_node(0, span);
 
-        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        let trace_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.kind == "trace-lower")
+            .collect();
         assert!(
             trace_diags.is_empty(),
             "Expected NO trace-lower diagnostic for @[trace: 0] — guard requires >= 1; got: {:?}",
-            diags
+            diagnostics
         );
     }
 
@@ -1675,15 +1588,13 @@ mod tests {
     /// would pass `test_trace_annotation_lower_emits_diagnostic` but fail here.
     #[test]
     fn test_no_trace_lower_without_annotation() {
-        use crate::ast::{CapturesCell, SurfaceParam, TypeAnnotation};
+        use crate::ast::{SurfaceParam, TypeAnnotation};
 
         let span = rust_span!();
 
         // Plain function with NO return annotation — return_ann is None.
         let body = Arc::new(SurfaceNode::new(SurfaceExpression::Int(42), span.clone()));
         let params: Vec<Spanned<SurfaceParam>> = Vec::new();
-        let captures_cell = CapturesCell::new();
-        captures_cell.set(Arc::new(Vec::new()));
 
         let node = Arc::new(SurfaceNode::new(
             SurfaceExpression::Fn {
@@ -1691,15 +1602,18 @@ mod tests {
                 params,
                 body,
                 desugared: false,
-                resolved_captures: captures_cell,
                 resolved_return_annotation: TypeAnnotation::new(),
             },
             span,
         ));
 
-        let (_lowered, diags) = lower(&node, &std::collections::HashMap::new());
+        let lower_result = lower(&node, &std::collections::HashMap::new());
+        let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diags.iter().filter(|d| d.kind == "trace-lower").collect();
+        let trace_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.kind == "trace-lower")
+            .collect();
         assert!(
             trace_diags.is_empty(),
             "Expected zero trace-lower diagnostics for unannotated function; got: {:?}",

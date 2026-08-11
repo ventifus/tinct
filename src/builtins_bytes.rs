@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::eval::materialize;
 use crate::value::{bytes_val, BuiltinArgs, Thunk, Value};
 use subtle::ConstantTimeEq;
@@ -22,7 +22,7 @@ use subtle::ConstantTimeEq;
 /// ```
 pub(crate) fn builtin_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -34,7 +34,7 @@ pub(crate) fn builtin_bytes(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "bytes does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -57,7 +57,7 @@ pub(crate) fn builtin_bytes(
                     result.extend_from_slice(bytes);
                 }
                 None => {
-                    return Err(EvalError::type_mismatch_ctx(
+                    return Err(Diagnostic::type_mismatch_ctx(
                         "bytes".to_string(),
                         "Bytes",
                         ctx.type_display_name(val.type_decl_id_of()),
@@ -84,7 +84,7 @@ pub(crate) fn builtin_bytes(
 /// ```
 pub(crate) fn builtin_bytes_find(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -96,7 +96,7 @@ pub(crate) fn builtin_bytes_find(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "bytes-find does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -105,7 +105,7 @@ pub(crate) fn builtin_bytes_find(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "bytes-find requires exactly 2 arguments, got {}",
                     args.len()
@@ -123,7 +123,7 @@ pub(crate) fn builtin_bytes_find(
         let haystack = match haystack_val.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-find".to_string(),
                     "Bytes",
                     ctx.type_display_name(haystack_val.type_decl_id_of()),
@@ -136,7 +136,7 @@ pub(crate) fn builtin_bytes_find(
         let needle = match needle_val.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-find".to_string(),
                     "Bytes",
                     ctx.type_display_name(needle_val.type_decl_id_of()),
@@ -193,7 +193,7 @@ pub(crate) fn builtin_bytes_find(
 /// ```
 pub(crate) fn builtin_bytes_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -218,14 +218,14 @@ pub(crate) fn builtin_bytes_of(
                             bytes.push(n as u8);
                         }
                         Value::Int { n, .. } => {
-                            return Err(EvalError::internal(
+                            return Err(Diagnostic::internal(
                                 format!("bytes-of: integer {n} out of range 0-255"),
                                 call_span,
                             )
                             .into());
                         }
                         _ => {
-                            return Err(EvalError::type_mismatch_ctx(
+                            return Err(Diagnostic::type_mismatch_ctx(
                                 "bytes-of".to_string(),
                                 "Int",
                                 ctx.type_display_name(item_val.type_decl_id_of()),
@@ -237,7 +237,7 @@ pub(crate) fn builtin_bytes_of(
                 }
             }
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-of".to_string(),
                     "Seq or Dict",
                     ctx.type_display_name(val.type_decl_id_of()),
@@ -263,7 +263,7 @@ pub(crate) fn builtin_bytes_of(
 /// ```
 pub(crate) fn builtin_bytes_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -275,7 +275,7 @@ pub(crate) fn builtin_bytes_concat(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "bytes-concat does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -284,7 +284,7 @@ pub(crate) fn builtin_bytes_concat(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "bytes-concat requires exactly 2 arguments, got {}",
                     args.len()
@@ -302,7 +302,7 @@ pub(crate) fn builtin_bytes_concat(
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-concat".to_string(),
                     "Bytes",
                     ctx.type_display_name(val1.type_decl_id_of()),
@@ -315,7 +315,7 @@ pub(crate) fn builtin_bytes_concat(
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-concat".to_string(),
                     "Bytes",
                     ctx.type_display_name(val2.type_decl_id_of()),
@@ -345,7 +345,7 @@ pub(crate) fn builtin_bytes_concat(
 /// ```
 pub(crate) fn builtin_bytes_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -357,7 +357,7 @@ pub(crate) fn builtin_bytes_equal(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "bytes-equal? does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -366,7 +366,7 @@ pub(crate) fn builtin_bytes_equal(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "bytes-equal? requires exactly 2 arguments, got {}",
                     args.len()
@@ -384,7 +384,7 @@ pub(crate) fn builtin_bytes_equal(
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     ctx.type_display_name(val1.type_decl_id_of()),
@@ -397,7 +397,7 @@ pub(crate) fn builtin_bytes_equal(
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     ctx.type_display_name(val2.type_decl_id_of()),
@@ -434,7 +434,7 @@ pub(crate) fn builtin_bytes_equal(
 /// ```
 pub(crate) fn builtin_ct_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -446,7 +446,7 @@ pub(crate) fn builtin_ct_equal(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "ct-equal? does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -455,7 +455,7 @@ pub(crate) fn builtin_ct_equal(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!("ct-equal? requires exactly 2 arguments, got {}", args.len()),
                 call_span,
             )
@@ -470,7 +470,7 @@ pub(crate) fn builtin_ct_equal(
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "ct-equal?".to_string(),
                     "Bytes",
                     ctx.type_display_name(val1.type_decl_id_of()),
@@ -483,7 +483,7 @@ pub(crate) fn builtin_ct_equal(
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "ct-equal?".to_string(),
                     "Bytes",
                     ctx.type_display_name(val2.type_decl_id_of()),
@@ -534,7 +534,7 @@ pub(crate) fn builtin_ct_equal(
 /// Returns Bytes of the appropriate length.
 pub(crate) fn builtin_encode(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -546,7 +546,7 @@ pub(crate) fn builtin_encode(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "builtin-encode does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -555,7 +555,7 @@ pub(crate) fn builtin_encode(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "builtin-encode requires exactly 2 arguments (format, value), got {}",
                     args.len()
@@ -575,7 +575,7 @@ pub(crate) fn builtin_encode(
         let fmt_int = match &fmt_val {
             Value::Int { n, .. } => *n,
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Int (format discriminant)",
                     ctx.type_display_name(fmt_val.type_decl_id_of()),
@@ -599,7 +599,7 @@ pub(crate) fn builtin_encode(
         // Helper closures for error messages
         let require_int = || {
             as_i64.ok_or_else(|| {
-                EvalError::type_mismatch_ctx(
+                Diagnostic::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Int",
                     ctx.type_display_name(num_val.type_decl_id_of()),
@@ -609,7 +609,7 @@ pub(crate) fn builtin_encode(
         };
         let require_float = || {
             as_f64.ok_or_else(|| {
-                EvalError::type_mismatch_ctx(
+                Diagnostic::type_mismatch_ctx(
                     "builtin-encode".to_string(),
                     "Float or Int",
                     ctx.type_display_name(num_val.type_decl_id_of()),
@@ -642,7 +642,7 @@ pub(crate) fn builtin_encode(
             16 => require_float()?.to_le_bytes().to_vec(),          // Float64LE
             17 => require_float()?.to_be_bytes().to_vec(),          // Float64BE
             other => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!(
                         "builtin-encode: unknown format discriminant {}. Expected 0..17 \
                          (0=Int8, 1=UInt8, 2=Int16LE, 3=Int16BE, 4=UInt16LE, 5=UInt16BE, \
@@ -671,7 +671,7 @@ pub(crate) fn builtin_encode(
 /// O(1) — direct slice index into the underlying `Arc<[u8]>`.
 pub(crate) fn builtin_bytes_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -683,7 +683,7 @@ pub(crate) fn builtin_bytes_get(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "builtin-bytes-get does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -692,7 +692,7 @@ pub(crate) fn builtin_bytes_get(
         }
 
         if args.len() != 2 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "builtin-bytes-get requires exactly 2 arguments (i, b), got {}",
                     args.len()
@@ -710,7 +710,7 @@ pub(crate) fn builtin_bytes_get(
         let i = match i_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-get".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -723,7 +723,7 @@ pub(crate) fn builtin_bytes_get(
         let bytes = match b_val.as_bytes() {
             Some(b) => b,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-get".to_string(),
                     "Bytes",
                     ctx.type_display_name(b_val.type_decl_id_of()),
@@ -735,7 +735,7 @@ pub(crate) fn builtin_bytes_get(
 
         let len = bytes.len() as i64;
         if i < 0 || i >= len {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!(
                     "builtin-bytes-get: index {} out of bounds for Bytes of length {}",
                     i, len
@@ -768,7 +768,7 @@ pub(crate) fn builtin_bytes_get(
 /// O(1).
 pub(crate) fn builtin_bytes_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -780,7 +780,7 @@ pub(crate) fn builtin_bytes_to_int(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "builtin-bytes-to-int does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -789,7 +789,7 @@ pub(crate) fn builtin_bytes_to_int(
         }
 
         if args.len() != 1 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "builtin-bytes-to-int requires exactly 1 argument (b), got {}",
                     args.len()
@@ -805,7 +805,7 @@ pub(crate) fn builtin_bytes_to_int(
         let bytes = match b_val.as_bytes() {
             Some(b) => b,
             None => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-to-int".to_string(),
                     "Bytes",
                     ctx.type_display_name(b_val.type_decl_id_of()),
@@ -816,7 +816,7 @@ pub(crate) fn builtin_bytes_to_int(
         };
 
         if bytes.len() != 8 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!(
                     "builtin-bytes-to-int requires exactly 8 bytes, got {}",
                     bytes.len()
@@ -852,7 +852,7 @@ pub(crate) fn builtin_bytes_to_int(
 /// O(1) — shares the underlying `Arc<[u8]>` without copying, just adjusts offsets.
 pub(crate) fn builtin_bytes_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -864,7 +864,7 @@ pub(crate) fn builtin_bytes_slice(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(EvalError::internal(
+                return Err(Diagnostic::internal(
                     "builtin-bytes-slice does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -873,7 +873,7 @@ pub(crate) fn builtin_bytes_slice(
         }
 
         if args.len() != 3 {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "builtin-bytes-slice requires exactly 3 arguments (b, start, len), got {}",
                     args.len()
@@ -895,7 +895,7 @@ pub(crate) fn builtin_bytes_slice(
                 source, start, end, ..
             } => (Arc::clone(source), *start, *end),
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Bytes",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -908,7 +908,7 @@ pub(crate) fn builtin_bytes_slice(
         let start_i = match start_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -921,7 +921,7 @@ pub(crate) fn builtin_bytes_slice(
         let len_i = match len_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-bytes-slice".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -934,7 +934,7 @@ pub(crate) fn builtin_bytes_slice(
         let total_len = (base_end - base_start) as i64;
 
         if len_i < 0 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!(
                     "builtin-bytes-slice: len must be non-negative, got {}",
                     len_i
@@ -944,7 +944,7 @@ pub(crate) fn builtin_bytes_slice(
             .into());
         }
         if start_i < 0 || start_i > total_len {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!(
                     "builtin-bytes-slice: start {} out of bounds for Bytes of length {}",
                     start_i, total_len
@@ -955,7 +955,7 @@ pub(crate) fn builtin_bytes_slice(
         }
         let end_i = start_i + len_i;
         if end_i > total_len {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!(
                     "builtin-bytes-slice: start {} + len {} = {} exceeds Bytes length {}",
                     start_i, len_i, end_i, total_len

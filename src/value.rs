@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Scope` (closure-converted EvalFrame-based variable lookup).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Scope` (EvalFrame-based variable lookup).
 
 use std::fmt;
 use std::future::Future;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceDocument, SurfaceNode};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
@@ -63,8 +63,11 @@ pub struct BuiltinArgs {
 /// and T-1774 (ScopeArena eliminated). The h3 driver task in builtins_net.rs uses
 /// `spawn_local` for its `!Send` h3::client::Connection — that is the sole remaining
 /// LocalSet use and is handled by keeping `spawn_local` only for that site.
-pub type BuiltinFn =
-    fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>>;
+pub type BuiltinFn = fn(
+    BuiltinArgs,
+) -> Pin<
+    Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>,
+>;
 
 /// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
 #[repr(u8)]
@@ -140,19 +143,18 @@ pub fn scope_extend(parent: &Scope, new_entries: Vec<std::sync::Arc<Thunk>>) -> 
 
 /// Replaces ScopeArena-based scope chain traversal.
 ///
-/// - `closure_env[i]`: thunk for `VarAddr::ClosureCapture(i)` references (fn captures only)
 /// - `group[i]`: thunk for `VarAddr::Dispatch(_, i)` references (slot = i).
 ///   At document level, `group` is the accumulated_group: root-scope entries at slots 0..N-1,
-///   followed by each dict's entries at cumulative slot offsets. No outer-frame traversal needed.
+///   followed by each dict's entries at cumulative slot offsets. Inside a function body,
+///   `group` is the definition-site scope captured when the function was created.
+///   No outer-frame traversal needed.
 /// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
 ///
-/// All four VarAddr variants index directly into this frame's vectors (EffectPerform does a
+/// All VarAddr variants index directly into this frame's vectors (EffectPerform does a
 /// direct slot lookup in caller_evidence). No outer-frame chain traversal — cross-scope
-/// references are resolved at the resolver level (captures become ClosureCapture; document
-/// cross-dict refs become LGM with cumulative slots).
+/// references resolve through Dispatch (absolute group slot) or Parameter.
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
-    pub closure_env: Scope,
     pub group: Scope,
     pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
     pub caller_evidence: Scope,
@@ -162,7 +164,6 @@ pub struct EvalFrame {
 impl EvalFrame {
     pub fn empty() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: empty_scope(),
             group: empty_scope(),
             params: std::sync::Arc::new(vec![]),
             caller_evidence: empty_scope(),
@@ -171,13 +172,12 @@ impl EvalFrame {
     }
 
     pub fn for_function_call(
-        closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+        definition_scope: Scope,
         params: Vec<std::sync::Arc<Thunk>>,
         caller_evidence: Scope,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: scope_from_flat(closure_env.iter().cloned().collect()),
-            group: empty_scope(),
+            group: definition_scope,
             params: std::sync::Arc::new(params),
             caller_evidence,
             type_inst: std::collections::HashMap::new(),
@@ -185,14 +185,13 @@ impl EvalFrame {
     }
 
     pub fn for_function_call_with_type_inst(
-        closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+        definition_scope: Scope,
         params: Vec<std::sync::Arc<Thunk>>,
         caller_evidence: Scope,
         type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
-            closure_env: scope_from_flat(closure_env.iter().cloned().collect()),
-            group: empty_scope(),
+            group: definition_scope,
             params: std::sync::Arc::new(params),
             caller_evidence,
             type_inst,
@@ -836,17 +835,16 @@ pub enum Value {
     /// For single-clause functions (the common case) `clauses.len() == 1`; multi-clause
     /// functions (from multi-arm instance methods) have `clauses.len() > 1`.
     ///
-    /// `closure_env` is the captured variable vector built at fn-definition time by the
-    /// evaluator walking the first clause's `captures` list against the enclosing EvalFrame.
-    /// All cross-scope captures are resolved at definition time; no outer-frame pointer is
-    /// needed at call time.
+    /// `definition_scope` is the definition-site scope (`frame.group`) captured at
+    /// fn-definition time. All outer-scope names resolve through Dispatch addresses
+    /// into this scope — no closure conversion or outer-frame pointer needed at call time.
     ///
     /// T-2133 will implement full multi-clause dispatch via `invoke_function`. Until then,
     /// call sites that need `params`/`body` must extract them from `clauses[0]` using the
     /// helpers defined for the single-clause common case.
     Function {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
-        closure_env: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
+        definition_scope: Scope,
         annotation: Option<Box<FnAnnotation>>,
         type_val: Option<std::sync::Arc<Value>>,
     },
@@ -1133,12 +1131,12 @@ impl Clone for Value {
             Value::Builder(b) => Value::Builder(Arc::clone(b)),
             Value::Function {
                 clauses,
-                closure_env,
+                definition_scope,
                 annotation,
                 type_val,
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
-                closure_env: std::sync::Arc::clone(closure_env),
+                definition_scope: std::sync::Arc::clone(definition_scope),
                 annotation: annotation.clone(),
                 type_val: type_val.clone(),
             },
@@ -1356,8 +1354,8 @@ impl Clone for Value {
 
 /// State of an async task spawned via `task` builtin.
 pub enum TaskState {
-    Pending(tokio::task::JoinHandle<EvalResult<Value>>),
-    Done(EvalResult<Value>),
+    Pending(tokio::task::JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>),
+    Done(Result<Value, Box<crate::error::Diagnostic>>),
 }
 
 /// Inner state for a channel created via `channel` builtin.
@@ -1693,56 +1691,59 @@ impl fmt::Debug for Value {
     }
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Value {
+    pub fn render(
+        &self,
+        tycon_env: &std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
+    ) -> String {
         match self {
-            Value::Int { n, .. } => write!(f, "{n}"),
-            Value::U64 { n, .. } => write!(f, "{n}"),
-            Value::Float { n, .. } => write!(f, "{n}"),
+            Value::Int { n, .. } => format!("{n}"),
+            Value::U64 { n, .. } => format!("{n}"),
+            Value::Float { n, .. } => format!("{n}"),
             Value::String {
                 source, start, end, ..
             } => {
                 let s = &source[*start..*end];
-                write!(f, "{s:?}")
+                format!("{s:?}")
             }
             Value::Dict { entries, .. } => {
-                write!(f, "[")?;
-                for (i, (key, _)) in entries.iter().enumerate() {
+                let mut out = "[".to_string();
+                for (i, (key, thunk)) in entries.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " ")?;
+                        out.push(' ');
                     }
-                    write!(f, "{key}: <thunk>")?;
+                    out.push_str(&format!("{key}: {}", thunk.render(tycon_env)));
                 }
-                write!(f, "]")
+                out.push(']');
+                out
             }
             Value::Builder(builder) => {
                 if builder.is_frozen() {
-                    write!(f, "<Builder (frozen)>")
+                    "<Builder (frozen)>".to_string()
                 } else {
-                    write!(f, "<Builder>")
+                    "<Builder>".to_string()
                 }
             }
             Value::Function { clauses, .. } => {
-                // Tinct-surface representation shows params from the first clause.
-                // T-2133 will extend this for multi-clause functions.
-                write!(f, "[fn [let")?;
+                let mut out = "[fn [let".to_string();
                 if let Some(clause) = clauses.first() {
                     for p in &clause.params {
-                        write!(f, " {}", p.node.name)?;
+                        out.push_str(&format!(" {}", p.node.name));
                     }
                 }
-                write!(f, "] ...]")
+                out.push_str("] ...]");
+                out
             }
-            Value::Builtin { def, .. } => write!(f, "<builtin {}>", def.name),
-            Value::Proxy { .. } => write!(f, "<proxy>"),
-            Value::DirCap { .. } => write!(f, "<DirCap>"),
-            Value::NetCap { .. } => write!(f, "<NetCap>"),
-            Value::File { .. } => write!(f, "<File>"),
+            Value::Builtin { def, .. } => format!("<builtin {}>", def.name),
+            Value::Proxy { .. } => "<proxy>".to_string(),
+            Value::DirCap { .. } => "<DirCap>".to_string(),
+            Value::NetCap { .. } => "<NetCap>".to_string(),
+            Value::File { .. } => "<File>".to_string(),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.load(Ordering::Acquire) {
-                    write!(f, "<DirCap (revoked)>")
+                    "<DirCap (revoked)>".to_string()
                 } else {
-                    write!(f, "<DirCap (revocable)>")
+                    "<DirCap (revocable)>".to_string()
                 }
             }
             Value::Variant {
@@ -1751,56 +1752,55 @@ impl fmt::Display for Value {
                 payload,
                 ..
             } => {
-                if payload.is_some() {
-                    write!(f, "Variant({}.{})(<payload>)", type_decl_id, ctor_index)
-                } else {
-                    write!(f, "Variant({}.{})", type_decl_id, ctor_index)
+                let tag = crate::coverage::ConstructorTag::Variant {
+                    type_decl_id: *type_decl_id,
+                    ctor_index: *ctor_index,
+                };
+                let name = tag.render(tycon_env);
+                match payload {
+                    Some(thunk) => format!("{name}({})", thunk.render(tycon_env)),
+                    None => name,
                 }
             }
-            Value::Decimal { n, .. } => write!(f, "{n}"),
-            Value::BigInt { n, .. } => write!(f, "{n}"),
+            Value::Decimal { n, .. } => format!("{n}"),
+            Value::BigInt { n, .. } => format!("{n}"),
             Value::Bytes {
                 source, start, end, ..
             } => {
                 let bytes = &source[*start..*end];
-                write!(f, "<bytes:{} bytes>", bytes.len())
+                format!("<bytes:{} bytes>", bytes.len())
             }
-            Value::Uri { uri, .. } => write!(f, "{uri}"),
-            Value::Timestamp { ts, .. } => write!(f, "{ts}"),
-            Value::Duration { nanos, .. } => {
-                write!(f, "{nanos}ns")
-            }
-            Value::ClockCap { .. } => write!(f, "<ClockCap>"),
-            Value::Timezone { .. } => write!(f, "<Timezone>"),
-            Value::QuicSession { .. } => write!(f, "<QuicSession>"),
-            Value::Http2Session { base_url, .. } => write!(f, "<Http2Session {base_url}>"),
-            Value::Http3Session { .. } => write!(f, "<Http3Session>"),
-            Value::QuicDatagramHandle { .. } => write!(f, "<QuicDatagramHandle>"),
-            Value::Program { .. } => write!(f, "<program>"),
-            Value::Document { .. } => write!(f, "<document>"),
-            Value::Expression { node, .. } => write!(
-                f,
+            Value::Uri { uri, .. } => format!("{uri}"),
+            Value::Timestamp { ts, .. } => format!("{ts}"),
+            Value::Duration { nanos, .. } => format!("{nanos}ns"),
+            Value::ClockCap { .. } => "<ClockCap>".to_string(),
+            Value::Timezone { .. } => "<Timezone>".to_string(),
+            Value::QuicSession { .. } => "<QuicSession>".to_string(),
+            Value::Http2Session { base_url, .. } => format!("<Http2Session {base_url}>"),
+            Value::Http3Session { .. } => "<Http3Session>".to_string(),
+            Value::QuicDatagramHandle { .. } => "<QuicDatagramHandle>".to_string(),
+            Value::Program { .. } => "<program>".to_string(),
+            Value::Document { .. } => "<document>".to_string(),
+            Value::Expression { node, .. } => format!(
                 "<expression:{}>",
                 crate::surface_fields::surface_expr_tag(&node.expr)
             ),
-            Value::Task { .. } => write!(f, "<task>"),
-            Value::Channel { .. } => write!(f, "<channel>"),
-            Value::Context { .. } => write!(f, "<context>"),
-            Value::ReactiveCell { .. } => write!(f, "<reactive-cell>"),
-            Value::BroadcastChannel { .. } => write!(f, "<broadcast-channel>"),
-            Value::OneshotSender { .. } => write!(f, "<oneshot-sender>"),
-            Value::OneshotReceiver { .. } => write!(f, "<oneshot-receiver>"),
+            Value::Task { .. } => "<task>".to_string(),
+            Value::Channel { .. } => "<channel>".to_string(),
+            Value::Context { .. } => "<context>".to_string(),
+            Value::ReactiveCell { .. } => "<reactive-cell>".to_string(),
+            Value::BroadcastChannel { .. } => "<broadcast-channel>".to_string(),
+            Value::OneshotSender { .. } => "<oneshot-sender>".to_string(),
+            Value::OneshotReceiver { .. } => "<oneshot-receiver>".to_string(),
             Value::Arena {
                 name, start_env_id, ..
-            } => write!(f, "<arena:{name}@{start_env_id}>"),
-            Value::Annotated { inner, .. } => fmt::Display::fmt(inner, f),
-            Value::TypeContext { .. } => write!(f, "<TypeContext>"),
+            } => format!("<arena:{name}@{start_env_id}>"),
+            Value::Annotated { inner, .. } => inner.render(tycon_env),
+            Value::TypeContext { .. } => "<TypeContext>".to_string(),
             Value::CoreDocument { entries, .. } => {
-                write!(f, "<core-document:{} entries>", entries.len())
+                format!("<core-document:{} entries>", entries.len())
             }
-            Value::Scope { slots, .. } => {
-                write!(f, "<Scope: {} entries>", slots.len())
-            }
+            Value::Scope { slots, .. } => format!("<Scope: {} entries>", slots.len()),
         }
     }
 }
@@ -1981,7 +1981,7 @@ pub struct ThunkInner {
     pub unevaluated: Mutex<(Option<UnevaluatedState>, Option<tokio::task::Id>)>,
 
     /// Terminal result. Set exactly once (OnceCell).
-    pub result: tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>,
+    pub result: tokio::sync::OnceCell<Result<Value, Arc<Diagnostic>>>,
 
     /// Resolves when result is set. Allows tasks to await settlement.
     /// Lazily initialized: only allocated when `settled()` is first awaited.
@@ -2000,7 +2000,7 @@ pub struct Thunk {
 pub(crate) struct ThunkPanicGuard(pub(crate) Option<Arc<Thunk>>);
 
 impl ThunkPanicGuard {
-    pub(crate) fn settle(mut self, result: Result<Value, Arc<EvalError>>) {
+    pub(crate) fn settle(mut self, result: Result<Value, Arc<Diagnostic>>) {
         let thunk = self.0.take().unwrap();
         thunk.settle(result);
     }
@@ -2009,7 +2009,7 @@ impl ThunkPanicGuard {
 impl Drop for ThunkPanicGuard {
     fn drop(&mut self) {
         if let Some(thunk) = self.0.take() {
-            thunk.settle(Err(Arc::new(EvalError::internal(
+            thunk.settle(Err(Arc::new(Diagnostic::internal(
                 "thunk evaluation task panicked".to_string(),
                 thunk.span.clone(),
             ))));
@@ -2262,7 +2262,7 @@ impl Thunk {
     /// The depth limit is enforced at the continuation stack
     /// level (MAX_CONTINUATION_STACK in eval_materialize.rs) before any thunk is
     /// settled, which is the correct enforcement point.
-    pub fn settle(&self, result: Result<Value, Arc<EvalError>>) {
+    pub fn settle(&self, result: Result<Value, Arc<Diagnostic>>) {
         // Resolve the type closure and set type_val on the Value before storing.
         let result = if let Ok(mut value) = result {
             let resolved = crate::eval::resolve_type_closure(&self.inferred_type, &self.type_inst);
@@ -2440,8 +2440,26 @@ impl Thunk {
     /// - `Some(Err(&arc_error))` — thunk settled with an evaluation error
     ///
     /// Use this when the caller needs to distinguish all three states.
-    pub fn peek_result(&self) -> Option<Result<&Value, &Arc<EvalError>>> {
+    pub fn peek_result(&self) -> Option<Result<&Value, &Arc<Diagnostic>>> {
         self.inner.result.get().map(|r| r.as_ref())
+    }
+
+    pub fn render(
+        &self,
+        tycon_env: &std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
+    ) -> String {
+        match self.peek_result() {
+            Some(Ok(v)) => v.render(tycon_env),
+            Some(Err(e)) => format!("<error: {}>", e.message),
+            None => {
+                let loc = &self.span;
+                let ty = self.inferred_type.render(tycon_env);
+                format!(
+                    "<thunk@{}:{}:{} type={ty}>",
+                    loc.file, loc.start_line, loc.start_col
+                )
+            }
+        }
     }
 
     /// Get the materialized value, propagating any evaluation error.
@@ -2450,9 +2468,9 @@ impl Thunk {
     /// (pre-materialized by `pos_strictness` or `force_count`).
     ///
     /// - `Ok(&value)` — thunk settled successfully
-    /// - `Err(Box<EvalError>)` — thunk settled with an evaluation error (propagated)
+    /// - `Err(Box<Diagnostic>)` — thunk settled with an evaluation error (propagated)
     /// - Panics if the thunk is not yet settled (invariant violation)
-    pub fn require_value(&self) -> crate::error::EvalResult<&Value> {
+    pub fn require_value(&self) -> Result<&Value, Box<crate::error::Diagnostic>> {
         match self.peek_result() {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(Box::new((**e).clone())),
@@ -2464,7 +2482,7 @@ impl Thunk {
 
     /// Borrow the cached error without cloning. Returns `None` if the thunk
     /// is not yet settled or settled with a value.
-    pub fn try_get_error(&self) -> Option<&Arc<EvalError>> {
+    pub fn try_get_error(&self) -> Option<&Arc<Diagnostic>> {
         self.inner.result.get()?.as_ref().err()
     }
 
@@ -2637,7 +2655,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
 
-        let error = Arc::new(crate::error::EvalError::internal(
+        let error = Arc::new(crate::error::Diagnostic::internal(
             "test error".to_string(),
             span,
         ));
@@ -2683,11 +2701,11 @@ mod tests {
         let span2 = test_span(5, 1, 5, 10);
         let thunk = Thunk::placeholder(span1.clone());
 
-        let error1 = Arc::new(crate::error::EvalError::internal(
+        let error1 = Arc::new(crate::error::Diagnostic::internal(
             "first error".to_string(),
             span1,
         ));
-        let error2 = Arc::new(crate::error::EvalError::internal(
+        let error2 = Arc::new(crate::error::Diagnostic::internal(
             "second error".to_string(),
             span2,
         ));
@@ -2717,7 +2735,7 @@ mod tests {
         }));
 
         // Attempt to settle with error — must be a no-op.
-        let error = Arc::new(crate::error::EvalError::internal(
+        let error = Arc::new(crate::error::Diagnostic::internal(
             "should not replace".to_string(),
             span,
         ));
@@ -2856,7 +2874,7 @@ mod tests {
         // Verify that peek_result exposes the error — not None.
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
-        let error = Arc::new(crate::error::EvalError::internal(
+        let error = Arc::new(crate::error::Diagnostic::internal(
             "settle error".to_string(),
             span,
         ));
@@ -2874,7 +2892,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
 
-        let error = Arc::new(crate::error::EvalError::internal(
+        let error = Arc::new(crate::error::Diagnostic::internal(
             "test error".to_string(),
             span,
         ));

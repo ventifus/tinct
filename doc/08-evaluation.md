@@ -1422,8 +1422,8 @@ enum Cont {
     BuiltinForceArg(Box<BuiltinForceArgData>),        // force args[0..force_count] then W1 Seq/Spine positions
 
     // eval() continuations
-    // (DotAccessForce was removed — dot access is eliminated by the lowering pass before the
-    // evaluator runs; field-get and slot-get are normal Call nodes, no continuation needed)
+    // (DotAccessForce was removed — dot access lowers to CoreExpr::Field, a first-class
+    // variant evaluated directly by eval_core_expr; no continuation needed)
     TypeAssertCheck(Box<TypeAssertCheckData>),          // validate against TypeAssert annotation
     LetrecChainStep(Box<LetrecChainStepData>),           // process next step in Sequential expression
     ForceAndBind(Box<ForceAndBindData>),                // force dict entry and bind to environment
@@ -1576,7 +1576,7 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | Operation | CEK encoding |
 |----------------------|---------|
 | TypeAssert validation | `Action::EvalCore` (inner expr) + `Cont::TypeAssertCheck` |
-| Dot access (field extraction) | Lowered to `Call(field-get/slot-get, ...)` before eval — no continuation needed |
+| Dot access (field extraction) | `CoreExpr::Field` — evaluated directly in `eval_core_expr` (structural dict lookup, no continuation) |
 | Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::FnCallDispatch` |
 | Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::LetrecChainStep` (for next) |
 | Match expression dispatch | `Action::Materialize` (scrutinee) + `Cont::MatchDispatch` |

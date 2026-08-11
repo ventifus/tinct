@@ -5,8 +5,64 @@ use std::sync::Arc;
 
 use crate::ast::Span;
 
-/// Convenience type alias for evaluation results.
-pub type EvalResult<T> = Result<T, Box<Diagnostic>>;
+/// Result with diagnostics attached to both success and failure paths.
+///
+/// `result` is the clear success/failure signal. `diagnostics` carries
+/// warnings, notes, and errors regardless of outcome.
+///
+/// Fields are private. The only way to extract the Result is `take()`,
+/// which pushes all diagnostics to the EvalContext. This makes it
+/// impossible to forget diagnostic propagation.
+#[must_use]
+pub struct DiagnosticResult<T, E = Diagnostic> {
+    result: Result<T, E>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<T, E> DiagnosticResult<T, E> {
+    pub fn ok(value: T) -> Self {
+        Self {
+            result: Ok(value),
+            diagnostics: vec![],
+        }
+    }
+
+    pub fn err(error: E) -> Self {
+        Self {
+            result: Err(error),
+            diagnostics: vec![],
+        }
+    }
+
+    pub fn with_diagnostics(mut self, diags: Vec<Diagnostic>) -> Self {
+        self.diagnostics.extend(diags);
+        self
+    }
+
+    /// Extract the Result, pushing all diagnostics to the collector.
+    /// This is the only way to access the result.
+    pub fn take(self, collector: &std::sync::Mutex<Vec<Diagnostic>>) -> Result<T, E> {
+        collector
+            .lock()
+            .expect("diagnostic collector mutex poisoned")
+            .extend(self.diagnostics);
+        self.result
+    }
+
+    /// Destructure for test assertions. Not available in production code.
+    #[cfg(test)]
+    pub fn into_parts(self) -> (Result<T, E>, Vec<Diagnostic>) {
+        (self.result, self.diagnostics)
+    }
+
+    /// Transform the success value, carrying diagnostics forward.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> DiagnosticResult<U, E> {
+        DiagnosticResult {
+            result: self.result.map(f),
+            diagnostics: self.diagnostics,
+        }
+    }
+}
 
 /// Arity constraint for function calls.
 #[derive(Debug, Clone, PartialEq)]
@@ -270,7 +326,7 @@ impl Diagnostic {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // EvalError constructor compatibility methods
+    // Diagnostic constructor compatibility methods
     // ─────────────────────────────────────────────────────────────────────
 
     /// Create an error with the Internal escape hatch kind.
@@ -787,10 +843,6 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
-/// Temporary type alias for migration — allows existing call sites to compile.
-/// This will be removed once all 871 call sites are migrated.
-pub type EvalError = Diagnostic;
-
 pub fn has_type_errors(diags: &[Diagnostic]) -> bool {
     diags.iter().any(|d| d.level == DiagnosticLevel::Err)
 }
@@ -805,8 +857,9 @@ pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> S
     let mut out = format!("{}[{}]: {}", diag.level, diag.kind, diag.message);
 
     for (i, label) in diag.labels.iter().enumerate() {
+        let prefix = if i == 0 { " at" } else { "-->" };
         out.push_str(&format!(
-            "\n --> {}:{}:{}",
+            "\n {prefix} {}:{}:{}",
             label.span.file, label.span.start_line, label.span.start_col
         ));
         if let Some(snippet) = render_span_snippet(source, label.span.clone()) {

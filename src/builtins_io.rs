@@ -46,7 +46,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 /// Maximum bytes per single `builtin-file-read` call. Prevents unbounded heap allocation.
@@ -59,7 +59,7 @@ pub(crate) fn extract_dir_cap<'a>(
     val: &'a Value,
     builtin_name: &str,
     span: Span,
-) -> EvalResult<(&'a cap_std::fs::Dir, &'a DirPerms)> {
+) -> Result<(&'a cap_std::fs::Dir, &'a DirPerms), Box<crate::error::Diagnostic>> {
     match val {
         Value::DirCap { dir, perms, .. } => Ok((dir, perms)),
         Value::RevocableDirCap {
@@ -69,7 +69,7 @@ pub(crate) fn extract_dir_cap<'a>(
             ..
         } => {
             if revoked.load(Ordering::Acquire) {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("{builtin_name}: capability has been revoked"),
                     span,
                 )
@@ -77,7 +77,7 @@ pub(crate) fn extract_dir_cap<'a>(
             }
             Ok((inner, perms))
         }
-        other => Err(EvalError::type_mismatch_ctx(
+        other => Err(Diagnostic::type_mismatch_ctx(
             builtin_name.to_string(),
             "DirCap",
             ctx.type_display_name(other.type_decl_id_of()),
@@ -94,9 +94,9 @@ fn check_perm(
     perm_value: bool,
     _builtin_name: &str,
     span: Span,
-) -> EvalResult<()> {
+) -> Result<(), Box<crate::error::Diagnostic>> {
     if !perm_value {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("DirCap: operation requires {perm_name} permission"),
             span,
         )
@@ -109,7 +109,7 @@ fn check_perm(
 /// Takes a String argument, writes it to stdout, returns null (empty dict).
 pub(crate) fn builtin_emit(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -131,7 +131,7 @@ pub(crate) fn builtin_emit(
         use std::io::Write;
         std::io::stdout()
             .write_all(s.as_bytes())
-            .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span.clone()))?;
+            .map_err(|e| Diagnostic::user_error(format!("emit failed: {e}"), call_span.clone()))?;
 
         // Return null (empty dict)
         ok_val(
@@ -156,7 +156,7 @@ pub(crate) fn builtin_emit(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -177,7 +177,7 @@ pub(crate) fn builtin_env(
         };
 
         if !allowed {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("environment variable not allowed: {name}"),
                 call_span,
             )
@@ -187,7 +187,7 @@ pub(crate) fn builtin_env(
         // Read env var
         match std::env::var(&name) {
             Ok(value) => ok_val(string_val(&value), call_span),
-            Err(_) => Err(EvalError::user_error(
+            Err(_) => Err(Diagnostic::user_error(
                 format!("environment variable not set: {name}"),
                 call_span,
             )
@@ -206,7 +206,7 @@ pub(crate) fn builtin_env(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -267,7 +267,7 @@ pub(crate) fn builtin_env_has(
 ///     Returns a new DirCap with the narrowed scope or restricted permissions.
 pub(crate) fn builtin_narrow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -278,7 +278,7 @@ pub(crate) fn builtin_narrow(
     Box::pin(async move {
         // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
         if args.len() < 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("narrow", named.as_ref(), call_span.clone())?;
 
@@ -295,7 +295,7 @@ pub(crate) fn builtin_narrow(
         if matches!(second_arg_val, Value::String { .. }) {
             // Subtree narrowing: [narrow cap "path"]
             if args.len() != 2 {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: subtree mode requires exactly 2 arguments (cap, subpath)".to_string(),
                     call_span,
                 )
@@ -306,7 +306,7 @@ pub(crate) fn builtin_narrow(
 
             // Open subdirectory (RESOLVE_BENEATH applies to subpath)
             let narrowed = dir.open_dir(&subpath).map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
                     call_span.clone(),
                 )
@@ -352,8 +352,11 @@ pub(crate) fn builtin_narrow(
                         // the bare flag name (e.g. "DirPerms.Readable" → "Readable").
                         let empty = std::collections::HashMap::new();
                         let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-                        let ctor_name =
-                            crate::type_tags::ctor_display_name(type_decl_id, ctor_index, tycon_env);
+                        let ctor_name = crate::type_tags::ctor_display_name(
+                            type_decl_id,
+                            ctor_index,
+                            tycon_env,
+                        );
                         let flag_name: &str = ctor_name
                             .split_once('.')
                             .map(|(_, c)| c)
@@ -370,7 +373,7 @@ pub(crate) fn builtin_narrow(
                             "PosixPermissions" => requested.posix_permissions = true,
                             "ExtendedAttributes" => requested.extended_attributes = true,
                             other => {
-                                return Err(EvalError::user_error(
+                                return Err(Diagnostic::user_error(
                             format!(
                                 "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable, Symlinkable, PosixPermissions, ExtendedAttributes)",
                                 other
@@ -382,7 +385,7 @@ pub(crate) fn builtin_narrow(
                         }
                     }
                     other => {
-                        return Err(EvalError::type_mismatch_ctx(
+                        return Err(Diagnostic::type_mismatch_ctx(
                             "narrow".to_string(),
                             "Variant (capability flag) or String (subpath)",
                             ctx.type_display_name(other.type_decl_id_of()),
@@ -409,70 +412,70 @@ pub(crate) fn builtin_narrow(
 
             // Runtime error if a requested flag is not held in the source
             if requested.readable && !perms.readable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Readable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.statable && !perms.statable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Statable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.listable && !perms.listable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Listable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.writable && !perms.writable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Writable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.appendable && !perms.appendable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Appendable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.deletable && !perms.deletable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Deletable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.renameable && !perms.renameable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Renameable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.symlinkable && !perms.symlinkable {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have Symlinkable permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.posix_permissions && !perms.posix_permissions {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have PosixPermissions permission".to_string(),
                     call_span.clone(),
                 )
                 .into());
             }
             if requested.extended_attributes && !perms.extended_attributes {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "narrow: source DirCap does not have ExtendedAttributes permission".to_string(),
                     call_span.clone(),
                 )
@@ -491,7 +494,7 @@ pub(crate) fn builtin_narrow(
             )
         } else {
             // Invalid second argument
-            Err(EvalError::type_mismatch_ctx(
+            Err(Diagnostic::type_mismatch_ctx(
                 "narrow".to_string(),
                 "String (subpath) or Variant (capability flag)",
                 ctx.type_display_name(second_arg_val.type_decl_id_of()),
@@ -507,7 +510,7 @@ pub(crate) fn builtin_narrow(
 /// The RevocableDirCap can be revoked later via `revoke-cap`.
 pub(crate) fn builtin_revocable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -540,7 +543,7 @@ pub(crate) fn builtin_revocable(
                 (inner.try_clone().expect("dir try_clone"), perms.clone())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "revocable".to_string(),
                     "DirCap",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -572,7 +575,7 @@ pub(crate) fn builtin_revocable(
 /// Future operations on the cap will fail.
 pub(crate) fn builtin_revoke_cap(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -605,7 +608,7 @@ pub(crate) fn builtin_revoke_cap(
                     call_span,
                 )
             }
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -626,7 +629,7 @@ pub(crate) fn builtin_revoke_cap(
 /// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
 pub(crate) fn builtin_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -638,7 +641,7 @@ pub(crate) fn builtin_write(
 
         // Expect 3 args: DirCap, String path, String content
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("write", named.as_ref(), call_span.clone())?;
 
@@ -665,7 +668,7 @@ pub(crate) fn builtin_write(
         // Open file for writing (create or truncate)
         use std::io::Write;
         let mut file = dir.create(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("write: failed to create file '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -673,7 +676,7 @@ pub(crate) fn builtin_write(
 
         // Write content
         file.write_all(content.as_bytes()).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("write: failed to write to '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -699,7 +702,7 @@ pub(crate) fn builtin_write(
 /// This ensures the target file is never partially written.
 pub(crate) fn builtin_write_atomic(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -711,7 +714,7 @@ pub(crate) fn builtin_write_atomic(
 
         // Expect 3 args: DirCap, String path, String content
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("write-atomic", named.as_ref(), call_span.clone())?;
 
@@ -741,7 +744,7 @@ pub(crate) fn builtin_write_atomic(
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
-                EvalError::internal(
+                Diagnostic::internal(
                     format!("write-atomic: system clock is before Unix epoch: {e}"),
                     call_span.clone(),
                 )
@@ -751,7 +754,7 @@ pub(crate) fn builtin_write_atomic(
 
         // Write to temp file
         let mut temp_file = dir.create(&temp_name).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "write-atomic: failed to create temp file '{}': {}",
                     temp_name, e
@@ -761,7 +764,7 @@ pub(crate) fn builtin_write_atomic(
         })?;
 
         temp_file.write_all(content.as_bytes()).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "write-atomic: failed to write to temp file '{}': {}",
                     temp_name, e
@@ -772,7 +775,7 @@ pub(crate) fn builtin_write_atomic(
 
         // Ensure data is flushed before rename
         temp_file.sync_all().map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "write-atomic: failed to sync temp file '{}': {}",
                     temp_name, e
@@ -791,7 +794,7 @@ pub(crate) fn builtin_write_atomic(
                 Ok(()) => String::new(),
                 Err(ce) => format!("; also failed to remove temp file: {ce}"),
             };
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "write-atomic: failed to rename temp file to '{}': {}{}",
                     path, e, cleanup_note
@@ -824,7 +827,7 @@ pub(crate) fn builtin_write_atomic(
 /// Each dict has keys: name, type, size, mtime.
 pub(crate) fn builtin_list_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -836,7 +839,7 @@ pub(crate) fn builtin_list_dir(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("list-dir", named.as_ref(), call_span.clone())?;
 
@@ -859,7 +862,7 @@ pub(crate) fn builtin_list_dir(
 
         // Read directory entries
         let entries = dir.read_dir(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("list-dir: failed to read directory '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -869,7 +872,7 @@ pub(crate) fn builtin_list_dir(
         let mut entry_values = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("list-dir: failed to read directory entry: {}", e),
                     call_span.clone(),
                 )
@@ -877,7 +880,7 @@ pub(crate) fn builtin_list_dir(
 
             let name = entry.file_name().to_string_lossy().to_string();
             let metadata = entry.metadata().map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("list-dir: failed to read metadata for '{}': {}", name, e),
                     call_span.clone(),
                 )
@@ -901,7 +904,7 @@ pub(crate) fn builtin_list_dir(
                     match t.into_std().duration_since(UNIX_EPOCH) {
                         Ok(d) => Some(d.as_secs() as i64),
                         Err(e) => {
-                            return Err(EvalError::user_error(
+                            return Err(Diagnostic::user_error(
                                 format!("list-dir: mtime is before Unix epoch: {e}"),
                                 call_span.clone(),
                             )
@@ -911,7 +914,7 @@ pub(crate) fn builtin_list_dir(
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
                 Err(e) => {
-                    return Err(EvalError::user_error(
+                    return Err(Diagnostic::user_error(
                         format!("list-dir: failed to read mtime: {e}"),
                         call_span.clone(),
                     )
@@ -991,7 +994,7 @@ pub(crate) fn builtin_list_dir(
 /// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
 pub(crate) fn builtin_stat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1003,7 +1006,7 @@ pub(crate) fn builtin_stat(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("stat", named.as_ref(), call_span.clone())?;
 
@@ -1020,7 +1023,7 @@ pub(crate) fn builtin_stat(
 
         // Get metadata
         let metadata = dir.metadata(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("stat: failed to get metadata for '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -1044,7 +1047,7 @@ pub(crate) fn builtin_stat(
                 match t.into_std().duration_since(UNIX_EPOCH) {
                     Ok(d) => Some(d.as_secs() as i64),
                     Err(e) => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             format!("stat: mtime is before Unix epoch: {e}"),
                             call_span.clone(),
                         )
@@ -1054,7 +1057,7 @@ pub(crate) fn builtin_stat(
             }
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
             Err(e) => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("stat: failed to read mtime: {e}"),
                     call_span.clone(),
                 )
@@ -1174,7 +1177,7 @@ pub(crate) fn builtin_stat(
 /// Cheaper than try+stat for existence checks.
 pub(crate) fn builtin_exists(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1186,7 +1189,7 @@ pub(crate) fn builtin_exists(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("exists", named.as_ref(), call_span.clone())?;
 
@@ -1209,7 +1212,7 @@ pub(crate) fn builtin_exists(
 
         // Check existence
         let exists = dir.try_exists(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("exists: failed to check path '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -1231,7 +1234,7 @@ pub(crate) fn builtin_exists(
 /// Returns a dict with the same schema as `stat`.
 pub(crate) fn builtin_stat_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1243,7 +1246,7 @@ pub(crate) fn builtin_stat_symlink(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("stat-symlink", named.as_ref(), call_span.clone())?;
 
@@ -1266,7 +1269,7 @@ pub(crate) fn builtin_stat_symlink(
 
         // Get metadata without following symlinks
         let metadata = dir.symlink_metadata(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("stat-symlink: failed to get metadata for '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -1290,7 +1293,7 @@ pub(crate) fn builtin_stat_symlink(
                 match t.into_std().duration_since(UNIX_EPOCH) {
                     Ok(d) => Some(d.as_secs() as i64),
                     Err(e) => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             format!("stat-symlink: mtime is before Unix epoch: {e}"),
                             call_span.clone(),
                         )
@@ -1300,7 +1303,7 @@ pub(crate) fn builtin_stat_symlink(
             }
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
             Err(e) => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("stat-symlink: failed to read mtime: {e}"),
                     call_span.clone(),
                 )
@@ -1420,7 +1423,7 @@ pub(crate) fn builtin_stat_symlink(
 /// Returns empty dict on success.
 pub(crate) fn builtin_copy_file(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1432,7 +1435,7 @@ pub(crate) fn builtin_copy_file(
 
         // Expect 4 args: src DirCap, src path, dst DirCap, dst path
         if args.len() != 4 {
-            return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(4, args.len(), call_span).into());
         }
         reject_named("copy-file", named.as_ref(), call_span.clone())?;
 
@@ -1472,7 +1475,7 @@ pub(crate) fn builtin_copy_file(
 
         // Copy file using cap-std's efficient kernel-level copy
         src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "copy-file: failed to copy '{}' to '{}': {}",
                     src_path, dst_path, e
@@ -1499,7 +1502,7 @@ pub(crate) fn builtin_copy_file(
 /// Returns empty dict on success.
 pub(crate) fn builtin_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1511,7 +1514,7 @@ pub(crate) fn builtin_symlink(
 
         // Expect 3 args: DirCap, target, link path
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("symlink", named.as_ref(), call_span.clone())?;
 
@@ -1538,7 +1541,7 @@ pub(crate) fn builtin_symlink(
         // Create symlink (platform-specific)
         #[cfg(unix)]
         dir.symlink(&target, &link_path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "symlink: failed to create symlink '{}' -> '{}': {}",
                     link_path, target, e
@@ -1554,7 +1557,7 @@ pub(crate) fn builtin_symlink(
             let is_dir = match dir.metadata(&target) {
                 Ok(m) => m.is_dir(),
                 Err(e) => {
-                    return Err(EvalError::user_error(
+                    return Err(Diagnostic::user_error(
                         format!("symlink: cannot stat target '{}': {}", target, e),
                         call_span.clone(),
                     )
@@ -1567,7 +1570,7 @@ pub(crate) fn builtin_symlink(
                 dir.symlink_file(&target, &link_path)
             }
             .map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!(
                         "symlink: failed to create symlink '{}' -> '{}': {}",
                         link_path, target, e
@@ -1579,7 +1582,7 @@ pub(crate) fn builtin_symlink(
 
         #[cfg(not(any(unix, windows)))]
         {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "symlink: not supported on this platform".to_string(),
                 call_span.clone(),
             )
@@ -1605,7 +1608,7 @@ pub(crate) fn builtin_symlink(
 /// Only works on Unix-like systems.
 pub(crate) fn builtin_set_permissions(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1617,7 +1620,7 @@ pub(crate) fn builtin_set_permissions(
 
         // Expect 3 args: DirCap, path, mode
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("set-permissions", named.as_ref(), call_span.clone())?;
 
@@ -1644,7 +1647,7 @@ pub(crate) fn builtin_set_permissions(
         let mode = match mode_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "set-permissions".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1660,7 +1663,7 @@ pub(crate) fn builtin_set_permissions(
             use cap_std::fs::{Permissions, PermissionsExt};
 
             if !(0..=0o7777).contains(&mode) {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("set-permissions: mode {} out of range (0-0o7777)", mode),
                     call_span.clone(),
                 )
@@ -1669,7 +1672,7 @@ pub(crate) fn builtin_set_permissions(
 
             let permissions = Permissions::from_mode(mode as u32);
             dir.set_permissions(&path, permissions).map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!(
                         "set-permissions: failed to set permissions on '{}': {}",
                         path, e
@@ -1681,7 +1684,7 @@ pub(crate) fn builtin_set_permissions(
 
         #[cfg(not(unix))]
         {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "set-permissions: only supported on Unix-like systems".to_string(),
                 call_span.clone(),
             )
@@ -1708,7 +1711,7 @@ pub(crate) fn builtin_set_permissions(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1720,7 +1723,7 @@ pub(crate) fn builtin_get_xattr(
 
         // Expect 3 args: DirCap, path, attribute name
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("get-xattr", named.as_ref(), call_span.clone())?;
 
@@ -1746,7 +1749,7 @@ pub(crate) fn builtin_get_xattr(
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("get-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -1786,7 +1789,7 @@ pub(crate) fn builtin_get_xattr(
                     call_span,
                 )
             }
-            Err(e) => Err(EvalError::user_error(
+            Err(e) => Err(Diagnostic::user_error(
                 format!(
                     "get-xattr: failed to get attribute '{}' on '{}': {}",
                     attr_name, path, e
@@ -1801,10 +1804,10 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(EvalError::user_error(
+        Err(Diagnostic::user_error(
             "get-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
         )
@@ -1819,7 +1822,7 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1831,7 +1834,7 @@ pub(crate) fn builtin_set_xattr(
 
         // Expect 4 args: DirCap, path, attribute name, value
         if args.len() != 4 {
-            return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(4, args.len(), call_span).into());
         }
         reject_named("set-xattr", named.as_ref(), call_span.clone())?;
 
@@ -1870,7 +1873,7 @@ pub(crate) fn builtin_set_xattr(
                 source, start, end, ..
             } => source[start..end].to_vec(),
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "set-xattr".to_string(),
                     "Bytes",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -1882,7 +1885,7 @@ pub(crate) fn builtin_set_xattr(
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("set-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -1895,7 +1898,7 @@ pub(crate) fn builtin_set_xattr(
         let raw_fd = file.as_raw_fd();
         let proc_path = format!("/proc/self/fd/{}", raw_fd);
         xattr::set(&proc_path, &attr_name, &value_bytes).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "set-xattr: failed to set attribute '{}' on '{}': {}",
                     attr_name, path, e
@@ -1920,10 +1923,10 @@ pub(crate) fn builtin_set_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(EvalError::user_error(
+        Err(Diagnostic::user_error(
             "set-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
         )
@@ -1938,7 +1941,7 @@ pub(crate) fn builtin_set_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1950,7 +1953,7 @@ pub(crate) fn builtin_remove_xattr(
 
         // Expect 3 args: DirCap, path, attribute name
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("remove-xattr", named.as_ref(), call_span.clone())?;
 
@@ -1983,7 +1986,7 @@ pub(crate) fn builtin_remove_xattr(
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("remove-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -2019,7 +2022,7 @@ pub(crate) fn builtin_remove_xattr(
                     call_span,
                 )
             }
-            Err(e) => Err(EvalError::user_error(
+            Err(e) => Err(Diagnostic::user_error(
                 format!(
                     "remove-xattr: failed to remove attribute '{}' on '{}': {}",
                     attr_name, path, e
@@ -2034,10 +2037,10 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(EvalError::user_error(
+        Err(Diagnostic::user_error(
             "remove-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
         )
@@ -2052,7 +2055,7 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2064,7 +2067,7 @@ pub(crate) fn builtin_list_xattrs(
 
         // Expect 2 args: DirCap, path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("list-xattrs", named.as_ref(), call_span.clone())?;
 
@@ -2087,7 +2090,7 @@ pub(crate) fn builtin_list_xattrs(
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("list-xattrs: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -2100,7 +2103,7 @@ pub(crate) fn builtin_list_xattrs(
         let raw_fd = file.as_raw_fd();
         let proc_path = format!("/proc/self/fd/{}", raw_fd);
         let names = xattr::list(&proc_path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "list-xattrs: failed to list attributes on '{}': {}",
                     path, e
@@ -2136,10 +2139,10 @@ pub(crate) fn builtin_list_xattrs(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(EvalError::user_error(
+        Err(Diagnostic::user_error(
             "list-xattrs: extended attributes are only supported on Linux".to_string(),
             call_span,
         )
@@ -2151,7 +2154,7 @@ pub(crate) fn builtin_list_xattrs(
 /// Takes a DirCap and String path, returns Null.
 pub(crate) fn builtin_make_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2163,7 +2166,7 @@ pub(crate) fn builtin_make_dir(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("make-dir", named.as_ref(), call_span.clone())?;
 
@@ -2186,7 +2189,7 @@ pub(crate) fn builtin_make_dir(
 
         // Create directory (and parents)
         dir.create_dir_all(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("make-dir: failed to create directory '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -2210,7 +2213,7 @@ pub(crate) fn builtin_make_dir(
 /// Tries to remove as file first, then as directory.
 pub(crate) fn builtin_remove(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2222,7 +2225,7 @@ pub(crate) fn builtin_remove(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("remove", named.as_ref(), call_span.clone())?;
 
@@ -2246,7 +2249,7 @@ pub(crate) fn builtin_remove(
         // Try to remove as file first, then as directory
         if let Err(file_err) = dir.remove_file(&path) {
             dir.remove_dir(&path).map_err(|dir_err| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!(
                         "remove: failed to remove '{}' (as file: {}, as dir: {})",
                         path, file_err, dir_err
@@ -2273,7 +2276,7 @@ pub(crate) fn builtin_remove(
 /// Takes a DirCap, old path String, and new path String, returns Null.
 pub(crate) fn builtin_rename(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2285,7 +2288,7 @@ pub(crate) fn builtin_rename(
 
         // Expect 3 args: DirCap, String old_path, String new_path
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("rename", named.as_ref(), call_span.clone())?;
 
@@ -2311,7 +2314,7 @@ pub(crate) fn builtin_rename(
 
         // Rename (both source and dest are in the same DirCap)
         dir.rename(&old_path, dir, &new_path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!(
                     "rename: failed to rename '{}' to '{}': {}",
                     old_path, new_path, e
@@ -2339,7 +2342,7 @@ pub(crate) fn builtin_rename(
 /// Takes a DirCap, existing path String, and link path String, returns Null.
 pub(crate) fn builtin_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2351,7 +2354,7 @@ pub(crate) fn builtin_link(
 
         // Expect 3 args: DirCap, String existing_path, String link_path
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         reject_named("link", named.as_ref(), call_span.clone())?;
 
@@ -2372,7 +2375,7 @@ pub(crate) fn builtin_link(
         // Create hard link
         dir.hard_link(&existing_path, dir, &link_path)
             .map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!(
                         "link: failed to create hard link from '{}' to '{}': {}",
                         existing_path, link_path, e
@@ -2398,7 +2401,7 @@ pub(crate) fn builtin_link(
 /// Takes a DirCap and String path, returns the target path as a String.
 pub(crate) fn builtin_read_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2410,7 +2413,7 @@ pub(crate) fn builtin_read_link(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("read-link", named.as_ref(), call_span.clone())?;
 
@@ -2433,7 +2436,7 @@ pub(crate) fn builtin_read_link(
 
         // Read symlink target
         let target = dir.read_link(&path).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("read-link: failed to read symlink '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -2465,7 +2468,7 @@ pub(crate) fn builtin_read_link(
 /// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
 pub(crate) fn builtin_file_open(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2476,7 +2479,7 @@ pub(crate) fn builtin_file_open(
         } = ctx_arg;
 
         if args.len() != 5 {
-            return Err(EvalError::arity_mismatch(5, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(5, args.len(), call_span).into());
         }
         reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
 
@@ -2499,7 +2502,7 @@ pub(crate) fn builtin_file_open(
         let modes_dict = match modes_raw {
             Value::Dict { entries: map, .. } => map,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Dict",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2515,7 +2518,7 @@ pub(crate) fn builtin_file_open(
         let mode_bits = match mode_raw {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2526,7 +2529,7 @@ pub(crate) fn builtin_file_open(
         };
         #[cfg(not(unix))]
         if !matches!(mode_raw, Value::Int { .. }) {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
                 ctx.type_display_name(mode_raw.type_decl_id_of()),
@@ -2541,7 +2544,7 @@ pub(crate) fn builtin_file_open(
         let custom_flags = match flags_raw {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-open".to_string(),
                     "Integer",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2552,7 +2555,7 @@ pub(crate) fn builtin_file_open(
         };
         #[cfg(not(unix))]
         if !matches!(flags_raw, Value::Int { .. }) {
-            return Err(EvalError::type_mismatch_ctx(
+            return Err(Diagnostic::type_mismatch_ctx(
                 "builtin-file-open".to_string(),
                 "Integer",
                 ctx.type_display_name(flags_raw.type_decl_id_of()),
@@ -2608,7 +2611,7 @@ pub(crate) fn builtin_file_open(
         }
 
         let file = dir.open_with(&path, &opts).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("builtin-file-open: failed to open '{}': {}", path, e),
                 call_span.clone(),
             )
@@ -2632,7 +2635,7 @@ pub(crate) fn builtin_file_open(
 /// Returns `Value::Bytes` with the bytes read, or empty `Value::Bytes` on EOF.
 pub(crate) fn builtin_file_read(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2643,7 +2646,7 @@ pub(crate) fn builtin_file_read(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-file-read", named.as_ref(), call_span.clone())?;
 
@@ -2655,7 +2658,7 @@ pub(crate) fn builtin_file_read(
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "File",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2668,14 +2671,14 @@ pub(crate) fn builtin_file_read(
         let n = match n_val {
             Value::Int { n: i, .. } if i > 0 => i as usize,
             Value::Int { .. } => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "builtin-file-read: byte count must be positive".to_string(),
                     call_span,
                 )
                 .into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-read".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2686,7 +2689,7 @@ pub(crate) fn builtin_file_read(
         };
 
         if n > MAX_FILE_READ_BYTES {
-            return Err(EvalError::resource_limit_exceeded(
+            return Err(Diagnostic::resource_limit_exceeded(
                 format!(
                     "builtin-file-read: byte count {} exceeds maximum {} bytes",
                     n, MAX_FILE_READ_BYTES
@@ -2699,7 +2702,7 @@ pub(crate) fn builtin_file_read(
         use std::io::Read;
         let mut buf = vec![0u8; n];
         let bytes_read = file_rc.lock().unwrap().read(&mut buf).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("builtin-file-read: read failed: {}", e),
                 call_span.clone(),
             )
@@ -2726,7 +2729,7 @@ pub(crate) fn builtin_file_read(
 /// Returns the same `Value::File` it received, enabling handle threading.
 pub(crate) fn builtin_file_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2737,7 +2740,7 @@ pub(crate) fn builtin_file_write(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-file-write", named.as_ref(), call_span.clone())?;
 
@@ -2749,7 +2752,7 @@ pub(crate) fn builtin_file_write(
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-write".to_string(),
                     "File",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2767,7 +2770,7 @@ pub(crate) fn builtin_file_write(
             .unwrap()
             .write_all(s.as_bytes())
             .map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("builtin-file-write: write failed: {}", e),
                     call_span.clone(),
                 )
@@ -2782,7 +2785,7 @@ pub(crate) fn builtin_file_write(
 /// Calls `std::io::Write::flush()`. Returns empty dict `[]`.
 pub(crate) fn builtin_file_flush(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2803,7 +2806,7 @@ pub(crate) fn builtin_file_flush(
         let file_rc = match val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-flush".to_string(),
                     "File",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2815,7 +2818,7 @@ pub(crate) fn builtin_file_flush(
 
         use std::io::Write;
         file_rc.lock().unwrap().flush().map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("builtin-file-flush: flush failed: {}", e),
                 call_span.clone(),
             )
@@ -2839,7 +2842,7 @@ pub(crate) fn builtin_file_flush(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_close(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2871,7 +2874,7 @@ pub(crate) fn builtin_file_close(
                     call_span,
                 )
             }
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "builtin-file-close".to_string(),
                 "File",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -2888,7 +2891,7 @@ pub(crate) fn builtin_file_close(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_seek(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2899,7 +2902,7 @@ pub(crate) fn builtin_file_seek(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-file-seek", named.as_ref(), call_span.clone())?;
 
@@ -2911,7 +2914,7 @@ pub(crate) fn builtin_file_seek(
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "File",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2924,14 +2927,14 @@ pub(crate) fn builtin_file_seek(
         let pos = match pos_val {
             Value::Int { n: i, .. } if i >= 0 => i as u64,
             Value::Int { .. } => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "builtin-file-seek: position must be non-negative".to_string(),
                     call_span,
                 )
                 .into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-file-seek".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -2947,7 +2950,7 @@ pub(crate) fn builtin_file_seek(
             .unwrap()
             .seek(std::io::SeekFrom::Start(pos))
             .map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("builtin-file-seek: seek failed: {}", e),
                     call_span.clone(),
                 )
@@ -2974,7 +2977,7 @@ pub(crate) fn builtin_file_seek(
 ///   `write: [fn [let s h] [builtin-write-stdout s h]]`
 pub(crate) fn builtin_write_stdout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2985,7 +2988,7 @@ pub(crate) fn builtin_write_stdout(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-write-stdout", named.as_ref(), call_span.clone())?;
 
@@ -2996,7 +2999,7 @@ pub(crate) fn builtin_write_stdout(
 
         use std::io::Write;
         std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
-            EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
+            Diagnostic::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
         })?;
 
         Ok(Arc::clone(&args[1]))
@@ -3009,7 +3012,7 @@ pub(crate) fn builtin_write_stdout(
 /// h is passed through lazily — it is not materialized.
 pub(crate) fn builtin_write_stderr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3020,7 +3023,7 @@ pub(crate) fn builtin_write_stderr(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-write-stderr", named.as_ref(), call_span.clone())?;
 
@@ -3031,7 +3034,7 @@ pub(crate) fn builtin_write_stderr(
 
         use std::io::Write;
         std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("builtin-write-stderr: write failed: {e}"),
                 call_span.clone(),
             )
@@ -3047,7 +3050,7 @@ pub(crate) fn builtin_write_stderr(
 /// Returns `Value::Bytes` (empty on EOF).
 pub(crate) fn builtin_read_stdin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3058,7 +3061,7 @@ pub(crate) fn builtin_read_stdin(
         } = ctx_arg;
 
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
         reject_named("builtin-read-stdin", named.as_ref(), call_span.clone())?;
 
@@ -3068,14 +3071,14 @@ pub(crate) fn builtin_read_stdin(
         let n = match n_val {
             Value::Int { n: i, .. } if i > 0 => i as usize,
             Value::Int { .. } => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "builtin-read-stdin: byte count must be positive".to_string(),
                     call_span,
                 )
                 .into())
             }
             other => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-read-stdin".to_string(),
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
@@ -3088,7 +3091,7 @@ pub(crate) fn builtin_read_stdin(
         use std::io::Read;
         let mut buf = vec![0u8; n];
         let bytes_read = std::io::stdin().read(&mut buf).map_err(|e| {
-            EvalError::user_error(
+            Diagnostic::user_error(
                 format!("builtin-read-stdin: read failed: {}", e),
                 call_span.clone(),
             )

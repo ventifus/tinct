@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val, reject_named, require_string};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 /// `replace`: Replace all occurrences of a pattern in a string.
@@ -29,7 +29,7 @@ use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 /// Inherently materializing: must inspect string content to find and replace patterns.
 pub(crate) fn builtin_replace(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -40,7 +40,7 @@ pub(crate) fn builtin_replace(
         } = ctx_arg;
         reject_named("replace", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
         // All args pre-materialized by force_count=3
         let thunk0 = Arc::clone(&args[0]);
@@ -72,7 +72,7 @@ pub(crate) fn builtin_replace(
 
         const MAX_REPLACE_OUTPUT: usize = 10 * 1024 * 1024; // 10MB
         if output_len > MAX_REPLACE_OUTPUT {
-            return Err(Box::new(EvalError::resource_limit_exceeded(
+            return Err(Box::new(Diagnostic::resource_limit_exceeded(
                 format!(
                     "replace: output would exceed {} bytes (estimated {})",
                     MAX_REPLACE_OUTPUT, output_len
@@ -99,7 +99,7 @@ pub(crate) fn builtin_replace(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -120,7 +120,7 @@ pub(crate) fn builtin_trim(
 /// Inherently materializing: must inspect string content to count characters.
 pub(crate) fn builtin_str_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -133,7 +133,7 @@ pub(crate) fn builtin_str_length(
         let s = require_string("str-length", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
         let len = s.chars().count();
         let len_i64 = i64::try_from(len).map_err(|_| {
-            EvalError::resource_limit_exceeded(
+            Diagnostic::resource_limit_exceeded(
                 "str-length: string length exceeds i64::MAX".to_string(),
                 call_span.clone(),
             )
@@ -155,7 +155,7 @@ pub(crate) fn builtin_str_length(
 /// O(1) — `str.len()` is stored directly. Takes 1 arg (String). Returns an Int.
 pub(crate) fn builtin_str_byte_count(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -194,7 +194,7 @@ pub(crate) fn builtin_str_byte_count(
 /// O(1) — bounds check only. Takes 2 args (String, Int). Returns Int 1 or 0.
 pub(crate) fn builtin_str_has_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -204,7 +204,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             ..
         } = ctx_arg;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named(
             "builtin-str-has-nth-byte?",
@@ -217,7 +217,7 @@ pub(crate) fn builtin_str_has_nth_byte(
         let (str_start, str_end) = match s_val {
             Value::String { start, end, .. } => (start, end),
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "String",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -228,7 +228,7 @@ pub(crate) fn builtin_str_has_nth_byte(
         let idx = match thunk1.require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -254,7 +254,7 @@ pub(crate) fn builtin_str_has_nth_byte(
 /// O(1) — direct byte array indexing. Takes 2 args (String, Int). Returns Int.
 pub(crate) fn builtin_str_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -264,7 +264,7 @@ pub(crate) fn builtin_str_nth_byte(
             ..
         } = ctx_arg;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone())?;
         let thunk0 = Arc::clone(&args[0]);
@@ -275,7 +275,7 @@ pub(crate) fn builtin_str_nth_byte(
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "String",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -286,7 +286,7 @@ pub(crate) fn builtin_str_nth_byte(
         let idx = match thunk1.require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -295,7 +295,7 @@ pub(crate) fn builtin_str_nth_byte(
             }
         };
         if idx < 0 || idx as usize >= str_end - str_start {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("builtin-str-nth-byte: index {idx} out of bounds"),
                 call_span,
             )
@@ -321,7 +321,7 @@ pub(crate) fn builtin_str_nth_byte(
 /// Inherently materializing: must inspect string content to find character boundaries.
 pub(crate) fn builtin_str_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -332,7 +332,7 @@ pub(crate) fn builtin_str_slice(
         } = ctx_arg;
         reject_named("str-slice", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
         }
 
         // Get pre-materialized arguments — calling convention: (string, start, end)
@@ -349,7 +349,7 @@ pub(crate) fn builtin_str_slice(
                 source, start, end, ..
             } => (source, start, end),
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "String",
                     ctx.type_display_name(input_val.type_decl_id_of()),
@@ -363,7 +363,7 @@ pub(crate) fn builtin_str_slice(
         let start_idx = match start_val {
             Value::Int { n, .. } if n >= 0 => n as usize,
             Value::Int { n, .. } => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
@@ -372,7 +372,7 @@ pub(crate) fn builtin_str_slice(
                 .into());
             }
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "Int",
                     ctx.type_display_name(start_val.type_decl_id_of()),
@@ -385,7 +385,7 @@ pub(crate) fn builtin_str_slice(
         let end_idx = match end_val {
             Value::Int { n, .. } if n >= 0 => n as usize,
             Value::Int { n, .. } => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
@@ -394,7 +394,7 @@ pub(crate) fn builtin_str_slice(
                 .into());
             }
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "str-slice".to_string(),
                     "Int",
                     ctx.type_display_name(end_val.type_decl_id_of()),
@@ -406,7 +406,7 @@ pub(crate) fn builtin_str_slice(
 
         // Validate indices
         if start_idx > end_idx {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!("str-slice: start index {start_idx} > end index {end_idx}"),
                 call_span.clone(),
             )
@@ -423,7 +423,7 @@ pub(crate) fn builtin_str_slice(
 
         let char_count = char_indices.len().saturating_sub(1);
         if end_idx > char_count {
-            return Err(EvalError::internal(
+            return Err(Diagnostic::internal(
                 format!(
                     "str-slice: end index {end_idx} out of bounds (string has {char_count} characters)"
                 ),
@@ -457,7 +457,7 @@ pub(crate) fn builtin_str_slice(
 /// `String → Int → Int`
 pub(crate) fn builtin_str_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -467,7 +467,7 @@ pub(crate) fn builtin_str_has_nth(
             ..
         } = ctx_arg;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-str-has-nth?", named.as_ref(), call_span.clone())?;
 
@@ -479,7 +479,7 @@ pub(crate) fn builtin_str_has_nth(
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "String",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -491,7 +491,7 @@ pub(crate) fn builtin_str_has_nth(
         let idx = match thunk1.require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -539,7 +539,7 @@ pub(crate) fn builtin_str_has_nth(
 /// `String → Int → String`
 pub(crate) fn builtin_str_nth_char(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -549,7 +549,7 @@ pub(crate) fn builtin_str_nth_char(
             ..
         } = ctx_arg;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
         reject_named("builtin-str-nth-char", named.as_ref(), call_span.clone())?;
 
@@ -561,7 +561,7 @@ pub(crate) fn builtin_str_nth_char(
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "String",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -573,7 +573,7 @@ pub(crate) fn builtin_str_nth_char(
         let idx = match thunk1.require_value()?.clone() {
             Value::Int { n, .. } => n,
             other => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
@@ -583,7 +583,7 @@ pub(crate) fn builtin_str_nth_char(
         };
 
         if idx < 0 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("builtin-str-nth-char: index {idx} is negative"),
                 call_span,
             )
@@ -606,7 +606,7 @@ pub(crate) fn builtin_str_nth_char(
                     call_span,
                 )
             }
-            None => Err(EvalError::user_error(
+            None => Err(Diagnostic::user_error(
                 format!(
                     "builtin-str-nth-char: index {idx} out of bounds (string has {} codepoints)",
                     s.chars().count()
@@ -626,7 +626,7 @@ pub(crate) fn builtin_str_nth_char(
 /// Inherently materializing: must inspect string content to extract the first character.
 pub(crate) fn builtin_char_code(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -642,7 +642,7 @@ pub(crate) fn builtin_char_code(
                 source, start, end, ..
             } => (source, start, end),
             _ => {
-                return Err(EvalError::type_mismatch_ctx(
+                return Err(Diagnostic::type_mismatch_ctx(
                     "char-code".to_string(),
                     "String",
                     ctx.type_display_name(val.type_decl_id_of()),
@@ -665,7 +665,7 @@ pub(crate) fn builtin_char_code(
                 call_span,
             )
         } else {
-            Err(EvalError::internal("char-code: empty string".to_string(), call_span).into())
+            Err(Diagnostic::internal("char-code: empty string".to_string(), call_span).into())
         }
     })
 }
@@ -678,7 +678,7 @@ pub(crate) fn builtin_char_code(
 /// Inherently materializing: must convert the integer to a character.
 pub(crate) fn builtin_chr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -694,14 +694,14 @@ pub(crate) fn builtin_chr(
                 if let Some(ch) = char::from_u32(n as u32) {
                     ok_val(string_val(&ch.to_string()), call_span)
                 } else {
-                    Err(EvalError::internal(
+                    Err(Diagnostic::internal(
                         format!("chr: invalid Unicode codepoint {}", n),
                         call_span,
                     )
                     .into())
                 }
             }
-            _ => Err(EvalError::type_mismatch_ctx(
+            _ => Err(Diagnostic::type_mismatch_ctx(
                 "chr".to_string(),
                 "Int",
                 ctx.type_display_name(val.type_decl_id_of()),
@@ -724,7 +724,7 @@ pub(crate) fn builtin_chr(
 /// ```
 pub(crate) fn builtin_str_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         use crate::value::bytes_val;
 
@@ -746,7 +746,7 @@ pub(crate) fn builtin_str_bytes(
 
         match val.as_str() {
             Some(s) => ok_val(bytes_val(s.as_bytes()), call_span),
-            None => Err(EvalError::type_mismatch_ctx(
+            None => Err(Diagnostic::type_mismatch_ctx(
                 "str-bytes".to_string(),
                 "String",
                 ctx.type_display_name(val.type_decl_id_of()),
@@ -769,7 +769,7 @@ pub(crate) fn builtin_str_bytes(
 /// Inherently materializing: must inspect string content to search for substring.
 pub(crate) fn builtin_str_index_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -780,7 +780,7 @@ pub(crate) fn builtin_str_index_of(
         } = ctx_arg;
         reject_named("str-index-of", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let thunk0 = Arc::clone(&args[0]);
@@ -798,7 +798,7 @@ pub(crate) fn builtin_str_index_of(
                 // chars — str-index-of must return chars to be composable with both.
                 let char_idx = haystack[..byte_idx].chars().count();
                 i64::try_from(char_idx).map_err(|_| {
-                    EvalError::resource_limit_exceeded(
+                    Diagnostic::resource_limit_exceeded(
                         "str-index-of: character index exceeds i64::MAX".to_string(),
                         call_span.clone(),
                     )
@@ -825,7 +825,7 @@ pub(crate) fn builtin_str_index_of(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_start(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -846,7 +846,7 @@ pub(crate) fn builtin_trim_start(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_end(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -873,7 +873,7 @@ pub(crate) fn builtin_trim_end(
 /// ```
 pub(crate) fn builtin_bytes_str(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         use crate::value::string_val;
 
@@ -896,13 +896,13 @@ pub(crate) fn builtin_bytes_str(
         match val.as_bytes() {
             Some(bytes) => match std::str::from_utf8(bytes) {
                 Ok(s) => ok_val(string_val(s), call_span),
-                Err(e) => Err(EvalError::internal(
+                Err(e) => Err(Diagnostic::internal(
                     format!("bytes-str: invalid UTF-8 sequence: {}", e),
                     call_span,
                 )
                 .into()),
             },
-            None => Err(EvalError::type_mismatch_ctx(
+            None => Err(Diagnostic::type_mismatch_ctx(
                 "bytes-str".to_string(),
                 "Bytes",
                 ctx.type_display_name(val.type_decl_id_of()),
@@ -919,7 +919,7 @@ pub(crate) fn builtin_bytes_str(
 /// Returns a String with all characters converted to uppercase.
 pub(crate) fn builtin_upper(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -940,7 +940,7 @@ pub(crate) fn builtin_upper(
 /// Returns a String with all characters converted to lowercase.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -963,7 +963,7 @@ pub(crate) fn builtin_lower(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_int_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -976,11 +976,11 @@ pub(crate) fn builtin_int_to_string(
         let thunk0 = args
             .into_iter()
             .next()
-            .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
+            .ok_or_else(|| Diagnostic::arity_mismatch(1, 0, call_span.clone()))?;
         let materialized = thunk0.require_value()?.clone();
         match materialized {
             Value::Int { n, .. } => ok_val(string_val(&n.to_string()), call_span),
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "int->string".to_string(),
                 "Int",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -999,7 +999,7 @@ pub(crate) fn builtin_int_to_string(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_float_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1012,11 +1012,11 @@ pub(crate) fn builtin_float_to_string(
         let thunk0 = args
             .into_iter()
             .next()
-            .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
+            .ok_or_else(|| Diagnostic::arity_mismatch(1, 0, call_span.clone()))?;
         let materialized = thunk0.require_value()?.clone();
         match materialized {
             Value::Float { n, .. } => ok_val(string_val(&n.to_string()), call_span),
-            other => Err(EvalError::type_mismatch_ctx(
+            other => Err(Diagnostic::type_mismatch_ctx(
                 "float->string".to_string(),
                 "Float",
                 ctx.type_display_name(other.type_decl_id_of()),
@@ -1036,7 +1036,7 @@ pub(crate) fn builtin_float_to_string(
 /// Inherently materializing: must inspect string content to apply the regex.
 pub(crate) fn builtin_regex_match(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1047,7 +1047,7 @@ pub(crate) fn builtin_regex_match(
         } = ctx_arg;
         reject_named("regex-match?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let thunk0 = Arc::clone(&args[0]);
@@ -1068,7 +1068,7 @@ pub(crate) fn builtin_regex_match(
                 },
                 call_span,
             ),
-            Err(e) => Err(EvalError::internal(
+            Err(e) => Err(Diagnostic::internal(
                 format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
                 call_span,
             )
@@ -1086,7 +1086,7 @@ pub(crate) fn builtin_regex_match(
 /// Inherently materializing: must inspect string content to concatenate.
 pub(crate) fn builtin_string_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1097,7 +1097,7 @@ pub(crate) fn builtin_string_concat(
         } = ctx_arg;
         reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
         let thunk0 = Arc::clone(&args[0]);

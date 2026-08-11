@@ -97,11 +97,11 @@ use std::sync::Arc;
 pub use ast::{Annotation, Param, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
-    CapturesCell, MacroProvenance, Provenance, Resolution, SurfaceEntry, SurfaceExpression,
-    SurfaceNode, SurfaceProgram, TypeAnnotation, VarAddr,
+    MacroProvenance, Provenance, Resolution, SurfaceEntry, SurfaceExpression, SurfaceNode,
+    SurfaceProgram, TypeAnnotation, VarAddr,
 };
 /// Parser entry points.
-pub use parser::{format_parse_error, parse, parse_surface_expression, ParseOutput};
+pub use parser::{parse, parse_surface_expression, ParseOutput};
 /// Per-document pipeline.
 pub use pipeline::{process_pipeline_document, PipelineState};
 
@@ -121,8 +121,7 @@ pub use imports::{
 
 /// Error types with source spans and stack traces.
 pub use error::{
-    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, EvalError,
-    EvalResult, SpanLabel,
+    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, SpanLabel,
 };
 
 /// TypeValue: the Arc<Value>-based type representation used throughout the type checker.
@@ -176,7 +175,7 @@ pub async fn run_loader_pipeline(
     init_source: &str,
     init_path: &str,
     injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
-) -> Result<(), String> {
+) -> crate::error::DiagnosticResult<()> {
     // Start from builtins — consistent slots, single context.
     let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
 
@@ -199,17 +198,29 @@ pub async fn run_loader_pipeline(
         }
     }
 
+    let mut diagnostics: Vec<crate::error::Diagnostic> = Vec::new();
+
     // Process builtin_core.llt inline — same pipeline, same context.
     let core_source = include_str!("../stdlib/builtin_core.llt");
     let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-    let core_parsed =
-        parse(core_source, core_sf).map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    let core_parsed = match parse(core_source, core_sf) {
+        Ok(p) => p,
+        Err(e) => {
+            return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
+                "parse-error",
+                format!("builtin_core.llt: {e}"),
+                crate::rust_span!(),
+            ))
+            .with_diagnostics(diagnostics);
+        }
+    };
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {
-        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
-            .await
-            .map_err(|e| format!("builtin_core.llt: {e}"))?;
+        if let Err(e) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx).await
+        {
+            return crate::error::DiagnosticResult::err(*e).with_diagnostics(diagnostics);
+        }
     }
 
     // Initialize TypeContext from the pipeline state accumulated during builtin_core
@@ -227,23 +238,28 @@ pub async fn run_loader_pipeline(
 
     // Process init program documents.
     let loader_sf: Arc<str> = Arc::from(init_path);
-    let loader_parsed = parse(init_source, Arc::clone(&loader_sf))
-        .map_err(|e| format!("{init_path} parse error: {e}"))?;
-    for diag in &loader_parsed.diagnostics {
-        eprintln!(
-            "{}",
-            crate::parser::format_parse_error(diag, init_source, init_path)
-        );
-    }
+    let loader_parsed = match parse(init_source, Arc::clone(&loader_sf)) {
+        Ok(p) => p,
+        Err(e) => {
+            return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
+                "parse-error",
+                format!("{init_path}: {e}"),
+                crate::rust_span!(),
+            ))
+            .with_diagnostics(diagnostics);
+        }
+    };
+    diagnostics.extend(loader_parsed.diagnostics.into_iter().map(|d| d.into()));
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
     let loader_program = expand::expand_program(&loader_program);
     for doc in &loader_program.documents {
-        crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
-            .await
-            .map_err(|e| format!("{init_path}: {e}"))?;
+        if let Err(e) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx).await
+        {
+            return crate::error::DiagnosticResult::err(*e).with_diagnostics(diagnostics);
+        }
     }
 
-    Ok(())
+    crate::error::DiagnosticResult::ok(()).with_diagnostics(diagnostics)
 }
 
 /// Parse and type-check LLT source code.
@@ -363,7 +379,7 @@ pub trait ValueVisitor {
     type Output;
 
     fn visit_int(&self, v: i64) -> Self::Output;
-    fn visit_float(&self, v: f64, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_float(&self, v: f64, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
     fn visit_str(&self, v: &str) -> Self::Output;
     fn visit_bytes(&self, v: &[u8]) -> Self::Output;
     fn visit_null(&self) -> Self::Output;
@@ -372,18 +388,18 @@ pub trait ValueVisitor {
         &self,
         head: Self::Output,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::EvalError>>;
+    ) -> Result<Self::Output, Box<error::Diagnostic>>;
     fn visit_function(
         &self,
         params: &[ast::Param],
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::EvalError>>;
+    ) -> Result<Self::Output, Box<error::Diagnostic>>;
     fn visit_builtin(
         &self,
         name: &str,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
+    ) -> Result<Self::Output, Box<error::Diagnostic>>;
+    fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
@@ -391,21 +407,21 @@ pub trait ValueVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::EvalError>>;
+    ) -> Result<Self::Output, Box<error::Diagnostic>>;
     fn visit_duration(&self, nanos: i64) -> Self::Output;
-    fn visit_clock_cap(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_timezone(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_clock_cap(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
+    fn visit_timezone(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
         depth: usize,
         span: ast::Span,
-    ) -> Option<Result<Self::Output, Box<error::EvalError>>>;
+    ) -> Option<Result<Self::Output, Box<error::Diagnostic>>>;
 }
 
 /// Type alias for the pinned future returned by `visit_value`.
 type VisitValueFuture<'a, Output> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Output, Box<error::EvalError>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = Result<Output, Box<error::Diagnostic>>> + Send + 'a>,
 >;
 
 /// Shared structural traversal for materialised `Value` trees.
@@ -492,20 +508,18 @@ where
             }
             value::Value::Builtin { def, .. } => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
-            value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-                "DirCap".to_string(),
-                span,
-            ))),
-            value::Value::NetCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-                "NetCap".to_string(),
-                span,
-            ))),
-            value::Value::File { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::DirCap { .. } => Err(Box::new(
+                error::Diagnostic::value_not_serializable("DirCap".to_string(), span),
+            )),
+            value::Value::NetCap { .. } => Err(Box::new(
+                error::Diagnostic::value_not_serializable("NetCap".to_string(), span),
+            )),
+            value::Value::File { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "File".to_string(),
                 span,
             ))),
             value::Value::RevocableDirCap { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
+                error::Diagnostic::value_not_serializable("RevocableDirCap".to_string(), span),
             )),
             value::Value::Variant {
                 type_decl_id,
@@ -533,7 +547,7 @@ where
             }
             value::Value::Decimal { n: d, .. } => Ok(visitor.visit_decimal(*d)),
             value::Value::BigInt { n, .. } => Ok(visitor.visit_bigint(n)),
-            value::Value::Uri { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Uri { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "Uri".to_string(),
                 span,
             ))),
@@ -544,68 +558,68 @@ where
             value::Value::ClockCap { .. } => visitor.visit_clock_cap(span),
             value::Value::Timezone { .. } => visitor.visit_timezone(span),
             value::Value::QuicSession { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("QuicSession".to_string(), span),
+                error::Diagnostic::value_not_serializable("QuicSession".to_string(), span),
             )),
             value::Value::Http2Session { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Http2Session".to_string(), span),
+                error::Diagnostic::value_not_serializable("Http2Session".to_string(), span),
             )),
             value::Value::Http3Session { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Http3Session".to_string(), span),
+                error::Diagnostic::value_not_serializable("Http3Session".to_string(), span),
             )),
             value::Value::QuicDatagramHandle { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("QuicDatagramHandle".to_string(), span),
+                error::Diagnostic::value_not_serializable("QuicDatagramHandle".to_string(), span),
             )),
             value::Value::Program { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Program".to_string(), span),
+                error::Diagnostic::value_not_serializable("Program".to_string(), span),
             )),
             value::Value::Document { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Document".to_string(), span),
+                error::Diagnostic::value_not_serializable("Document".to_string(), span),
             )),
             // Expr.* variants (Value::Variant) are handled by the Variant arm above.
-            value::Value::Task { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Task { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "Task".to_string(),
                 span,
             ))),
             value::Value::Channel { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Channel".to_string(), span),
+                error::Diagnostic::value_not_serializable("Channel".to_string(), span),
             )),
             value::Value::Context { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Context".to_string(), span),
+                error::Diagnostic::value_not_serializable("Context".to_string(), span),
             )),
             value::Value::ReactiveCell { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("ReactiveCell".to_string(), span),
+                error::Diagnostic::value_not_serializable("ReactiveCell".to_string(), span),
             )),
-            value::Value::Builder(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Builder(_) => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "Builder".to_string(),
                 span,
             ))),
             value::Value::BroadcastChannel { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("BroadcastChannel".to_string(), span),
+                error::Diagnostic::value_not_serializable("BroadcastChannel".to_string(), span),
             )),
             value::Value::OneshotSender { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("OneshotSender".to_string(), span),
+                error::Diagnostic::value_not_serializable("OneshotSender".to_string(), span),
             )),
             value::Value::OneshotReceiver { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("OneshotReceiver".to_string(), span),
+                error::Diagnostic::value_not_serializable("OneshotReceiver".to_string(), span),
             )),
             // Annotated is transparent — delegate to inner value serialization.
             value::Value::Annotated { inner, .. } => {
                 visit_value(inner, ctx, depth, visitor, span).await
             }
             value::Value::TypeContext { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("TypeContext".to_string(), span),
+                error::Diagnostic::value_not_serializable("TypeContext".to_string(), span),
             )),
             value::Value::Expression { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("Expression".to_string(), span),
+                error::Diagnostic::value_not_serializable("Expression".to_string(), span),
             )),
-            value::Value::Arena { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Arena { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "Arena".to_string(),
                 span,
             ))),
             value::Value::CoreDocument { .. } => Err(Box::new(
-                error::EvalError::value_not_serializable("CoreDocument".to_string(), span),
+                error::Diagnostic::value_not_serializable("CoreDocument".to_string(), span),
             )),
-            value::Value::Scope { .. } => Err(Box::new(error::EvalError::value_not_serializable(
+            value::Value::Scope { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
                 "Scope".to_string(),
                 span,
             ))),
@@ -718,7 +732,7 @@ impl ValueVisitor for TinctReprVisitor {
     fn visit_int(&self, v: i64) -> String {
         v.to_string()
     }
-    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         if v.fract() == 0.0 && v.is_finite() {
             Ok(format!("{v:.1}"))
         } else {
@@ -789,21 +803,25 @@ impl ValueVisitor for TinctReprVisitor {
         &self,
         head: String,
         _span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         Ok(format!("[{head}  ...]"))
     }
     fn visit_function(
         &self,
         params: &[ast::Param],
         _span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         Ok(format!("[fn [let {}] ...]", names.join(" ")))
     }
-    fn visit_builtin(&self, name: &str, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_builtin(
+        &self,
+        name: &str,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::Diagnostic>> {
         Ok(format!("<builtin:{name}>"))
     }
-    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("<proxy>".to_string())
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
@@ -824,10 +842,10 @@ impl ValueVisitor for TinctReprVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("{ts}")),
-            Err(e) => Err(Box::new(error::EvalError::internal(
+            Err(e) => Err(Box::new(error::Diagnostic::internal(
                 format!("invalid timestamp: {e}"),
                 span,
             ))),
@@ -836,17 +854,17 @@ impl ValueVisitor for TinctReprVisitor {
     fn visit_duration(&self, nanos: i64) -> String {
         format!("<duration:{nanos}ns>")
     }
-    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("<clock>".to_string())
     }
-    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("<timezone>".to_string())
     }
     fn depth_limit_output(
         &self,
         depth: usize,
         _span: ast::Span,
-    ) -> Option<Result<String, Box<error::EvalError>>> {
+    ) -> Option<Result<String, Box<error::Diagnostic>>> {
         if depth >= MAX_DISPLAY_DEPTH {
             Some(Ok("...".to_string()))
         } else {
@@ -863,7 +881,7 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_int(&self, v: i64) -> String {
         format!("Int({v})")
     }
-    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok(format!("Float({v})"))
     }
     fn visit_str(&self, v: &str) -> String {
@@ -898,21 +916,25 @@ impl ValueVisitor for DisplayVisitor {
         &self,
         head: String,
         _span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         Ok(format!("Seq({head}, ...)"))
     }
     fn visit_function(
         &self,
         params: &[ast::Param],
         _span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         Ok(format!("Function({})", names.join(", ")))
     }
-    fn visit_builtin(&self, name: &str, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_builtin(
+        &self,
+        name: &str,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::Diagnostic>> {
         Ok(format!("Builtin({name})"))
     }
-    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("Proxy".to_string())
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
@@ -928,11 +950,11 @@ impl ValueVisitor for DisplayVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         // Format as RFC 3339 for readability
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("Timestamp({})", ts)),
-            Err(e) => Err(Box::new(error::EvalError::internal(
+            Err(e) => Err(Box::new(error::Diagnostic::internal(
                 format!("invalid timestamp: {e}"),
                 span,
             ))),
@@ -941,17 +963,17 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_duration(&self, nanos: i64) -> String {
         format!("Duration({} ns)", nanos)
     }
-    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("ClockCap".to_string())
     }
-    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
+    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
         Ok("Timezone".to_string())
     }
     fn depth_limit_output(
         &self,
         depth: usize,
         _span: ast::Span,
-    ) -> Option<Result<String, Box<error::EvalError>>> {
+    ) -> Option<Result<String, Box<error::Diagnostic>>> {
         if depth >= MAX_DISPLAY_DEPTH {
             Some(Ok("...".to_string()))
         } else {
@@ -980,7 +1002,7 @@ pub async fn value_to_tinct_repr_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     span: ast::Span,
-) -> Result<String, Box<error::EvalError>> {
+) -> Result<String, Box<error::Diagnostic>> {
     visit_value(val, ctx, 0, &TinctReprVisitor, span).await
 }
 
@@ -988,7 +1010,7 @@ pub async fn value_to_display_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     span: ast::Span,
-) -> Result<String, Box<error::EvalError>> {
+) -> Result<String, Box<error::Diagnostic>> {
     let depth = 0;
     visit_value(val, ctx, depth, &DisplayVisitor, span).await
 }
@@ -1054,7 +1076,7 @@ mod tests {
         val: &value::Value,
         ctx: &Arc<eval::EvalContext>,
         span: ast::Span,
-    ) -> Result<String, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::Diagnostic>> {
         super::value_to_display_string(val, ctx, span).await
     }
 
@@ -1071,7 +1093,8 @@ mod tests {
             payload: None,
             type_val: Some(make_typevalue_nominal(TEST_ID_COLOR)),
         };
-        assert_eq!(format!("{v}"), "Variant(500.0)");
+        let empty_env = std::collections::HashMap::new();
+        assert_eq!(v.render(&empty_env), "Variant(500.0)");
     }
 
     /// Regression: all unit variants must serialise uniformly as `Variant(Tag, Null)`.

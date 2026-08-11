@@ -36,7 +36,7 @@ pub(crate) async fn call_strict_resolver(
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> crate::error::EvalResult<Option<Arc<Value>>> {
+) -> Result<Option<Arc<Value>>, Box<crate::error::Diagnostic>> {
     // Leaf value (TypeNode Variant): convert to TypeValue directly without calling.
     if let Some(tv) = typenode_leaf_to_typevalue(&resolver_val) {
         if args.is_empty() {
@@ -55,17 +55,17 @@ pub(crate) async fn call_strict_resolver(
     }
 
     // Must be a parameterized type constructor (Function).
-    let (clause, closure_env) = match resolver_val {
+    let (clause, definition_scope) = match resolver_val {
         Value::Function {
             clauses,
-            closure_env,
+            definition_scope,
             ..
         } => {
             let clause = clauses
                 .first()
                 .expect("Value::Function must have at least one clause")
                 .clone();
-            (clause, closure_env)
+            (clause, definition_scope)
         }
         _ => return Ok(None),
     };
@@ -87,7 +87,7 @@ pub(crate) async fn call_strict_resolver(
         })
         .collect();
     let call_frame = crate::value::EvalFrame::for_function_call(
-        closure_env,
+        definition_scope,
         param_thunks,
         crate::value::empty_scope(),
     );
@@ -122,7 +122,7 @@ pub(crate) async fn evaluate_resolver_with_thunk(
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> crate::error::EvalResult<Option<Arc<Value>>> {
+) -> Result<Option<Arc<Value>>, Box<crate::error::Diagnostic>> {
     let resolver_val = crate::eval::materialize(&thunk, None, eval_ctx).await?;
     call_strict_resolver(resolver_val, args, eval_ctx, type_name_to_id).await
 }
@@ -205,7 +205,7 @@ pub(crate) fn typenode_leaf_to_typevalue(val: &Value) -> Option<Arc<Value>> {
 /// and `Err(e)` when a thunk inside the TypeVar payload has settled with an evaluation error.
 pub(crate) fn typenode_typevar_kind(
     val: &Value,
-) -> Result<Option<String>, std::sync::Arc<crate::error::EvalError>> {
+) -> Result<Option<String>, std::sync::Arc<crate::error::Diagnostic>> {
     // Only matches Value::Variant { ctor_index: TN_TYPE_VAR, payload: Some(thunk) }
     // where the thunk resolves to Value::Dict containing kind: "Operator" | "Label".
     let (type_decl_id, ctor_index, payload_opt) = match val {

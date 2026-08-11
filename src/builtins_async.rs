@@ -35,7 +35,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::ok_val;
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT};
@@ -49,16 +49,16 @@ fn take_one_thunk(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 1 {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} expects 1 argument, got {}", args.len()),
             call_span,
         )
@@ -76,16 +76,16 @@ fn take_two_thunks(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<(Arc<Thunk>, Arc<Thunk>)> {
+) -> Result<(Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 2 {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} expects 2 arguments, got {}", args.len()),
             call_span,
         )
@@ -100,16 +100,16 @@ fn take_three_thunks(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>)> {
+) -> Result<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 3 {
-        return Err(EvalError::user_error(
+        return Err(Diagnostic::user_error(
             format!("{name} expects 3 arguments, got {}", args.len()),
             call_span,
         )
@@ -137,7 +137,7 @@ fn take_three_thunks(
 /// is never spawned.
 pub(crate) fn builtin_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -163,7 +163,7 @@ pub(crate) fn builtin_task(
             match func_value {
                 Value::Function {
                     clauses,
-                    closure_env,
+                    definition_scope,
                     ..
                 } => {
                     // Extract clause 0 (single-clause common case; T-2133 will add multi-clause).
@@ -172,7 +172,7 @@ pub(crate) fn builtin_task(
                         .expect("Value::Function must have at least one clause");
                     // Check for zero-arg function
                     if !clause.params.is_empty() {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             format!(
                                 "task expects a zero-arg function, got {} parameter(s)",
                                 clause.params.len()
@@ -184,7 +184,7 @@ pub(crate) fn builtin_task(
                     let thunk = eval_core_expr(
                         &clause.body,
                         &crate::value::EvalFrame::for_function_call(
-                            Arc::clone(&closure_env),
+                            Arc::clone(&definition_scope),
                             vec![],
                             crate::value::empty_scope(),
                         ),
@@ -237,7 +237,7 @@ pub(crate) fn builtin_task(
 /// Propagates any error from the task.
 pub(crate) fn builtin_await(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -278,13 +278,13 @@ pub(crate) fn builtin_await(
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
-                        // Await the handle (JoinHandle<EvalResult<Value>>), racing against
+                        // Await the handle (JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>), racing against
                         // context cancellation.
-                        let val_result: EvalResult<Value> = tokio::select! {
+                        let val_result: Result<Value, Box<crate::error::Diagnostic>> = tokio::select! {
                             join_result = handle => {
                                 match join_result {
                                     Ok(inner) => inner,
-                                    Err(e) => Err(EvalError::user_error(
+                                    Err(e) => Err(Diagnostic::user_error(
                                         format!("task panicked: {e}"),
                                         call_span.clone(),
                                     ).into()),
@@ -292,7 +292,7 @@ pub(crate) fn builtin_await(
                             }
                             _ = ctx.cancel.cancelled() => {
                                 // Cache cancellation error so subsequent awaits see it too
-                                let err: Box<EvalError> = EvalError::user_error(
+                                let err: Box<Diagnostic> = Diagnostic::user_error(
                                     "await: cancelled".to_string(), call_span.clone()
                                 ).into();
                                 *guard = crate::value::TaskState::Done(Err(err.clone()));
@@ -318,7 +318,7 @@ pub(crate) fn builtin_await(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Task",
                 ctx.type_display_name(task_val.type_decl_id_of()),
                 call_span,
@@ -335,7 +335,7 @@ pub(crate) fn builtin_await(
 /// The capacity must be ≥ 1. `[channel 0]` is a runtime error.
 pub(crate) fn builtin_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -367,12 +367,12 @@ pub(crate) fn builtin_channel(
                     call_span,
                 )
             }
-            Value::Int { n, .. } if n < 1 => Err(EvalError::user_error(
+            Value::Int { n, .. } if n < 1 => Err(Diagnostic::user_error(
                 format!("channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
             .into()),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Int",
                 ctx.type_display_name(capacity_val.type_decl_id_of()),
                 call_span,
@@ -389,7 +389,7 @@ pub(crate) fn builtin_channel(
 /// Suspends if the channel buffer is full. Returns null on success.
 pub(crate) fn builtin_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -414,14 +414,14 @@ pub(crate) fn builtin_send(
                 tokio::select! {
                     result = channel_inner.sender.send(value) => {
                         result.map_err(|_| {
-                            EvalError::user_error(
+                            Diagnostic::user_error(
                                 "channel closed (receiver dropped)".to_string(),
                                 call_span.clone(),
                             )
                         })?;
                     }
                     _ = ctx.cancel.cancelled() => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             "send: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -445,7 +445,7 @@ pub(crate) fn builtin_send(
             } => {
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
                 channel_inner.sender.send(value).map_err(|_| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         "broadcast channel closed (all receivers dropped)".to_string(),
                         call_span.clone(),
                     )
@@ -468,13 +468,13 @@ pub(crate) fn builtin_send(
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
                 let mut tx_opt = sender_inner.sender.lock().await;
                 let tx = tx_opt.take().ok_or_else(|| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         "oneshot sender already used".to_string(),
                         call_span.clone(),
                     )
                 })?;
                 tx.send(value).map_err(|_| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         "oneshot receiver dropped before send".to_string(),
                         call_span.clone(),
                     )
@@ -490,7 +490,7 @@ pub(crate) fn builtin_send(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotSender",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -508,7 +508,7 @@ pub(crate) fn builtin_send(
 /// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -532,7 +532,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -569,7 +569,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -625,7 +625,7 @@ pub(crate) fn builtin_recv(
                 // Take the receiver (single-use)
                 let mut rx_opt = receiver_inner.receiver.lock().await;
                 let rx = rx_opt.take().ok_or_else(|| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         "oneshot receiver already used".to_string(),
                         call_span.clone(),
                     )
@@ -635,7 +635,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -665,7 +665,7 @@ pub(crate) fn builtin_recv(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Channel, BroadcastChannel, or OneshotReceiver",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -697,7 +697,7 @@ pub(crate) fn builtin_recv(
 /// produce values — typically by spawning the receiver task first.
 pub(crate) fn builtin_broadcast_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -733,12 +733,12 @@ pub(crate) fn builtin_broadcast_channel(
                     call_span,
                 )
             }
-            Value::Int { n, .. } if n < 1 => Err(EvalError::user_error(
+            Value::Int { n, .. } if n < 1 => Err(Diagnostic::user_error(
                 format!("broadcast-channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
             .into()),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Int",
                 ctx.type_display_name(capacity_val.type_decl_id_of()),
                 call_span,
@@ -757,7 +757,7 @@ pub(crate) fn builtin_broadcast_channel(
 /// The receiver can recv exactly once; subsequent recvs fail.
 pub(crate) fn builtin_oneshot_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -767,14 +767,14 @@ pub(crate) fn builtin_oneshot_channel(
     } = ctx_arg;
     Box::pin(async move {
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "oneshot-channel does not accept named arguments".to_string(),
                 call_span,
             )
             .into());
         }
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("oneshot-channel expects 0 arguments, got {}", args.len()),
                 call_span,
             )
@@ -833,7 +833,7 @@ pub(crate) fn builtin_oneshot_channel(
 /// and the value is dropped. Returns [Closed] if the receiver has been dropped.
 pub(crate) fn builtin_try_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -899,7 +899,7 @@ pub(crate) fn builtin_try_send(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Channel",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -915,7 +915,7 @@ pub(crate) fn builtin_try_send(
 /// had no message ready, or `{closed: []}` if the channel is closed.
 pub(crate) fn builtin_try_recv(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1036,7 +1036,7 @@ pub(crate) fn builtin_try_recv(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Channel",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -1052,7 +1052,7 @@ pub(crate) fn builtin_try_recv(
 /// had no message ready (or the subscriber lagged), or `{closed: []}` if the channel is closed.
 pub(crate) fn builtin_try_recv_broadcast(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1175,7 +1175,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "BroadcastChannel",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -1192,7 +1192,7 @@ pub(crate) fn builtin_try_recv_broadcast(
 /// or the receiver was already consumed.
 pub(crate) fn builtin_try_recv_oneshot(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1347,7 +1347,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                     }
                 }
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "OneshotReceiver",
                 ctx.type_display_name(chan_val.type_decl_id_of()),
                 call_span,
@@ -1365,7 +1365,7 @@ pub(crate) fn builtin_try_recv_oneshot(
 /// Returns the empty dict `[]`.
 pub(crate) fn builtin_yield(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1375,14 +1375,14 @@ pub(crate) fn builtin_yield(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("yield expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "yield does not accept named arguments".to_string(),
                 call_span,
             )
@@ -1414,7 +1414,7 @@ pub(crate) fn builtin_yield(
 /// Both `par` and `task` use `tokio::spawn` internally; the distinction is stylistic.
 pub(crate) fn builtin_par(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     builtin_task(ctx_arg)
 }
 
@@ -1429,7 +1429,7 @@ pub(crate) fn builtin_par(
 /// On non-Unix platforms this builtin always returns an error.
 pub(crate) fn builtin_signal_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
         #[cfg(unix)]
         {
@@ -1455,7 +1455,7 @@ pub(crate) fn builtin_signal_channel(
             let sig_dict = match signals_val {
                 Value::Dict { entries: d, .. } => d,
                 other => {
-                    return Err(EvalError::type_mismatch(
+                    return Err(Diagnostic::type_mismatch(
                         "Dict of Signal",
                         ctx.type_display_name(other.type_decl_id_of()),
                         call_span,
@@ -1473,14 +1473,12 @@ pub(crate) fn builtin_signal_channel(
                         ctor_index,
                         ..
                     } => {
-                        {
-                            let empty = std::collections::HashMap::new();
-                            let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-                            crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
-                        }
+                        let empty = std::collections::HashMap::new();
+                        let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                        crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
                     }
                     _ => {
-                        return Err(EvalError::type_mismatch(
+                        return Err(Diagnostic::type_mismatch(
                             "Signal",
                             ctx.type_display_name(head_val.type_decl_id_of()),
                             call_span,
@@ -1492,7 +1490,7 @@ pub(crate) fn builtin_signal_channel(
             }
 
             if sig_names.is_empty() {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     "signal-channel: requires at least one signal".to_string(),
                     call_span,
                 )
@@ -1511,7 +1509,7 @@ pub(crate) fn builtin_signal_channel(
                     "SIGUSR1" => SignalKind::user_defined1(),
                     "SIGUSR2" => SignalKind::user_defined2(),
                     other => {
-                        return Err(EvalError::user_error(
+                        return Err(Diagnostic::user_error(
                             format!("signal-channel: unknown signal {other:?}; supported: SIGINT SIGTERM SIGHUP SIGQUIT SIGUSR1 SIGUSR2"),
                             call_span,
                         )
@@ -1520,7 +1518,7 @@ pub(crate) fn builtin_signal_channel(
                 };
 
                 let mut sig_stream = signal(kind).map_err(|e| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         format!("signal-channel: failed to register signal handler: {e}"),
                         call_span.clone(),
                     )
@@ -1583,7 +1581,7 @@ pub(crate) fn builtin_signal_channel(
         #[cfg(not(unix))]
         {
             let BuiltinArgs { call_span, .. } = ctx_arg;
-            Err(EvalError::user_error(
+            Err(Diagnostic::user_error(
                 "signal-channel is only supported on Unix platforms".to_string(),
                 call_span,
             )
@@ -1602,7 +1600,7 @@ pub(crate) fn builtin_signal_channel(
 /// builds up an unbounded backlog.
 pub(crate) fn builtin_timer_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1624,7 +1622,7 @@ pub(crate) fn builtin_timer_channel(
         let clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap { inner, .. } => inner.as_ref().clone(),
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "ClockCap",
                     ctx.type_display_name(clock_val.type_decl_id_of()),
                     call_span.clone(),
@@ -1639,14 +1637,14 @@ pub(crate) fn builtin_timer_channel(
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("timer-channel: interval must be ≥ 1 ms, got {} ns", nanos),
                     call_span,
                 )
                 .into())
             }
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Duration",
                     ctx.type_display_name(interval_val.type_decl_id_of()),
                     call_span,
@@ -1751,7 +1749,7 @@ pub(crate) fn builtin_timer_channel(
 /// FSEvents, etc.), but this polling approach has no external dependencies.
 pub(crate) fn builtin_watch_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1774,7 +1772,7 @@ pub(crate) fn builtin_watch_channel(
         let dir = match dir_cap_val {
             Value::DirCap { dir, .. } => dir,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "DirCap",
                     ctx.type_display_name(dir_cap_val.type_decl_id_of()),
                     call_span,
@@ -1789,7 +1787,7 @@ pub(crate) fn builtin_watch_channel(
                 source, start, end, ..
             } => source[start..end].to_string(),
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "String",
                     ctx.type_display_name(path_val.type_decl_id_of()),
                     call_span,
@@ -1961,7 +1959,7 @@ pub(crate) fn builtin_watch_channel(
 /// `[context]` gives user code access to a fresh independent root context.
 pub(crate) fn builtin_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1971,14 +1969,14 @@ pub(crate) fn builtin_context(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("context expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "context does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2012,7 +2010,7 @@ pub(crate) fn builtin_context(
 /// Per async-eval.md: `[child-ctx: child  cancel: cancel-ctx]: [with-cancel ctx]`
 pub(crate) fn builtin_with_cancel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2033,7 +2031,7 @@ pub(crate) fn builtin_with_cancel(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Context",
                     ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
@@ -2111,7 +2109,7 @@ pub(crate) fn builtin_with_cancel(
 /// Per async-eval.md: `timed-ctx: [with-timeout %clock ctx [duration 5 "s"]]`
 pub(crate) fn builtin_with_timeout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2131,7 +2129,7 @@ pub(crate) fn builtin_with_timeout(
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(EvalError::type_mismatch(
+            return Err(Diagnostic::type_mismatch(
                 "ClockCap",
                 ctx.type_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
@@ -2145,7 +2143,7 @@ pub(crate) fn builtin_with_timeout(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Context",
                     ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
@@ -2158,14 +2156,14 @@ pub(crate) fn builtin_with_timeout(
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(EvalError::user_error(
+                return Err(Diagnostic::user_error(
                     format!("with-timeout: duration must be ≥ 0, got {} ns", nanos),
                     call_span,
                 )
                 .into())
             }
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Duration",
                     ctx.type_display_name(ms_val.type_decl_id_of()),
                     call_span,
@@ -2214,7 +2212,7 @@ pub(crate) fn builtin_with_timeout(
 /// Per async-eval.md: `dead-ctx: [with-deadline %clock ctx ts]`
 pub(crate) fn builtin_with_deadline(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2234,7 +2232,7 @@ pub(crate) fn builtin_with_deadline(
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(EvalError::type_mismatch(
+            return Err(Diagnostic::type_mismatch(
                 "ClockCap",
                 ctx.type_display_name(clock_val.type_decl_id_of()),
                 call_span.clone(),
@@ -2248,7 +2246,7 @@ pub(crate) fn builtin_with_deadline(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Context",
                     ctx.type_display_name(parent_val.type_decl_id_of()),
                     call_span,
@@ -2265,7 +2263,7 @@ pub(crate) fn builtin_with_deadline(
             }
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int or Timestamp",
                     ctx.type_display_name(ts_val.type_decl_id_of()),
                     call_span,
@@ -2283,7 +2281,7 @@ pub(crate) fn builtin_with_deadline(
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
-                EvalError::user_error(
+                Diagnostic::user_error(
                     format!("system clock is before Unix epoch: {e}"),
                     call_span.clone(),
                 )
@@ -2322,7 +2320,7 @@ pub(crate) fn builtin_with_deadline(
 /// Per async-eval.md: `[if [cancelled? ctx] [cleanup] [continue]]`
 pub(crate) fn builtin_cancelled_q(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2345,7 +2343,7 @@ pub(crate) fn builtin_cancelled_q(
                 },
                 call_span,
             ),
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Context",
                 ctx.type_display_name(ctx_val.type_decl_id_of()),
                 call_span,
@@ -2365,7 +2363,7 @@ pub(crate) fn builtin_cancelled_q(
 /// Per async-eval.md: `[cancel-fn]` — the cancel field from `[with-cancel ctx]` is passed here.
 pub(crate) fn builtin_cancel_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2397,7 +2395,7 @@ pub(crate) fn builtin_cancel_task(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "Context",
                 ctx.type_display_name(ctx_val.type_decl_id_of()),
                 call_span,
@@ -2421,7 +2419,7 @@ pub(crate) fn builtin_cancel_task(
 /// Per async-eval.md: NOT capability-gated. Security = OS process isolation (tinct run boundary).
 pub(crate) fn builtin_cancel_root(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2431,14 +2429,14 @@ pub(crate) fn builtin_cancel_root(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("cancel-root expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "cancel-root does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2475,7 +2473,7 @@ pub(crate) fn builtin_cancel_root(
 /// each registered handle as a fallback — tasks are terminated abruptly at the next `.await`
 /// point, which may leave resources in an inconsistent state.
 ///
-/// Design note: user-spawned tasks (via `task`) store their JoinHandle<EvalResult<Value>>
+/// Design note: user-spawned tasks (via `task`) store their JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>
 /// inside Value::Task so that `await` can retrieve the typed result. Background tasks store
 /// JoinHandle<()> in task_registry. These are different types, so task registry cannot hold
 /// both without architectural changes.
@@ -2483,7 +2481,7 @@ pub(crate) fn builtin_cancel_root(
 /// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
 pub(crate) fn builtin_drain(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2493,14 +2491,14 @@ pub(crate) fn builtin_drain(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("drain expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "drain does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2525,7 +2523,7 @@ pub(crate) fn builtin_drain(
                 Err(e) if e.is_cancelled() => {} // expected: abort() was called
                 Err(e) => {
                     // Task panicked — this is a bug; propagate as an internal error.
-                    return Err(EvalError::internal(
+                    return Err(Diagnostic::internal(
                         format!("async background task panicked during drain: {e}"),
                         call_span,
                     )
@@ -2558,7 +2556,7 @@ pub(crate) fn builtin_drain(
 /// cancel-root and drain.
 pub(crate) fn builtin_exit_now(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2568,14 +2566,14 @@ pub(crate) fn builtin_exit_now(
     } = ctx_arg;
     Box::pin(async move {
         if args.len() != 1 {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("exit-now expects 1 argument, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "exit-now does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2588,7 +2586,7 @@ pub(crate) fn builtin_exit_now(
         let exit_code = match code_val {
             Value::Int { n, .. } => n.clamp(0, 255) as i32,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Int",
                     ctx.type_display_name(code_val.type_decl_id_of()),
                     call_span,
@@ -2615,7 +2613,7 @@ pub(crate) fn builtin_exit_now(
 /// runs to completion even if the caller's context is cancelled.
 pub(crate) fn builtin_non_cancellable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2625,14 +2623,14 @@ pub(crate) fn builtin_non_cancellable(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 format!("non-cancellable expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(EvalError::user_error(
+            return Err(Diagnostic::user_error(
                 "non-cancellable does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2667,7 +2665,7 @@ pub(crate) fn builtin_non_cancellable(
 /// evaluation-local state that should differ between parent and child evaluation contexts.
 pub(crate) fn builtin_with_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2689,7 +2687,7 @@ pub(crate) fn builtin_with_context(
         let new_cancel = match context_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(EvalError::type_mismatch(
+                return Err(Diagnostic::type_mismatch(
                     "Context",
                     ctx.type_display_name(context_val.type_decl_id_of()),
                     call_span,
@@ -2735,7 +2733,7 @@ pub(crate) fn builtin_with_context(
 /// watch sender has a concrete `Value` to hold.
 pub(crate) fn builtin_reactive_cell(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2779,7 +2777,7 @@ pub(crate) fn builtin_reactive_cell(
 /// returns the most recently written value immediately.
 pub(crate) fn builtin_cell_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2800,7 +2798,7 @@ pub(crate) fn builtin_cell_get(
                 let current = cell_inner.receiver.borrow().clone();
                 ok_val(current, call_span)
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "ReactiveCell",
                 ctx.type_display_name(cell_val.type_decl_id_of()),
                 call_span,
@@ -2822,7 +2820,7 @@ pub(crate) fn builtin_cell_get(
 /// holds a concrete `Value` (not a lazy thunk that could be freed after the call).
 pub(crate) fn builtin_cell_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2847,7 +2845,7 @@ pub(crate) fn builtin_cell_set(
                 // a Receiver in ReactiveCellInner for the lifetime of the cell.
                 let tx = cell_inner.sender.lock().await;
                 tx.send(new_val).map_err(|_| {
-                    EvalError::user_error(
+                    Diagnostic::user_error(
                         "cell-set: reactive cell has been dropped (no receivers)".to_string(),
                         call_span.clone(),
                     )
@@ -2864,7 +2862,7 @@ pub(crate) fn builtin_cell_set(
                     call_span,
                 )
             }
-            _ => Err(EvalError::type_mismatch(
+            _ => Err(Diagnostic::type_mismatch(
                 "ReactiveCell",
                 ctx.type_display_name(cell_val.type_decl_id_of()),
                 call_span,

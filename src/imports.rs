@@ -18,11 +18,14 @@ use crate::env::Env;
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn build_builtin_core_envs() -> crate::error::EvalResult<(
-    Arc<RwLock<Env>>,
-    crate::type_def::TyConEnv,
-    std::collections::HashMap<String, u64>,
-)> {
+pub async fn build_builtin_core_envs() -> Result<
+    (
+        Arc<RwLock<Env>>,
+        crate::type_def::TyConEnv,
+        std::collections::HashMap<String, u64>,
+    ),
+    Box<crate::error::Diagnostic>,
+> {
     let (env, tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner().await?;
     Ok((env, tycon_env, type_name_to_id))
 }
@@ -34,7 +37,7 @@ pub async fn build_builtin_core_envs() -> crate::error::EvalResult<(
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
 pub async fn get_builtin_core_type_stage_scope(
-) -> crate::error::EvalResult<crate::type_infer::TypeStageData> {
+) -> Result<crate::type_infer::TypeStageData, Box<crate::error::Diagnostic>> {
     let (_, _, data, _) = build_builtin_core_envs_inner().await?;
     Ok(data)
 }
@@ -45,14 +48,16 @@ pub async fn get_builtin_core_type_stage_scope(
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn get_builtin_core_type_env() -> crate::error::EvalResult<Arc<RwLock<Env>>> {
+pub async fn get_builtin_core_type_env() -> Result<Arc<RwLock<Env>>, Box<crate::error::Diagnostic>>
+{
     let (env, _, _, _) = build_builtin_core_envs_inner().await?;
     Ok(env)
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
-pub async fn get_builtin_core_tycon_env() -> crate::error::EvalResult<crate::type_def::TyConEnv> {
+pub async fn get_builtin_core_tycon_env(
+) -> Result<crate::type_def::TyConEnv, Box<crate::error::Diagnostic>> {
     let (_, tycon_env, _, _) = build_builtin_core_envs_inner().await?;
     Ok(tycon_env)
 }
@@ -82,12 +87,13 @@ pub(crate) async fn classify_type_stage_entry(
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
     scope_so_far: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> crate::error::EvalResult<
+) -> Result<
     Option<(
         crate::type_infer::TypeValue,
         Option<std::sync::Arc<crate::value::Thunk>>,
         Option<String>,
     )>,
+    Box<crate::error::Diagnostic>,
 > {
     // For Variant values: call typenode_value_to_type (full recursive converter that reads
     // payload fields for structural types like Span, Diagnostic, Dict, Union, etc.).
@@ -134,19 +140,22 @@ pub(crate) async fn classify_type_stage_entry(
 /// resulting `Arc<RwLock<Env>>` with the new type declarations merged on top of
 /// `build_builtins_type_env_arc()` as the parent, along with the `TyConEnv` and the
 /// evaluated type-stage scope (used to seed `InferState::type_stage_scope`).
-async fn build_builtin_core_envs_inner() -> crate::error::EvalResult<(
-    Arc<RwLock<Env>>,
-    crate::type_def::TyConEnv,
-    crate::type_infer::TypeStageData,
-    std::collections::HashMap<String, u64>,
-)> {
+async fn build_builtin_core_envs_inner() -> Result<
+    (
+        Arc<RwLock<Env>>,
+        crate::type_def::TyConEnv,
+        crate::type_infer::TypeStageData,
+        std::collections::HashMap<String, u64>,
+    ),
+    Box<crate::error::Diagnostic>,
+> {
     let source = include_str!("../stdlib/builtin_core.llt");
     let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
 
     let program = crate::desugar::desugar_program_full(
         &crate::parser::parse(source, sf)
             .map_err(|e| {
-                Box::new(crate::error::EvalError::internal(
+                Box::new(crate::error::Diagnostic::internal(
                     format!("builtin_core.llt parse failed: {e}"),
                     crate::rust_span!(),
                 ))

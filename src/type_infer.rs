@@ -1237,7 +1237,7 @@ pub fn typevalue_var_name(v: &TypeValue) -> Option<String> {
             ..
         } if *ctor_index == TV_VAR => {
             // Inspect the settled payload dict to extract `name`.
-            // peek_result returns Option<Result<&Value, &Arc<EvalError>>>.
+            // peek_result returns Option<Result<&Value, &Arc<Diagnostic>>>.
             match thunk.peek_result() {
                 Some(Ok(crate::value::Value::Dict { entries, .. })) => {
                     let key = crate::value::HashableValue::Str(Arc::from(FIELD_NAME));
@@ -2352,9 +2352,10 @@ pub struct InferState {
     /// nested Sequentials do not corrupt the enclosing Sequential's liveness graph. The
     /// saved value is carried in AfterSequentialFinal and restored when it fires.
     pub use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
-    /// BindingIds captured via ClosureCapture during the current fn body's evaluation.
+    /// BindingIds captured via cross-fn-boundary references during the current fn body's
+    /// evaluation.
     ///
-    /// When a VarRef resolves via `VarAddr::ClosureCapture`, its target BindingId is
+    /// When a VarRef resolves via a capture (cross-fn-boundary Dispatch), its target BindingId is
     /// pushed here. When `AfterBlock` fires for the fn body, these are merged as
     /// `use_def[fn_binding_id → captured]` edges in the *outer* scope's use_def graph.
     /// Captures from even-outer scopes (not in the current binding_envs) propagate
@@ -2388,6 +2389,10 @@ pub struct InferState {
     /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
     /// Replaces the deleted `Substitution` and `type_vars` fields.
     pub ctx: InferenceContext,
+    /// Current accumulated scope at type-check time. Populated by the pipeline before
+    /// type-checking each document. Used by eval_expr to evaluate expressions (e.g.,
+    /// constructor patterns in coverage checking) in the same scope they appear in.
+    pub eval_scope: Option<crate::value::Scope>,
     /// Temporary: renaming from the most recent scheme instantiation at a call site.
     /// Maps original type parameter names to fresh TypeVar names (e.g. "a" → "a⦀42").
     /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build
@@ -2433,6 +2438,7 @@ impl InferState {
             current_parameter_frame: None,
             ctx: InferenceContext::new(),
             last_scheme_renaming: None,
+            eval_scope: None,
         }
     }
 

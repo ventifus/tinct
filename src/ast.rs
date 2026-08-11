@@ -344,7 +344,6 @@ impl fmt::Display for SurfaceExpression {
                 params,
                 body,
                 desugared: _,
-                resolved_captures: _,
                 resolved_return_annotation: _,
             } => {
                 write!(f, "[fn")?;
@@ -767,12 +766,6 @@ pub enum SurfaceExpression {
         body: Arc<SurfaceNode>,
         #[expr(key = "desugared")]
         desugared: bool,
-        /// Ordered list of free-variable names captured from outer scopes.
-        /// Written once by the resolver after processing this Fn's body.
-        /// The index of each name in this list is the ClosureCapture index assigned to
-        /// VarRef nodes inside this function that reference the corresponding outer binding.
-        #[expr(skip, default_fn = "crate::ast::CapturesCell::new")]
-        resolved_captures: CapturesCell,
         /// Return type resolved by the type checker from the return annotation.
         /// Set during `infer_fn_push_cont`; read by the lowerer to emit
         /// `TypeAssertCheck::Resolved` instead of `TypeAssertCheck::Source`.
@@ -969,9 +962,6 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
-    /// Closure capture list for all arms, set by the resolver after walking the arm body
-    /// with a fn boundary. Analogous to `Fn.resolved_captures`.
-    pub case_captures: CapturesCell,
 }
 
 impl SurfaceMatchArm {
@@ -1255,7 +1245,11 @@ impl Resolution {
 }
 impl Clone for Resolution {
     fn clone(&self) -> Self {
-        Self::new()
+        let r = Self::new();
+        if let Some(val) = self.0.get() {
+            r.set(val.clone());
+        }
+        r
     }
 }
 impl PartialEq for Resolution {
@@ -1278,53 +1272,12 @@ impl std::fmt::Debug for Resolution {
 /// Produced by the resolver pass; consumed by the lowerer and type checker.
 pub type ResolutionTable = std::collections::HashMap<NodeId, VarAddr>;
 
-/// Capture list for a function node — the ordered list of (name, original_addr) pairs
-/// captured from outer scopes, in first-occurrence order as seen during resolver traversal.
-/// `original_addr` is the VarAddr the captured variable held in the enclosing frame
-/// (Dispatch, ClosureCapture, or Parameter), BEFORE the resolver converts it to
-/// ClosureCapture for references inside the function body.
-/// Dispatch(depth, slot) original_addrs are resolved at fn-definition time by indexing frame.group[slot],
-/// which is the accumulated_group containing root-scope entries at low slots.
-/// Written once by the resolver after processing each Fn body; read by the lowerer.
-/// Clone resets to empty — cloned Fn nodes are in new scopes and must be re-resolved.
-pub struct CapturesCell(std::sync::OnceLock<Arc<Vec<(String, VarAddr)>>>);
-
-impl CapturesCell {
-    pub fn new() -> Self {
-        Self(std::sync::OnceLock::new())
-    }
-    /// Returns the capture list if the resolver has set it, or `None` if not yet resolved.
-    pub fn get(&self) -> Option<&Arc<Vec<(String, VarAddr)>>> {
-        self.0.get()
-    }
-    /// Called by the resolver exactly once per Fn node instance.
-    pub fn set(&self, captures: Arc<Vec<(String, VarAddr)>>) {
-        // First write wins: shared AST nodes may be visited multiple times.
-        self.0.get_or_init(|| captures);
-    }
-}
-impl Clone for CapturesCell {
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-impl PartialEq for CapturesCell {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-impl Default for CapturesCell {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A write-once cell holding the resolved `class_decl_id` for an `[instance ...]` declaration.
 ///
 /// Written by the type checker (via `typecheck_cek.rs`) after the class is resolved;
-/// read by the lowerer to populate `CoreExpr::Fn.instance_of`. Follows the same pattern as
-/// `CapturesCell` — `Clone` returns empty (phase reset), `PartialEq` is always true (the ID
-/// is a post-phase annotation, not part of node identity).
+/// read by the lowerer to populate `CoreExpr::Fn.instance_of`. `Clone` returns empty
+/// (phase reset), `PartialEq` is always true (the ID is a post-phase annotation,
+/// not part of node identity).
 pub struct ClassDeclIdCell(std::sync::OnceLock<u64>);
 
 impl ClassDeclIdCell {
@@ -1371,12 +1324,6 @@ impl std::fmt::Debug for ClassDeclIdCell {
         }
     }
 }
-impl std::fmt::Debug for CapturesCell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CapturesCell({:?})", self.0.get().map(|v| v.len()))
-    }
-}
-
 /// Inline annotation for a predicate pattern's resolved Matchable `to-match` instance
 /// binding name. Written once by the type checker during match arm elaboration; read by
 /// the lowerer to carry the binding name into the match arm.
@@ -1426,7 +1373,7 @@ impl std::fmt::Debug for MatchableBinding {
     }
 }
 
-/// Variable addressing after closure conversion.
+/// Variable addressing for evaluation.
 /// Replaces (level, slot) de Bruijn coordinates.
 ///
 /// All variable references use exactly four variants — no runtime frame traversal:
@@ -1435,26 +1382,20 @@ impl std::fmt::Debug for MatchableBinding {
 ///   `depth` is the scope-stack traversal distance from the referencing scope to the defining
 ///   scope (0 = same frame, 1 = one level up). Used by the type-checker via `get_scheme_at`.
 ///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
-/// - `ClosureCapture(slot)` — fn capture, resolved at fn creation time.
 /// - `Parameter(slot)` — fn argument.
 /// - `EffectPerform { slot }` — typeclass method call; resolved by direct slot lookup
 ///   in the caller's evidence (scope).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VarAddr {
-    /// Index into EvalFrame.group (current letrec group thunks).
-    /// Root-scope entries (builtins and capabilities) occupy slots 0..N-1 in the
-    /// accumulated_group; document dict entries follow at cumulative slot offsets.
+    /// Index into EvalFrame.group (accumulated scope thunks).
+    /// Root-scope entries (builtins and capabilities) occupy slots 0..N-1;
+    /// document dict entries follow at cumulative slot offsets.
+    /// Function bodies carry the definition-site group, so Dispatch addresses
+    /// resolve directly to the captured scope.
     /// `depth` is the resolver scope-stack traversal distance (0 = same frame, 1 = one
     /// level up). The evaluator ignores `depth` and uses `slot` directly; the type-checker
     /// uses `depth` to call `get_scheme_at(depth, slot)` for cross-scope references.
-    /// Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
     Dispatch(u32, u32),
-    /// Index into EvalFrame.closure_env (fn-captured outer scope thunks).
-    /// Emitted exclusively for fn captures: a VarRef inside a fn body that refers to a
-    /// name outside the fn boundary. `i` is the index into the fn's capture list
-    /// (`resolved_captures`). At fn-definition time, the evaluator walks the capture list
-    /// and copies thunks from the enclosing EvalFrame into `closure_env`.
-    ClosureCapture(u32),
     /// Index into EvalFrame.params (function call arguments)
     Parameter(u32),
     /// Typeclass method call — resolved at runtime by direct slot lookup in
@@ -1501,7 +1442,7 @@ pub enum CoreExpr {
         inferred_type: Arc<crate::value::Value>,
     },
 
-    // VarRef with closure-converted addressing
+    // Variable reference
     Var {
         name: String,
         addr: VarAddr,
@@ -1534,7 +1475,11 @@ pub enum CoreExpr {
     },
 
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
-    // No Field variant — dot-access is desugared to Call(builtin-dict-get, [key, target]) by the lowerer.
+    Field {
+        target: Arc<Spanned<CoreExpr>>,
+        key: DotKey,
+        inferred_type: Arc<crate::value::Value>,
+    },
     Sequential {
         exprs: Vec<Arc<Spanned<CoreExpr>>>,
         inferred_type: Arc<crate::value::Value>,
@@ -1555,12 +1500,8 @@ pub enum CoreExpr {
         /// Clauses of this function. For single-clause functions (the common case),
         /// `clauses.len() == 1`. Multi-clause functions (from multi-arm instance methods)
         /// have `clauses.len() > 1`. Each clause carries its own params, optional pattern
-        /// filter, guard, body, and capture list.
+        /// filter, guard, and body.
         clauses: Vec<CoreClause>,
-        /// Captures for the whole Fn node — mirrors the first clause's captures in the
-        /// common single-clause case. Used by the evaluator to build `closure_env` at
-        /// function-definition time (before dispatch to a specific clause).
-        captures: std::sync::Arc<Vec<(String, VarAddr)>>,
         /// Resolved TypeValue.Fn for this function — set by the lowerer from the type checker's
         /// `resolved_return_annotation` and per-param `resolved_annotation_type` fields.
         /// Stored in `Thunk.type_decl_id` at runtime for full structural TypeAssert checking
@@ -1677,6 +1618,7 @@ impl CoreExpr {
             | CoreExpr::Var { inferred_type, .. }
             | CoreExpr::Variant { inferred_type, .. }
             | CoreExpr::UnitVariant { inferred_type, .. }
+            | CoreExpr::Field { inferred_type, .. }
             | CoreExpr::Sequential { inferred_type, .. }
             | CoreExpr::Dict { inferred_type, .. }
             | CoreExpr::Call { inferred_type, .. }
@@ -1705,6 +1647,7 @@ impl CoreExpr {
             | CoreExpr::Var { inferred_type, .. }
             | CoreExpr::Variant { inferred_type, .. }
             | CoreExpr::UnitVariant { inferred_type, .. }
+            | CoreExpr::Field { inferred_type, .. }
             | CoreExpr::Sequential { inferred_type, .. }
             | CoreExpr::Dict { inferred_type, .. }
             | CoreExpr::Call { inferred_type, .. }
@@ -1790,11 +1733,6 @@ pub struct CoreClause {
     /// Pre-resolved Matchable instance binding name for the guard's return type.
     /// Set by the type checker on the SurfaceMatchArm and carried through lowering.
     pub guard_matchable_binding: MatchableBinding,
-    /// Closure capture list — always present (was `Option` in `CoreClause`).
-    /// Empty for keyed arms and fn clauses with no free outer variables.
-    /// Populated by the lowerer from `SurfaceMatchArm.case_captures` (for match arm clauses)
-    /// or from `SurfaceExpression::Fn::resolved_captures` (for fn clauses).
-    pub captures: Arc<Vec<(String, VarAddr)>>,
 }
 
 #[cfg(test)]

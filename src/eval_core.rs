@@ -17,7 +17,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceMatchArm, VarAddr};
-use crate::error::{EvalError, EvalResult};
+use crate::error::Diagnostic;
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
@@ -35,7 +35,7 @@ fn value_to_surface_node(
     value: &Value,
     span: Span,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
+) -> Result<Arc<crate::ast::SurfaceNode>, Box<crate::error::Diagnostic>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
     let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
     match value {
@@ -51,7 +51,7 @@ fn value_to_surface_node(
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
             crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                EvalError::internal(
+                Diagnostic::internal(
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
                 )
@@ -63,7 +63,7 @@ fn value_to_surface_node(
             if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
                 crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                    EvalError::internal(
+                    Diagnostic::internal(
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,
                     )
@@ -71,7 +71,7 @@ fn value_to_surface_node(
                 })
             } else {
                 // It's a regular dict — dict values are thunk IDs, conversion not yet supported
-                Err(EvalError::internal(
+                Err(Diagnostic::internal(
                     "unquote of non-AST dict is not yet supported".to_string(),
                     span,
                 )
@@ -79,7 +79,7 @@ fn value_to_surface_node(
             }
         }
         _ => Err(
-            EvalError::internal(format!("unquote of {:?} is not supported", value), span).into(),
+            Diagnostic::internal(format!("unquote of {:?} is not supported", value), span).into(),
         ),
     }
 }
@@ -91,7 +91,7 @@ async fn collect_seq_elements(
     value: &Value,
     span: Span,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Vec<Value>> {
+) -> Result<Vec<Value>, Box<crate::error::Diagnostic>> {
     let mut elements = Vec::new();
     let current = value.clone();
 
@@ -106,7 +106,7 @@ async fn collect_seq_elements(
                 if let HashableValue::Int(i) = key {
                     int_entries.push((*i, Arc::clone(thunk)));
                 } else {
-                    return Err(EvalError::type_mismatch(
+                    return Err(Diagnostic::type_mismatch(
                         "Seq or integer-keyed Dict",
                         "Dict with non-integer keys",
                         span,
@@ -121,7 +121,7 @@ async fn collect_seq_elements(
             // Validate sequential from 0
             for (idx, (i, _)) in int_entries.iter().enumerate() {
                 if *i != idx as i64 {
-                    return Err(EvalError::type_mismatch(
+                    return Err(Diagnostic::type_mismatch(
                         "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
                         &format!(
                             "Dict with non-sequential keys (expected {}, found {})",
@@ -140,7 +140,7 @@ async fn collect_seq_elements(
             }
         }
         _ => {
-            return Err(EvalError::type_mismatch(
+            return Err(Diagnostic::type_mismatch(
                 "Seq or integer-keyed Dict",
                 &ctx.type_display_name(current.type_decl_id_of()),
                 span,
@@ -166,7 +166,12 @@ fn eval_quote_preprocess<'a>(
     frame: Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + Send + 'a>,
+    Box<
+        dyn std::future::Future<
+                Output = Result<Arc<crate::ast::SurfaceNode>, Box<crate::error::Diagnostic>>,
+            > + Send
+            + 'a,
+    >,
 > {
     use crate::ast::{
         SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode,
@@ -188,7 +193,7 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::UnquoteSplice(_) => {
                 // UnquoteSplice outside of call args or dict entries is an error.
                 // Call args and dict entries handle UnquoteSplice in their own loops.
-                Err(EvalError::unimplemented(
+                Err(Diagnostic::unimplemented(
                     "unquote-splice must be in a list position (inside call args or dict entries)"
                         .to_string(),
                     span,
@@ -282,7 +287,7 @@ fn eval_quote_preprocess<'a>(
                                 }
                             }
                             _ => {
-                                return Err(EvalError::type_mismatch(
+                                return Err(Diagnostic::type_mismatch(
                                     "Dict",
                                     &ctx.type_display_name(value.type_decl_id_of()),
                                     inner_span,
@@ -387,7 +392,6 @@ fn eval_quote_preprocess<'a>(
                 params,
                 body,
                 desugared,
-                resolved_captures: _,
                 resolved_return_annotation: _,
             } => {
                 let processed_body =
@@ -397,7 +401,6 @@ fn eval_quote_preprocess<'a>(
                     params: params.clone(),
                     body: processed_body,
                     desugared: *desugared,
-                    resolved_captures: crate::ast::CapturesCell::new(),
                     resolved_return_annotation: crate::ast::TypeAnnotation::new(),
                 }))
             }
@@ -500,7 +503,6 @@ fn eval_quote_preprocess<'a>(
                         guard: processed_guard,
                         body: processed_body,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
-                        case_captures: arm.case_captures.clone(),
                     });
                 }
                 Ok(make_node(SurfaceExpression::Match {
@@ -564,7 +566,7 @@ async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
     frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
+) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let span = node.span.clone();
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_node = eval_quote_preprocess(node, Arc::clone(frame), ctx).await?;
@@ -592,7 +594,7 @@ pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
     frame: &Arc<EvalFrame>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<IndexMap<String, Value>> {
+) -> Result<IndexMap<String, Value>, Box<crate::error::Diagnostic>> {
     let Some(ann_spanned) = return_ann else {
         return Ok(IndexMap::new());
     };
@@ -665,13 +667,19 @@ pub(crate) async fn extract_fn_annotation_extra(
 
 /// Evaluate a CoreExpr to a thunk.
 ///
-/// Variable lookup uses `frame` (EvalFrame closure-conversion, replaces FlatEnv de Bruijn).
+/// Variable lookup uses `frame` (EvalFrame, replaces FlatEnv de Bruijn).
 /// Dict/call/fn construction uses `ctx` for all scope management.
 pub(crate) fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
     frame: &'a Arc<EvalFrame>,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + Send + 'a>> {
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+            + Send
+            + 'a,
+    >,
+> {
     Box::pin(async move {
         let span = expr.span.clone();
         match &expr.node {
@@ -707,19 +715,18 @@ pub(crate) fn eval_core_expr<'a>(
                 Ok(Arc::new(Thunk::value(string_val(s), span.clone())))
             }
 
-            // Variable lookup via EvalFrame closure-conversion.
+            // Variable lookup via EvalFrame scope.
             // All names — builtins, capabilities, and user-defined — resolve through the
-            // accumulated_group (frame.group) via their VarAddr. LGM(slot) uses absolute
+            // scope (frame.group) via their VarAddr. Dispatch(slot) uses absolute
             // cumulative slot indices: root-scope entries at 0..N-1, dict entries at
             // cumulative offsets above them. No outer-frame traversal needed.
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
                     VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
-                    VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize).cloned(),
                     VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
                     VarAddr::EffectPerform { slot } => {
                         let thunk = frame.caller_evidence.get(*slot as usize)
-                            .ok_or_else(|| EvalError::user_error(
+                            .ok_or_else(|| Diagnostic::user_error(
                                 format!("no instance found for typeclass method at slot {} — caller evidence has {} entries", slot, frame.caller_evidence.len()),
                                 span.clone(),
                             ))?;
@@ -730,18 +737,14 @@ pub(crate) fn eval_core_expr<'a>(
                     Some(t) => Ok(t),
                     None => {
                         // VarAddr resolved to None — the resolver and evaluator are out of sync.
-                        // Uses EvalError (not panic!) so the error propagates through the thunk
+                        // Uses Diagnostic (not panic!) so the error propagates through the thunk
                         // graph to the caller, producing a useful error message rather than a crash.
-                        // Compare with the Fn closure-build arm (below) which panics because a
-                        // capture miss there is unrecoverable at fn-creation time.
-                        Err(EvalError::undefined_variable(
+                        Err(Diagnostic::undefined_variable(
                             format!(
                                 "'{name}' at addr={addr:?} resolved to None — \
                                  resolver/evaluator out of sync \
-                                 (frame.group.len()={}, frame.closure_env.len()={}, \
-                                 frame.params.len()={})",
+                                 (frame.group.len()={}, frame.params.len()={})",
                                 frame.group.len(),
-                                frame.closure_env.len(),
                                 frame.params.len(),
                             ),
                             span.clone(),
@@ -810,6 +813,43 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             ))),
 
+            // Field: dot-access `target.key`. Evaluate target, materialize it to get the dict,
+            // then look up the key. Previously lowered to Call(builtin-dict-get, [key, target]);
+            // now a first-class CoreExpr variant.
+            CoreExpr::Field { target, key, .. } => {
+                let target_thunk = eval_core_expr(target, frame, ctx).await?;
+                let target_val = materialize(&target_thunk, Some(&span), ctx).await?;
+
+                match target_val {
+                    Value::Dict { entries: map, .. } => {
+                        // Convert DotKey to HashableValue
+                        let hashable_key = match key {
+                            crate::ast::DotKey::Int(n) => crate::value::HashableValue::Int(*n),
+                            crate::ast::DotKey::Ident(s) => {
+                                crate::value::HashableValue::Str(Arc::from(s.as_str()))
+                            }
+                        };
+
+                        match map.get(&hashable_key) {
+                            Some(thunk) => Ok(Arc::clone(thunk)),
+                            None => {
+                                let key_str = key.to_string();
+                                let available_keys: Vec<String> =
+                                    map.keys().map(|k| k.to_string()).collect();
+                                Err(Diagnostic::key_not_found(&key_str, available_keys, span)
+                                    .into())
+                            }
+                        }
+                    }
+                    _ => Err(Diagnostic::type_mismatch(
+                        "Dict",
+                        ctx.type_display_name(target_val.type_decl_id_of()),
+                        target.span.clone(),
+                    )
+                    .into()),
+                }
+            }
+
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
@@ -823,12 +863,12 @@ pub(crate) fn eval_core_expr<'a>(
             ))),
 
             // Dict: call eval_dict_core with the current frame so dict value thunks inherit
-            // the outer closure_env for ClosureCapture variable lookups, and so the letrec
-            // group Vec is populated with the dict's own static-key thunks.
+            // the definition-site scope for variable lookups, and so the letrec group Vec
+            // is populated with the dict's own static-key thunks.
             CoreExpr::Dict { entries, .. } => eval_dict_core(entries, frame, ctx, &span).await,
 
             // Call: use eval_call_core with the current EvalFrame so argument expressions
-            // resolve Dispatch/ClosureCapture variables against the call site's scope.
+            // resolve Dispatch variables against the call site's scope.
             CoreExpr::Call {
                 func,
                 args,
@@ -853,7 +893,6 @@ pub(crate) fn eval_core_expr<'a>(
             // T-2133 completes full multi-clause dispatch; single-clause functions work today.
             CoreExpr::Fn {
                 clauses,
-                captures,
                 resolved_fn_type: _,
                 return_ann,
                 ..
@@ -886,76 +925,14 @@ pub(crate) fn eval_core_expr<'a>(
                     extra,
                 }));
 
-                // Store the body directly as Arc<Spanned<CoreExpr>>.
-                // CoreExpr::Fn.clauses[0].body is Arc<Spanned<CoreExpr>> — no conversion needed.
-                //
-                // Build closure_env by looking up each captured variable in the current frame.
-                // frame.group is the accumulated_group, which contains root entries at slots
-                // 0..N-1 and all prior dict entries at cumulative slots above them.
-                // Dispatch(depth, slot) absolute_slot looks up frame.group[slot] directly.
-                // using its ORIGINAL VarAddr (from before the resolver converted it to
-                // ClosureCapture for references inside this function).
-                //
-                // Each entry in `captures` is (name, original_addr) where original_addr is the
-                // VarAddr the binding holds in the ENCLOSING EvalFrame:
-                //   - Dispatch(_, i) → frame.group[i]   (absolute cumulative slot in
-                //     accumulated_group: root entries at 0..N-1, dict entries at cumulative
-                //     offsets. Builtins, capabilities, and prior-dict entries all use Dispatch.)
-                //   - ClosureCapture(i)    → frame.closure_env[i] (outer fn closure capture)
-                //   - Parameter(i)         → frame.params[i]  (outer function argument)
-                //
-                // Build closure_env in capture-index order. Use map (not filter_map) so that
-                // each ClosureCapture(i) in the body resolves to closure_env[i] — skipping
-                // entries would shift all subsequent indices.
-                let mut closure_env_vec: Vec<Arc<Thunk>> = Vec::with_capacity(captures.len());
-                for (name, original_addr) in captures.iter() {
-                    let found = match original_addr {
-                        VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
-                        VarAddr::ClosureCapture(i) => frame.closure_env.get(*i as usize).cloned(),
-                        VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
-                        VarAddr::EffectPerform { .. } => {
-                            return Err(EvalError::internal(
-                                format!(
-                                    "EffectPerform address in closure capture for '{}' — \
-                                     resolver invariant violated: EffectPerform addresses \
-                                     cannot appear in fn capture lists",
-                                    name
-                                ),
-                                span.clone(),
-                            )
-                            .into());
-                        }
-                    };
-                    let thunk = found.unwrap_or_else(|| {
-                        // Improve error message with capture list details
-                        let cap_list_str = captures
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, (n, addr))| format!("  [{idx}] {n}: {addr:?}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        panic!(
-                            "capture miss for '{}': {:?} resolved to None\n\
-                             Frame state:\n\
-                             - closure_env.len()={}\n\
-                             - group.len()={}\n\
-                             - params.len()={}\n\
-                             Full capture list ({} entries):\n{}",
-                            name,
-                            original_addr,
-                            frame.closure_env.len(),
-                            frame.group.len(),
-                            frame.params.len(),
-                            captures.len(),
-                            cap_list_str,
-                        )
-                    });
-                    closure_env_vec.push(thunk);
-                }
+                // Capture the definition-site scope directly. All names in the enclosing
+                // scope are accessible via Dispatch addresses into this scope — no closure
+                // conversion needed.
+                let definition_scope = Arc::clone(&frame.group);
                 let thunk = Arc::new(Thunk::value(
                     Value::Function {
                         clauses: Arc::new(clauses.clone()),
-                        closure_env: Arc::new(closure_env_vec),
+                        definition_scope,
                         annotation,
                         type_val: Some(crate::type_infer::make_typevalue_nominal(
                             crate::value::TYPE_ID_FUNCTION,
@@ -977,7 +954,7 @@ pub(crate) fn eval_core_expr<'a>(
             ))),
 
             // Rest: error (only valid in type expressions)
-            CoreExpr::Rest { .. } => Err(EvalError::internal(
+            CoreExpr::Rest { .. } => Err(Diagnostic::internal(
                 "rest marker (...) is only valid inside type expressions".to_string(),
                 span.clone(),
             )
@@ -1003,21 +980,21 @@ pub(crate) fn eval_core_expr<'a>(
             }
 
             // Unquote: error (only valid inside quote)
-            CoreExpr::Unquote { .. } => Err(EvalError::internal(
+            CoreExpr::Unquote { .. } => Err(Diagnostic::internal(
                 "unquote is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
             .into()),
 
             // UnquoteSplice: error (only valid inside quote)
-            CoreExpr::UnquoteSplice { .. } => Err(EvalError::internal(
+            CoreExpr::UnquoteSplice { .. } => Err(Diagnostic::internal(
                 "unquote-splice is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
             .into()),
 
             // PatternDecl: error (not an expression)
-            CoreExpr::PatternDecl { .. } => Err(EvalError::internal(
+            CoreExpr::PatternDecl { .. } => Err(Diagnostic::internal(
                 "pattern declaration is only valid in instance match arms".to_string(),
                 span.clone(),
             )
@@ -1042,7 +1019,7 @@ pub(crate) fn eval_core_expr<'a>(
                         // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
                         _ => {
-                            return Err(EvalError::internal(
+                            return Err(Diagnostic::internal(
                                 format!(
                                     "let binding name must be an identifier, got: {:?}",
                                     name_expr.node
@@ -1076,7 +1053,7 @@ pub(crate) fn eval_core_expr<'a>(
                 )))
             }
 
-            CoreExpr::Placeholder { .. } => Err(EvalError::unimplemented(
+            CoreExpr::Placeholder { .. } => Err(Diagnostic::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
                 span.clone(),
             )
@@ -1126,7 +1103,7 @@ pub(crate) fn eval_core_expr<'a>(
                 ctx.type_identity_registry
                     .lock()
                     .map_err(|e| {
-                        EvalError::internal(
+                        Diagnostic::internal(
                             format!("type_identity_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1165,7 +1142,7 @@ pub(crate) fn eval_core_expr<'a>(
                 ctx.repr_registry
                     .lock()
                     .map_err(|e| {
-                        EvalError::internal(
+                        Diagnostic::internal(
                             format!("repr_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1179,7 +1156,7 @@ pub(crate) fn eval_core_expr<'a>(
                     ctx.is_predicates
                         .lock()
                         .map_err(|e| {
-                            EvalError::internal(
+                            Diagnostic::internal(
                                 format!("is_predicates mutex poisoned: {e}"),
                                 span.clone(),
                             )
@@ -1212,7 +1189,7 @@ mod tests {
     async fn eval_and_materialize(
         expr: CoreExpr,
         ctx: &Arc<EvalContext>,
-    ) -> crate::error::EvalResult<Value> {
+    ) -> Result<Value, Box<crate::error::Diagnostic>> {
         let span = test_span(1, 1, 1, 5);
         let spanned = Spanned::new(expr, span.clone());
         let frame = EvalFrame::empty();
@@ -1295,7 +1272,6 @@ mod tests {
             span.clone(),
         ));
         let frame = Arc::new(EvalFrame {
-            closure_env: empty_scope(),
             group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
             params: Arc::new(vec![]),
             caller_evidence: empty_scope(),
