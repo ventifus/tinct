@@ -656,15 +656,17 @@ async fn infer_step(
         // to trigger apply_cont — there is no child node to evaluate at this point.
         SurfaceExpression::Dict {
             entries,
-            scope_frame: _,
+            ref scope_frame,
         } => {
+            if let Some(sf) = scope_frame.get() {
+                state.scope_chain.push(Arc::clone(sf));
+            }
             stack.push((
                 TypeCheckCont::LetrecGroupPassZero {
                     entries: entries.to_vec(),
                 },
                 Arc::clone(node),
             ));
-            // Placeholder: LetrecGroupPassZero handler computes the actual record type
             TypeCheckAction::Done(state.fresh_type_var(&node.span))
         }
 
@@ -1528,6 +1530,8 @@ async fn apply_cont(
             saved_current_binding,
             saved_narrowing_map,
         } => {
+            // Pop scope_chain (matches the push at Dict/Fn/MatchArm entry).
+            state.scope_chain.pop();
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -3030,8 +3034,14 @@ async fn infer_fn_push_cont(
             return_ann,
             params,
             body,
+            ref scope_frame,
             ..
-        } => (return_ann, params.as_slice(), body),
+        } => {
+            if let Some(sf) = scope_frame.get() {
+                state.scope_chain.push(Arc::clone(sf));
+            }
+            (return_ann, params.as_slice(), body)
+        }
         _ => unreachable!("infer_fn_push_cont called on non-Fn node"),
     };
     let mut ann_mapping_str: HashMap<String, String> = HashMap::new();
@@ -3494,6 +3504,10 @@ async fn setup_match_arm_env(
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<(TypeValue, Vec<typecheck_narrow::Narrowing>)> {
+    // Push match arm ScopeFrame if present (case arms with bindings).
+    if let Some(sf) = arm.scope_frame.get() {
+        state.scope_chain.push(Arc::clone(sf));
+    }
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
     // arm body sees them. AfterBlock restores the outer narrowing_map after the arm.

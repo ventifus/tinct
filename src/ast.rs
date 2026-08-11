@@ -738,7 +738,7 @@ pub enum SurfaceExpression {
         #[expr(key = "entries", entry_list)]
         entries: Vec<Spanned<SurfaceEntry>>,
         #[expr(skip, default_fn = "std::sync::OnceLock::new")]
-        scope_frame: std::sync::OnceLock<ScopeFrame>,
+        scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
     },
 
     // Function call — implied: true = [f x y], false = [call f x y]
@@ -778,7 +778,7 @@ pub enum SurfaceExpression {
         #[expr(skip, default_fn = "crate::ast::TypeAnnotation::new")]
         resolved_return_annotation: TypeAnnotation,
         #[expr(skip, default_fn = "std::sync::OnceLock::new")]
-        scope_frame: std::sync::OnceLock<ScopeFrame>,
+        scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
     },
 
     // Type assertion — resolved_type is set inline by the type checker, read by the lowerer.
@@ -973,7 +973,7 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
-    pub scope_frame: std::sync::OnceLock<ScopeFrame>,
+    pub scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
 }
 
 impl SurfaceMatchArm {

@@ -449,7 +449,7 @@ impl SurfaceResolver {
                     self.enter_scope_with_slot_pairs(&scope_pairs, FrameKind::DictLetrec);
                     // Set ScopeFrame on the Dict AST node after entering scope.
                     if let SurfaceExpression::Dict { scope_frame, .. } = &arc.expr {
-                        let _ = scope_frame.set(crate::ast::ScopeFrame::new(scope_pairs.len()));
+                        let _ = scope_frame.set(std::sync::Arc::new(crate::ast::ScopeFrame::new(scope_pairs.len())));
                     }
                     // Advance accumulated_dict_offset by the total slot count (all entries
                     // + instance method slots) so nested dicts use the correct base.
@@ -585,7 +585,7 @@ impl SurfaceResolver {
                 self.enter_param_scope(&param_names);
                 // Set ScopeFrame on the Fn AST node after entering param scope.
                 if let SurfaceExpression::Fn { scope_frame, .. } = &arc.expr {
-                    let _ = scope_frame.set(crate::ast::ScopeFrame::new(param_names.len()));
+                    let _ = scope_frame.set(std::sync::Arc::new(crate::ast::ScopeFrame::new(param_names.len())));
                 }
 
                 self.walk_surface_node(body);
@@ -857,7 +857,7 @@ impl SurfaceResolver {
                         // Set ScopeFrame on the MatchArm after entering param scope for bindings.
                         let _ = arm
                             .scope_frame
-                            .set(crate::ast::ScopeFrame::new(bound_names.len()));
+                            .set(std::sync::Arc::new(crate::ast::ScopeFrame::new(bound_names.len())));
                     }
 
                     self.walk_surface_node(&arm.pattern);
