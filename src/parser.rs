@@ -541,7 +541,10 @@ fn parse_annotation_direct(
                 // Build outer Dict annotation, then chain via Annotated.
                 // Outer uses expression_to_annotation for consistency.
                 let outer_dict_node = Arc::new(SurfaceNode::new(
-                    SurfaceExpression::Dict(entries),
+                    SurfaceExpression::Dict {
+                        entries,
+                        scope_frame: std::sync::OnceLock::new(),
+                    },
                     ann_span.clone(),
                 ));
                 let outer_ann = expression_to_annotation(&outer_dict_node);
@@ -555,7 +558,10 @@ fn parse_annotation_direct(
             }
             // Build a Dict SurfaceNode and convert via expression_to_annotation.
             let dict_node = Arc::new(SurfaceNode::new(
-                SurfaceExpression::Dict(entries),
+                SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: std::sync::OnceLock::new(),
+                },
                 ann_span.clone(),
             ));
             Ok((
@@ -977,7 +983,13 @@ fn recover_from_bracket_error(
                         error_span.end_col,
                         Arc::clone(&error_span.file),
                     );
-                    mk(SurfaceExpression::Dict(partial_entries), dict_span)
+                    mk(
+                        SurfaceExpression::Dict {
+                            entries: partial_entries,
+                            scope_frame: std::sync::OnceLock::new(),
+                        },
+                        dict_span,
+                    )
                 }
             }
             StackFrame::Call {
@@ -2020,8 +2032,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             } else {
                                 // Standard dict construction
                                 // entries are already Spanned<SurfaceEntry> with correct spans
-                                let spanned_dict =
-                                    mk(SurfaceExpression::Dict(entries), dict_span(span_start));
+                                let spanned_dict = mk(
+                                    SurfaceExpression::Dict {
+                                        entries,
+                                        scope_frame: std::sync::OnceLock::new(),
+                                    },
+                                    dict_span(span_start),
+                                );
 
                                 // Push to parent or document (via push_value to handle pending_key)
                                 if let Err(push_err) = push_value(
@@ -2162,6 +2179,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 body: body_expr,
                                 desugared: false,
                                 resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+                                scope_frame: std::sync::OnceLock::new(),
                             },
                             dict_span(span_start),
                         );
@@ -2205,7 +2223,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         let body = if type_exprs.is_empty() {
                             // Phantom type — empty dict body
                             mk(
-                                SurfaceExpression::Dict(vec![]),
+                                SurfaceExpression::Dict {
+                                    entries: vec![],
+                                    scope_frame: std::sync::OnceLock::new(),
+                                },
                                 dict_span(span_start.clone()),
                             )
                         } else if type_exprs.len() == 1 && type_exprs[0].node.key.is_none() {
@@ -2215,7 +2236,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             // Multi-entry or named-entry — wrap entries in a Dict.
                             // type_exprs already contains Spanned<SurfaceEntry> with correct key info.
                             mk(
-                                SurfaceExpression::Dict(type_exprs),
+                                SurfaceExpression::Dict {
+                                    entries: type_exprs,
+                                    scope_frame: std::sync::OnceLock::new(),
+                                },
                                 dict_span(span_start.clone()),
                             )
                         };
@@ -2445,7 +2469,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             let mut superclasses = superclasses;
 
                             if let Some(metadata_expr) = structural_metadata {
-                                if let SurfaceExpression::Dict(entries) = &metadata_expr.expr {
+                                if let SurfaceExpression::Dict {
+                                    entries,
+                                    scope_frame: _,
+                                } = &metadata_expr.expr
+                                {
                                     for entry in entries {
                                         if let Some(ref key_expr) = entry.node.key {
                                             // Keys in the structural metadata dict are stored as
@@ -2466,8 +2494,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                 match key_name {
                                                     "determines" => {
                                                         // Extract list of FD declarations
-                                                        if let SurfaceExpression::Dict(fd_entries) =
-                                                            &entry.node.value.expr
+                                                        if let SurfaceExpression::Dict {
+                                                            entries: fd_entries,
+                                                            ..
+                                                        } = &entry.node.value.expr
                                                         {
                                                             for fd_entry in fd_entries {
                                                                 determines.push(
@@ -2493,8 +2523,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                         // Value is an auto-indexed list of constraint applications:
                                                         // [[Equatable a] [Numeric b]]
                                                         // Each element is a Call expr: func=VarRef("ClassName"), args=[VarRef("param1"), ...]
-                                                        if let SurfaceExpression::Dict(sc_entries) =
-                                                            &entry.node.value.expr
+                                                        if let SurfaceExpression::Dict {
+                                                            entries: sc_entries,
+                                                            ..
+                                                        } = &entry.node.value.expr
                                                         {
                                                             for sc_entry in sc_entries {
                                                                 if let SurfaceExpression::Call {
@@ -2792,6 +2824,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             body: wrapped_body,
                                             guard_matchable_binding:
                                                 crate::ast::MatchableBinding::new(),
+                                            scope_frame: std::sync::OnceLock::new(),
                                         });
                                     }
                                     Ok(_) => {
@@ -2891,9 +2924,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     // Extract the inner expression so eval_key_core materializes
                                     // the call/expression result rather than a Dict wrapper.
                                     let key_node = match &promoted.node.value.expr {
-                                        SurfaceExpression::Dict(inner_entries)
-                                            if inner_entries.len() == 1
-                                                && inner_entries[0].node.key.is_none() =>
+                                        SurfaceExpression::Dict {
+                                            entries: inner_entries,
+                                            ..
+                                        } if inner_entries.len() == 1
+                                            && inner_entries[0].node.key.is_none() =>
                                         {
                                             Arc::clone(&inner_entries[0].node.value)
                                         }
@@ -3869,7 +3904,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         Arc::clone(&at_span.file),
                                     );
                                     let null_node = Arc::new(SurfaceNode::new(
-                                        SurfaceExpression::Dict(Vec::new()),
+                                        SurfaceExpression::Dict {
+                                            entries: Vec::new(),
+                                            scope_frame: std::sync::OnceLock::new(),
+                                        },
                                         at_span,
                                     ));
                                     let ann_node = Arc::new(SurfaceNode::new(
@@ -3972,7 +4010,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                 Arc::clone(&token_vec[i].span.file),
                                             );
                                             let dict_node = Arc::new(SurfaceNode::new(
-                                                SurfaceExpression::Dict(entries),
+                                                SurfaceExpression::Dict {
+                                                    entries,
+                                                    scope_frame: std::sync::OnceLock::new(),
+                                                },
                                                 dict_span,
                                             ));
                                             if temp_stack.is_empty() {
@@ -4174,7 +4215,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         );
                                         // Placeholder inner expression: empty dict [] (null)
                                         let null_node = Arc::new(SurfaceNode::new(
-                                            SurfaceExpression::Dict(Vec::new()),
+                                            SurfaceExpression::Dict {
+                                                entries: Vec::new(),
+                                                scope_frame: std::sync::OnceLock::new(),
+                                            },
                                             at_span.clone(),
                                         ));
                                         let assert_node = Arc::new(SurfaceNode::new(
@@ -5334,7 +5378,11 @@ fn push_expr_to_parent(
                 // params_consumed guards against a second empty bracket being mistaken for params.
                 if !*params_consumed && body.is_empty() {
                     // Allow [] as zero-arg shorthand — equivalent to [let] with no bindings.
-                    if let SurfaceExpression::Dict(entries) = &node.expr {
+                    if let SurfaceExpression::Dict {
+                        entries,
+                        scope_frame: _,
+                    } = &node.expr
+                    {
                         if entries.is_empty() {
                             *params_consumed = true;
                             return Ok(());
@@ -5612,7 +5660,10 @@ fn push_expr_to_parent(
                 // A structural alias must have exactly one body (single positional dict with
                 // lowercase-keyed entries). Multiple positional dicts are ambiguous and invalid.
                 let is_positional_struct_dict = match &node.expr {
-                    SurfaceExpression::Dict(entries) => {
+                    SurfaceExpression::Dict {
+                        entries,
+                        scope_frame: _,
+                    } => {
                         // A dict is "structural" if it has at least one keyed entry where the key
                         // is a lowercase-starting identifier (not uppercase, not a number).
                         entries.iter().any(|e| {
@@ -5633,7 +5684,7 @@ fn push_expr_to_parent(
                             // Keyed entries are named constructors, not structural bodies.
                             return false;
                         }
-                        matches!(&e.node.value.expr, SurfaceExpression::Dict(inner)
+                        matches!(&e.node.value.expr, SurfaceExpression::Dict { entries: inner, .. }
                         if inner.iter().any(|ie| {
                             if let Some(k) = &ie.node.key {
                                 matches!(&k.expr, SurfaceExpression::VarRef { name, .. }
@@ -5808,6 +5859,7 @@ fn push_expr_to_parent(
                         guard,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
+                        scope_frame: std::sync::OnceLock::new(),
                     });
                     Ok(())
                 } else {
@@ -5869,7 +5921,7 @@ fn push_expr_to_parent(
                     // If it's a Dict, it's structural metadata
                     // Otherwise, it should be handled by push_value (method entries)
                     match &node.expr {
-                        SurfaceExpression::Dict(_) => {
+                        SurfaceExpression::Dict { .. } => {
                             *structural_metadata = Some(node);
                             Ok(())
                         }
@@ -6218,7 +6270,10 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
             Box::new(Annotation::Simple(name.clone())),
             Box::new(ann.node.clone()),
         ),
-        SurfaceExpression::Dict(entries) => Annotation::PropertyDict(entries.clone()),
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => Annotation::PropertyDict(entries.clone()),
         // Implied call with VarRef head (e.g. @[Seq Int] parsed as implied call) →
         // convert to PropertyDict: func as key-less entry 0, then each positional arg.
         SurfaceExpression::Call {
@@ -6590,7 +6645,11 @@ fn push_value(
                 // Without this arm, the dict would be stored as `pending_arm_pattern` (wrong),
                 // and the close-bracket handler would emit "instance form has incomplete arm
                 // (pattern without methods)" — causing parse errors for all prelude instances.
-                if let SurfaceExpression::Dict(entries) = &node.expr {
+                if let SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } = &node.expr
+                {
                     for entry in entries {
                         current_arm_methods.push(entry.clone());
                     }
@@ -6730,7 +6789,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 0);
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -6744,7 +6806,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_none()); // auto-indexed
                 assert!(matches!(
@@ -6762,7 +6827,10 @@ mod tests {
         let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 2);
                 // First entry: a: 1
                 assert!(entries[0].node.key.is_some());
@@ -6853,7 +6921,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
-                resolved_return_annotation: _,
+                ..
             } => {
                 assert_eq!(params.len(), 0);
                 assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
@@ -6901,7 +6969,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected one expression item");
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1, "expected one dict entry");
                 // Key must be Str("Name")
                 match entries[0].node.key.as_ref().map(|k| &k.expr) {
@@ -6934,7 +7005,10 @@ mod tests {
         let output = parse(src2, test_file(src2)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match entries[0].node.key.as_ref().map(|k| &k.expr) {
                     Some(SurfaceExpression::StringLiteral { content: s, .. }) => {
@@ -6948,7 +7022,10 @@ mod tests {
                             assert!(params.is_empty());
                             // Multi-entry body is a Dict with 3 positional entries
                             match &body.expr {
-                                SurfaceExpression::Dict(body_entries) => {
+                                SurfaceExpression::Dict {
+                                    entries: body_entries,
+                                    ..
+                                } => {
                                     assert_eq!(body_entries.len(), 3, "expected 3 body entries");
                                     for entry in body_entries {
                                         assert!(
@@ -6974,14 +7051,20 @@ mod tests {
         let output = parse(src3, test_file(src3)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.value.expr {
                     SurfaceExpression::Decl(decl) => match decl.as_ref() {
                         SurfaceDeclaration::TypeAlias { params, body } => {
                             assert_eq!(params.len(), 2, "expected 2 type params (a, b)");
                             match &body.expr {
-                                SurfaceExpression::Dict(body_entries) => {
+                                SurfaceExpression::Dict {
+                                    entries: body_entries,
+                                    ..
+                                } => {
                                     assert_eq!(body_entries.len(), 2, "expected 2 body entries");
                                 }
                                 other => panic!("expected Dict body, got {other:?}"),
@@ -7112,7 +7195,10 @@ mod tests {
             other => panic!("expected VarRef, got {other:?}"),
         }
         match &items[1].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 assert!(matches!(
                     &entries[0].node.value.expr,
@@ -7207,7 +7293,7 @@ mod tests {
                 SurfaceDeclaration::TypeAlias { params, body } => {
                     assert!(params.is_empty(), "phantom type should have no params");
                     assert!(
-                        matches!(&body.expr, SurfaceExpression::Dict(entries) if entries.is_empty()),
+                        matches!(&body.expr, SurfaceExpression::Dict { entries, .. } if entries.is_empty()),
                         "phantom type body should be empty dict"
                     );
                 }
@@ -7359,7 +7445,10 @@ mod tests {
                     assert!(params.is_empty());
                     // Multi-entry body is wrapped in a synthetic Dict with positional entries
                     match &body.expr {
-                        SurfaceExpression::Dict(entries) => {
+                        SurfaceExpression::Dict {
+                            entries,
+                            scope_frame: _,
+                        } => {
                             assert_eq!(entries.len(), 2, "expected 2 positional entries");
                             assert!(
                                 entries[0].node.key.is_none(),
@@ -7502,7 +7591,10 @@ mod tests {
         let items = &output.program.documents[0].node.items;
         match &items[0] {
             SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict(entries) => {
+                SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } => {
                     assert_eq!(entries.len(), 1, "expected 1 dict entry");
                     let first_entry = &entries[0].node;
                     assert!(first_entry.key.is_some(), "entry should have a key");
@@ -7512,7 +7604,10 @@ mod tests {
                                 assert!(params.is_empty(), "type should have no params");
                                 // Body should be a Dict with one entry: repr: "Value::Int"
                                 match &body.expr {
-                                    SurfaceExpression::Dict(body_entries) => {
+                                    SurfaceExpression::Dict {
+                                        entries: body_entries,
+                                        ..
+                                    } => {
                                         assert_eq!(
                                             body_entries.len(),
                                             1,
@@ -7574,7 +7669,10 @@ mod tests {
         let items = &output.program.documents[0].node.items;
         match &items[0] {
             SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict(entries) => {
+                SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } => {
                     assert_eq!(entries.len(), 1, "expected 1 dict entry");
                     let first_entry = &entries[0].node;
                     assert!(first_entry.key.is_some(), "entry should have a key");
@@ -7583,7 +7681,10 @@ mod tests {
                             SurfaceDeclaration::TypeAlias { params, body } => {
                                 assert!(params.is_empty(), "phantom type should have no params");
                                 match &body.expr {
-                                    SurfaceExpression::Dict(body_entries) => {
+                                    SurfaceExpression::Dict {
+                                        entries: body_entries,
+                                        ..
+                                    } => {
                                         assert!(
                                             body_entries.is_empty(),
                                             "phantom type body should be empty dict"
@@ -7615,7 +7716,10 @@ mod tests {
         match &items[0] {
             SurfaceItem::Expr(node) => {
                 match &node.expr {
-                    SurfaceExpression::Dict(entries) => {
+                    SurfaceExpression::Dict {
+                        entries,
+                        scope_frame: _,
+                    } => {
                         assert_eq!(
                             entries.len(),
                             2,
@@ -7658,7 +7762,10 @@ mod tests {
         let output = parse("[call: 1]", test_file("[call: 1]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
                 match &key.expr {
@@ -7684,7 +7791,10 @@ mod tests {
         .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 3);
                 let expected_keys = ["call", "fn", "type"];
                 let expected_values = [1i64, 2, 3];
@@ -7736,7 +7846,10 @@ mod tests {
         let output = parse("[a: [1]]", test_file("[a: [1]]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
                 match &key.expr {
@@ -7745,7 +7858,10 @@ mod tests {
                 }
                 // Value should be a Dict containing Int(1)
                 match &entries[0].node.value.expr {
-                    SurfaceExpression::Dict(inner_entries) => {
+                    SurfaceExpression::Dict {
+                        entries: inner_entries,
+                        ..
+                    } => {
                         assert_eq!(inner_entries.len(), 1);
                         assert!(matches!(
                             &inner_entries[0].node.value.expr,
@@ -7780,7 +7896,10 @@ mod tests {
                 assert_eq!(named_args.len(), 1);
                 assert_eq!(named_args[0].node.name, "x");
                 match &named_args[0].node.value.expr {
-                    SurfaceExpression::Dict(inner_entries) => {
+                    SurfaceExpression::Dict {
+                        entries: inner_entries,
+                        ..
+                    } => {
                         assert_eq!(inner_entries.len(), 1);
                         assert!(matches!(
                             &inner_entries[0].node.value.expr,
@@ -7889,7 +8008,10 @@ mod tests {
         let output = parse("[a: 1 2 b: 3]", test_file("[a: 1 2 b: 3]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(
                     entries.len(),
                     3,
@@ -7951,7 +8073,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
-                resolved_return_annotation: _,
+                ..
             } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
@@ -8130,7 +8252,10 @@ mod tests {
         let output = parse("[x: $y.z]", test_file("[x: $y.z]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_some());
                 match &entries[0].node.key.as_ref().unwrap().expr {
@@ -8173,7 +8298,10 @@ mod tests {
         let output = parse("[outer-x: .x]", test_file("[outer-x: .x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.value.expr {
                     SurfaceExpression::Field { expr, field, .. } => {
@@ -8200,7 +8328,10 @@ mod tests {
         let items1 = surf_items(&output.program.documents[0].node);
         assert_eq!(items1.len(), 1);
         match &items1[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "a"),
@@ -8214,7 +8345,10 @@ mod tests {
         let items2 = surf_items(&output.program.documents[1].node);
         assert_eq!(items2.len(), 1);
         match &items2[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "b"),
@@ -8340,7 +8474,10 @@ mod tests {
             other => panic!("expected VarRef('a') as first expr, got {other:?}"),
         }
         match &items[1].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 assert!(matches!(
                     &entries[0].node.value.expr,
@@ -8448,7 +8585,10 @@ mod tests {
                 assert_eq!(*field, DotKey::Ident("x".to_string()));
                 let inner = expr.as_ref().expect("expected Some(target)");
                 match &inner.expr {
-                    SurfaceExpression::Dict(entries) => {
+                    SurfaceExpression::Dict {
+                        entries,
+                        scope_frame: _,
+                    } => {
                         assert_eq!(entries.len(), 1);
                         match &entries[0].node.key.as_ref().unwrap().expr {
                             SurfaceExpression::StringLiteral { content: s, .. } => {
@@ -8506,7 +8646,10 @@ mod tests {
         let items1 = surf_items(&output.program.documents[0].node);
         assert_eq!(items1.len(), 1);
         match &items1[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "a"),
@@ -8520,7 +8663,10 @@ mod tests {
         let items2 = surf_items(&output.program.documents[1].node);
         assert_eq!(items2.len(), 1);
         match &items2[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "b"),
@@ -8534,7 +8680,10 @@ mod tests {
         let items3 = surf_items(&output.program.documents[2].node);
         assert_eq!(items3.len(), 1);
         match &items3[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "c"),
@@ -8556,7 +8705,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
-                resolved_return_annotation: _,
+                ..
             } => {
                 assert_eq!(params.len(), 0, "expected empty param list");
                 assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
@@ -8703,7 +8852,10 @@ mod tests {
         let output2 = parse(input2, test_file(input2)).expect("parse failed");
         let items2 = surf_items(&output2.program.documents[0].node);
         match &items2[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 // Outer dict starts on line 2
                 assert_eq!(
@@ -8712,7 +8864,7 @@ mod tests {
                 );
                 // Inner dict should also have correct line/column (line 2, after "outer: ")
                 match &entries[0].node.value.expr {
-                    SurfaceExpression::Dict(_) => {
+                    SurfaceExpression::Dict { .. } => {
                         let inner_span = entries[0].node.value.span.clone();
                         assert_eq!(
                             inner_span.start_line, 2,
@@ -8882,7 +9034,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 top-level expression");
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1, "expected 1 outer entry");
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "outer"),
@@ -8911,7 +9066,7 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0].expr, SurfaceExpression::Dict(_)));
+        assert!(matches!(items[0].expr, SurfaceExpression::Dict { .. }));
     }
 
     /// parse_with_recovery on errored input returns ParseOutput with errors collected.
@@ -8969,7 +9124,10 @@ mod tests {
         // The recover_from_bracket_error() function builds a partial dict when there are
         // valid entries, adding an error entry for the failed part
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 // Should have 2 entries: the valid "a: 1" plus the error entry
                 assert_eq!(entries.len(), 2, "expected 2 entries (1 valid + 1 error)");
 
@@ -9011,7 +9169,10 @@ mod tests {
         assert!(!items.is_empty(), "expected at least 1 expression");
         // The result is a Dict with the annotation applied to the value of x
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1, "expected 1 entry");
             }
             SurfaceExpression::Error(_) => {
@@ -9056,7 +9217,10 @@ mod tests {
         // $_ in dict key position: [$_: 42]
         let expr = parse_surf_node("[$_: 42]");
         match &expr.expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 1);
                 let key_expr = entries[0].node.key.as_ref().expect("expected key");
                 match &key_expr.expr {
@@ -9416,7 +9580,7 @@ mod tests {
                 body,
                 return_ann,
                 desugared,
-                resolved_return_annotation: _,
+                ..
             } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
@@ -9563,7 +9727,7 @@ mod tests {
             crate::ast::SurfaceItem::Expr(node) => {
                 assert!(matches!(
                     &node.expr,
-                    crate::ast::SurfaceExpression::Dict(entries) if entries.len() == 2
+                    crate::ast::SurfaceExpression::Dict { entries, .. } if entries.len() == 2
                 ));
             }
             _ => panic!("expected Expr item"),
@@ -9670,7 +9834,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 top-level expression (Dict)");
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries: x: <fn> and x");
                 // First entry: x: [fn [let b] [match b ...]]
                 let key0 = entries[0]
@@ -9709,7 +9876,10 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(
                     entries.len(),
                     2,
@@ -9746,7 +9916,10 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries");
                 let key0 = entries[0]
                     .node
@@ -9800,7 +9973,10 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries");
                 let key0 = entries[0]
                     .node

@@ -306,7 +306,7 @@ impl fmt::Display for SurfaceExpression {
             SurfaceExpression::Placeholder(Some(name), None) => write!(f, "...{name}"),
             SurfaceExpression::Error(span) => write!(f, "<error at {span}>"),
             // (Annotated variant removed — handled by VarRef above)
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict { entries, .. } => {
                 write!(f, "[")?;
                 for (i, entry) in entries.iter().enumerate() {
                     if i > 0 {
@@ -344,8 +344,7 @@ impl fmt::Display for SurfaceExpression {
                 return_ann,
                 params,
                 body,
-                desugared: _,
-                resolved_return_annotation: _,
+                ..
             } => {
                 write!(f, "[fn")?;
                 if let Some(ann) = return_ann {
@@ -735,7 +734,12 @@ pub enum SurfaceExpression {
 
     // Dict/list literal — key is None for auto-indexed (positional) entries
     #[expr(tag = "Dict")]
-    Dict(#[expr(key = "entries", entry_list)] Vec<Spanned<SurfaceEntry>>),
+    Dict {
+        #[expr(key = "entries", entry_list)]
+        entries: Vec<Spanned<SurfaceEntry>>,
+        #[expr(skip, default_fn = "std::sync::OnceLock::new")]
+        scope_frame: std::sync::OnceLock<ScopeFrame>,
+    },
 
     // Function call — implied: true = [f x y], false = [call f x y]
     #[expr(tag = "Call")]
@@ -773,6 +777,8 @@ pub enum SurfaceExpression {
         /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
         #[expr(skip, default_fn = "crate::ast::TypeAnnotation::new")]
         resolved_return_annotation: TypeAnnotation,
+        #[expr(skip, default_fn = "std::sync::OnceLock::new")]
+        scope_frame: std::sync::OnceLock<ScopeFrame>,
     },
 
     // Type assertion — resolved_type is set inline by the type checker, read by the lowerer.
@@ -967,6 +973,7 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
+    pub scope_frame: std::sync::OnceLock<ScopeFrame>,
 }
 
 impl SurfaceMatchArm {
@@ -1099,6 +1106,98 @@ impl Default for TypeAnnotation {
 impl std::fmt::Debug for TypeAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeAnnotation({:?})", self.0.get().map(|o| o.is_some()))
+    }
+}
+
+/// Type scheme storage for a scope, indexed by resolver-assigned slot position.
+/// Set on scope-creating AST nodes (Dict, Fn, MatchArm) by the resolver.
+/// Type checker writes type schemes into slots during inference.
+pub struct ScopeFrame {
+    slots: Vec<ScopeSlot>,
+}
+
+pub struct ScopeSlot {
+    pub type_scheme: std::sync::OnceLock<Arc<crate::value::Value>>,
+    pub referenced: std::sync::atomic::AtomicBool,
+    pub definition_span: Option<Span>,
+}
+
+impl ScopeFrame {
+    pub fn new(size: usize) -> Self {
+        Self {
+            slots: (0..size)
+                .map(|_| ScopeSlot {
+                    type_scheme: std::sync::OnceLock::new(),
+                    referenced: std::sync::atomic::AtomicBool::new(false),
+                    definition_span: None,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn with_definition_spans(size: usize, spans: Vec<Option<Span>>) -> Self {
+        Self {
+            slots: (0..size)
+                .map(|i| ScopeSlot {
+                    type_scheme: std::sync::OnceLock::new(),
+                    referenced: std::sync::atomic::AtomicBool::new(false),
+                    definition_span: spans.get(i).cloned().flatten(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn get_type_scheme(&self, slot: u32) -> Option<Arc<crate::value::Value>> {
+        self.slots
+            .get(slot as usize)
+            .and_then(|s| s.type_scheme.get().cloned())
+    }
+
+    pub fn set_type_scheme(&self, slot: u32, scheme: Arc<crate::value::Value>) {
+        if let Some(s) = self.slots.get(slot as usize) {
+            let _ = s.type_scheme.set(scheme);
+        }
+    }
+
+    pub fn mark_referenced(&self, slot: u32) {
+        if let Some(s) = self.slots.get(slot as usize) {
+            s.referenced
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_referenced(&self, slot: u32) -> bool {
+        self.slots.get(slot as usize).map_or(false, |s| {
+            s.referenced.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn definition_span(&self, slot: u32) -> Option<&Span> {
+        self.slots
+            .get(slot as usize)
+            .and_then(|s| s.definition_span.as_ref())
+    }
+}
+
+impl Clone for ScopeFrame {
+    fn clone(&self) -> Self {
+        Self::new(self.slots.len())
+    }
+}
+
+impl PartialEq for ScopeFrame {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for ScopeFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ScopeFrame({} slots)", self.slots.len())
     }
 }
 

@@ -500,7 +500,10 @@ pub(crate) fn extract_binding_types<'a>(
             // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
             // Named-key dicts like [key: k  value: v] represent a SINGLE structural type (a record),
             // not multiple independent type parameters. Only auto-indexed (keyless) dicts expand.
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 let all_keyless = entries.iter().all(|e| e.node.key.is_none());
                 if all_keyless {
                     for entry in entries {
@@ -755,7 +758,10 @@ pub(crate) fn extract_param_indices(
         }
         // Multiple params as auto-indexed Dict: produced when bracket contains
         // a literal/annotated head (e.g. `[a@Int b]` → Dict with auto-indexed entries)
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             for entry in entries {
                 let param_name = match &entry.node.value.expr {
                     SurfaceExpression::VarRef { name, .. } => name,

@@ -2608,27 +2608,17 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver from the full root_group so all builtin slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) = resolve_surface_program(&program, &[root_frame]);
+        let (_table, _resolver_frames) = resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }
@@ -3053,32 +3043,35 @@ mod tests {
         let _ = slot0.set(0u32);
         let slot1 = std::sync::OnceLock::new();
         let _ = slot1.set(1u32);
-        let node = mk(SurfaceExpression::Dict(vec![
-            Spanned::new(
-                SurfaceEntry {
-                    key: Some(mk(SurfaceExpression::StringLiteral {
-                        prefix: String::new(),
-                        delimiter: "\"".to_string(),
-                        content: "x".into(),
-                    })),
-                    value: mk(SurfaceExpression::Int(1)),
-                    assigned_slot: slot0,
-                },
-                z.clone(),
-            ),
-            Spanned::new(
-                SurfaceEntry {
-                    key: Some(mk(SurfaceExpression::StringLiteral {
-                        prefix: String::new(),
-                        delimiter: "\"".to_string(),
-                        content: "x".into(),
-                    })),
-                    value: mk(SurfaceExpression::Int(2)),
-                    assigned_slot: slot1,
-                },
-                z.clone(),
-            ),
-        ]));
+        let node = mk(SurfaceExpression::Dict {
+            entries: vec![
+                Spanned::new(
+                    SurfaceEntry {
+                        key: Some(mk(SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: "x".into(),
+                        })),
+                        value: mk(SurfaceExpression::Int(1)),
+                        assigned_slot: slot0,
+                    },
+                    z.clone(),
+                ),
+                Spanned::new(
+                    SurfaceEntry {
+                        key: Some(mk(SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: "x".into(),
+                        })),
+                        value: mk(SurfaceExpression::Int(2)),
+                        assigned_slot: slot1,
+                    },
+                    z.clone(),
+                ),
+            ],
+            scope_frame: std::sync::OnceLock::new(),
+        });
         let err = eval_for_test(node, empty_env(), &test_ctx())
             .await
             .unwrap_err();
@@ -3664,14 +3657,17 @@ mod tests {
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let slot0 = std::sync::OnceLock::new();
         let _ = slot0.set(0u32);
-        let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
-            SurfaceEntry {
-                key: Some(mk(SurfaceExpression::Float(1.5))),
-                value: mk(SurfaceExpression::Int(42)),
-                assigned_slot: slot0,
-            },
-            z,
-        )]));
+        let node = mk(SurfaceExpression::Dict {
+            entries: vec![Spanned::new(
+                SurfaceEntry {
+                    key: Some(mk(SurfaceExpression::Float(1.5))),
+                    value: mk(SurfaceExpression::Int(42)),
+                    assigned_slot: slot0,
+                },
+                z,
+            )],
+            scope_frame: std::sync::OnceLock::new(),
+        });
         let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
@@ -3703,14 +3699,17 @@ mod tests {
         let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let slot0 = std::sync::OnceLock::new();
         let _ = slot0.set(0u32);
-        let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
-            SurfaceEntry {
-                key: Some(mk(SurfaceExpression::Float(2.5))),
-                value: mk(SurfaceExpression::Int(1)),
-                assigned_slot: slot0,
-            },
-            z,
-        )]));
+        let node = mk(SurfaceExpression::Dict {
+            entries: vec![Spanned::new(
+                SurfaceEntry {
+                    key: Some(mk(SurfaceExpression::Float(2.5))),
+                    value: mk(SurfaceExpression::Int(1)),
+                    assigned_slot: slot0,
+                },
+                z,
+            )],
+            scope_frame: std::sync::OnceLock::new(),
+        });
         let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
@@ -4693,7 +4692,13 @@ mod tests {
                     do_infer_placeholder: false,
                 },
             ),
-            surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
+            surf_ann_entry(
+                "default",
+                SurfaceExpression::Dict {
+                    entries: vec![],
+                    scope_frame: std::sync::OnceLock::new(),
+                },
+            ),
         ];
         assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
             entries
@@ -5902,28 +5907,16 @@ mod tests {
         let surface_program = crate::expand::expand_program(&surface_program);
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&surface_program, &[root_frame]);
 
-        // Type-check so all SurfaceNodes get inferred_type_decl_id set
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &surface_program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }
@@ -6305,28 +6298,18 @@ mod tests {
         let mut resolver_seed = ctx.root_group_resolver_map();
         let percent_slot = ctx.root_group.len() as u32;
         resolver_seed.insert("%".to_string(), percent_slot);
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&program, &[resolver_seed]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }
@@ -6438,28 +6421,18 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }
@@ -6504,28 +6477,18 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }
@@ -6569,28 +6532,18 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }

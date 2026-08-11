@@ -112,7 +112,13 @@ pub fn surface_node_get_field(
         (SurfaceExpression::Sequential(exprs), "exprs") => nodes_to_list_dict(exprs, ctx),
 
         // --- Dict ---
-        (SurfaceExpression::Dict(entries), "entries") => surface_entries_to_list_dict(entries, ctx),
+        (
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            },
+            "entries",
+        ) => surface_entries_to_list_dict(entries, ctx),
 
         // --- Call ---
         (SurfaceExpression::Call { func, .. }, "fn") => expr_variant(func),
@@ -835,7 +841,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::Field { .. } => ".field",
         SurfaceExpression::Pipe { .. } => "|",
         SurfaceExpression::Sequential(_) => "multi-body",
-        SurfaceExpression::Dict(_) => "[key: value]",
+        SurfaceExpression::Dict { .. } => "[key: value]",
         SurfaceExpression::Call { .. } => "[f ...]",
         SurfaceExpression::Fn { .. } => "[fn ...]",
         SurfaceExpression::TypeAssert { .. } => "@Type",

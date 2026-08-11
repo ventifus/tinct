@@ -192,173 +192,6 @@ fn make_typevalue_record(
     })
 }
 
-/// Look up `name` in `frames` (innermost-first) and return its slot as `usize`, or `None`.
-///
-/// Used to assign resolver-correct slots to bindings that need slot insertion but were not
-/// yet inserted via `insert_at_slot` at the point of the call.
-pub(crate) fn find_slot_in_frames(
-    frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
-    name: &str,
-) -> Option<usize> {
-    for (frame, _kind) in frames.iter().rev() {
-        if let Some(&slot) = frame.get(name) {
-            return Some(slot as usize);
-        }
-    }
-    None
-}
-
-/// Build a multi-frame type checker env chain matching the resolver's scope structure.
-///
-/// After T-2324: creates one Env per frame in `resolver_frames` (now includes Seed frames).
-/// The resolver's Dispatch(depth, slot) addresses directly correspond to env chain traversal:
-/// depth N = N parent links from the innermost frame, slot = position in that frame's slots Vec.
-///
-/// Parent env is used as a SOURCE of type schemes for Seed frame entries, NOT as a parent
-/// in the new chain. The new chain starts from Env::new() (no parent) to prevent prior
-/// document frames from leaking into the depth structure.
-///
-/// Frame population:
-/// - Seed frames: copy type schemes from parent_env chain + type_stage entries (which override)
-/// - DocSequential/DictLetrec/Param frames: pre-allocate slots (type checker fills during inference)
-///
-/// Returns `(doc_sequential_env, all_envs, doc_sequential_idx)` where:
-/// - `doc_sequential_env` is the first DocSequential frame (document entry point for type-checking)
-/// - `all_envs` is the complete Vec of envs (one per resolver frame, for cursor-based navigation)
-/// - `doc_sequential_idx` is the index of the DocSequential frame in all_envs (initial frame_cursor)
-pub(crate) fn build_env_from_frames(
-    parent_env: &Arc<RwLock<Env>>,
-    resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
-    type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
-    type_stage_fns: &std::collections::HashMap<String, Arc<crate::value::Thunk>>,
-    type_stage_type_vars: &std::collections::HashMap<String, String>,
-    type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> (Arc<RwLock<Env>>, Vec<Arc<RwLock<Env>>>, usize) {
-    use crate::type_infer::make_typevalue_nominal;
-
-    // Build parent_env name→scheme lookup for Seed frame population.
-    let mut parent_schemes: std::collections::HashMap<String, crate::type_infer::TypeValue> =
-        std::collections::HashMap::new();
-    {
-        let mut cursor = Some(Arc::clone(parent_env));
-        while let Some(arc) = cursor {
-            let env_read = arc.read().unwrap();
-            for slot_entry in env_read.slots.iter() {
-                if let Some((name, env_slot)) = slot_entry {
-                    if let Some(ref scheme) = env_slot.scheme {
-                        parent_schemes
-                            .entry(name.clone())
-                            .or_insert_with(|| Arc::clone(scheme));
-                    }
-                }
-            }
-            cursor = env_read.parent.as_ref().map(Arc::clone);
-        }
-    }
-
-    // Create root Env (NO parent — prevents prior document frames from leaking).
-    let mut current_env = Arc::new(RwLock::new(Env::new()));
-
-    // Build one Env per resolver frame, tracking document entry point.
-    let mut doc_sequential_env: Option<Arc<RwLock<Env>>> = None;
-    let mut doc_sequential_idx: usize = 0;
-    let mut all_envs: Vec<Arc<RwLock<Env>>> = Vec::with_capacity(resolver_frames.len());
-
-    for (frame, kind) in resolver_frames.iter() {
-        let mut new_env_inner = Env::with_parent(Arc::clone(&current_env));
-
-        match kind {
-            crate::resolve::FrameKind::Seed => {
-                // Populate Seed frame with type schemes from parent_env chain.
-                let mut covered: std::collections::HashSet<usize> =
-                    std::collections::HashSet::new();
-
-                // 1. Type-stage scope entries (override parent schemes)
-                for (name, tv) in type_stage_scope.iter().flat_map(|m| m.iter()) {
-                    if let Some(&slot) = frame.get(name) {
-                        new_env_inner.insert_at_slot(
-                            slot as usize,
-                            name.clone(),
-                            Arc::clone(tv),
-                            None,
-                        );
-                        covered.insert(slot as usize);
-                    }
-                }
-
-                // 2. Type-stage function entries (override parent schemes)
-                for (name, _thunk) in type_stage_fns {
-                    if let Some(&slot) = frame.get(name) {
-                        let tv = make_typevalue_nominal(
-                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
-                        );
-                        new_env_inner.insert_at_slot(
-                            slot as usize,
-                            name.clone(),
-                            Arc::clone(&tv),
-                            None,
-                        );
-                        covered.insert(slot as usize);
-                    }
-                }
-
-                // 3. Type-stage type variable entries (override parent schemes)
-                for (name, _kind) in type_stage_type_vars {
-                    if let Some(&slot) = frame.get(name) {
-                        let tv = make_typevalue_nominal(
-                            type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
-                        );
-                        new_env_inner.insert_at_slot(
-                            slot as usize,
-                            name.clone(),
-                            Arc::clone(&tv),
-                            None,
-                        );
-                        covered.insert(slot as usize);
-                    }
-                }
-
-                // 4. Copy parent env schemes for names in frame not yet covered.
-                for (name, &slot) in frame.iter() {
-                    if !covered.contains(&(slot as usize)) {
-                        if let Some(scheme) = parent_schemes.get(name) {
-                            new_env_inner.insert_at_slot(
-                                slot as usize,
-                                name.clone(),
-                                Arc::clone(scheme),
-                                None,
-                            );
-                        }
-                    }
-                }
-            }
-            crate::resolve::FrameKind::DocSequential => {
-                // Pre-allocate slots — type checker fills them during inference.
-                let max_slot = frame.values().max().copied().unwrap_or(0) as usize;
-                new_env_inner.slots.resize(max_slot + 1, None);
-
-                current_env = Arc::new(RwLock::new(new_env_inner));
-                if doc_sequential_env.is_none() {
-                    doc_sequential_env = Some(Arc::clone(&current_env));
-                    doc_sequential_idx = all_envs.len();
-                }
-                all_envs.push(Arc::clone(&current_env));
-                continue; // Skip the normal current_env update at the end
-            }
-            crate::resolve::FrameKind::DictLetrec | crate::resolve::FrameKind::Param => {
-                // Pre-allocate slots — type checker fills them during inference.
-                let max_slot = frame.values().max().copied().unwrap_or(0) as usize;
-                new_env_inner.slots.resize(max_slot + 1, None);
-            }
-        }
-
-        current_env = Arc::new(RwLock::new(new_env_inner));
-        all_envs.push(Arc::clone(&current_env));
-    }
-
-    let entry_env = doc_sequential_env.unwrap_or_else(|| Arc::clone(&all_envs[0]));
-    (entry_env, all_envs, doc_sequential_idx)
-}
 
 /// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
 ///
@@ -380,9 +213,10 @@ pub(crate) fn build_infer_state(
     type_name_to_id: std::collections::HashMap<String, u64>,
     type_display_names: std::collections::HashMap<u64, String>,
 ) {
-    // Set resolution table and resolver frames
-    state.resolution_table = resolution_table;
-    state.resolver_frames = resolver_frames;
+    // Resolution data is now on AST nodes (resolution OnceLock on VarRef, assigned_slot on entries/params).
+    // resolution_table and resolver_frames removed from InferState in S-1046 Phase 2.
+    let _ = resolution_table; // Suppress unused warning
+    let _ = resolver_frames; // Suppress unused warning
 
     // Set type-stage data
     state.type_stage_scope = type_stage_scope;
@@ -525,9 +359,8 @@ pub(crate) async fn process_document(
     if let Some(fields) = extract_record_fields(&result_ty) {
         for (name, field_tv) in fields {
             let tv = generalize_tv(enclosing_level, &field_tv, &state.ctx);
-            // Use resolver-assigned slot if available; otherwise append at end.
-            let slot = find_slot_in_frames(&state.resolver_frames, &name)
-                .unwrap_or_else(|| result_env_inner.slots.len());
+            // Append at end - slot ordering is not critical for top-level document entries.
+            let slot = result_env_inner.slots.len();
             result_env_inner.insert_at_slot(slot, name, tv, None);
         }
     }
@@ -547,15 +380,13 @@ pub(crate) async fn process_document(
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| id.to_string());
-            // Use resolver-assigned slot if available; otherwise append at end.
-            let slot = find_slot_in_frames(&state.resolver_frames, &name)
-                .unwrap_or_else(|| result_env_inner.slots.len());
+            // Append at end - slot ordering is not critical for top-level document entries.
+            let slot = result_env_inner.slots.len();
             result_env_inner.insert_at_slot(slot, name, Arc::clone(&value_ty), None);
             // Insert each constructor name with its variant TypeValue.
             if let Some(ctor_fields) = extract_record_fields(&value_ty) {
                 for (ctor_name, ctor_tv) in ctor_fields {
-                    let ctor_slot = find_slot_in_frames(&state.resolver_frames, &ctor_name)
-                        .unwrap_or_else(|| result_env_inner.slots.len());
+                    let ctor_slot = result_env_inner.slots.len();
                     result_env_inner.insert_at_slot(ctor_slot, ctor_name, ctor_tv, None);
                 }
             }
@@ -646,8 +477,7 @@ pub(crate) fn infer_class_decl_from_surface(
 
     // After S-1003: ClassDecl.params is Vec<(String, Arc<Value>)> where Arc<Value> is the kind TypeValue.
     let existing_param_kinds: std::collections::HashMap<String, Arc<Value>> = {
-        let env_guard = state.env.read().unwrap();
-        match env_guard.get_class(name) {
+        match state.classes.iter().find(|c| c.name == *name) {
             Some(existing) => existing.params.iter().cloned().collect(),
             None => std::collections::HashMap::new(), // Class not yet registered, treat as zero params.
         }
@@ -656,7 +486,10 @@ pub(crate) fn infer_class_decl_from_surface(
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
     for fd_node in *determines {
         match &fd_node.expr {
-            SurfaceExpression::Dict(entries) if entries.len() == 2 => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
                 let determining_indices =
                     extract_param_indices(determining, params, fd_node.span.clone())?;
@@ -712,10 +545,9 @@ pub(crate) fn infer_class_decl_from_surface(
         method_signatures: vec![],
     };
 
-    state.env.write().unwrap().insert_class(class_decl.clone());
-    state.invalidate_env_caches();
-    // Class entries are stored in state.env (class registry).
-    // resolve_type_head looks up classes via state.env.read().get_class(name).
+    state.classes.push(class_decl.clone());
+    // invalidate_env_caches removed in S-1046 Phase 2 (no env-level caches anymore)
+    // Class entries are stored in state.classes (flat registry).
     // No insertion into type_stage_scope needed.
     // After S-1003: Kind deleted, kind_env removed from InferState.
     // Operator-kinded params are now tracked as TypeValue kinds in ClassDecl.params.
@@ -759,10 +591,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
     let (param_count, has_fds, fd_list, param_names) = {
         let class_decl = state
-            .env
-            .read()
-            .unwrap()
-            .get_class(class_name)
+            .classes
+            .iter()
+            .find(|c| c.name == class_name)
+            .cloned()
             .ok_or_else(|| {
                 vec![Diagnostic::error(
                     "type-error",
@@ -923,7 +755,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let mut frame = std::collections::HashMap::new();
             for (name, tv) in param_names.iter().zip(pattern_types.iter()) {
                 // Skip TypeValue.Var — unresolved type variable, not a concrete pattern type.
-                let is_var = matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_VAR);
+                let is_var = matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if ctor_index == &TV_VAR);
                 if !is_var {
                     frame.insert(name.clone(), Arc::clone(tv));
                 }
@@ -988,10 +820,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 // Look up this method's polymorphic signature in the class.
                 let method_sig_opt =
                     state
-                        .env
-                        .read()
-                        .unwrap()
-                        .get_class(class_name)
+                        .classes
+                        .iter()
+                        .find(|c| c.name == class_name)
+                        .cloned()
                         .and_then(|cd| {
                             cd.method_signatures
                                 .iter()
@@ -1050,10 +882,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
             {
                 // Look up the class method signature.
                 let class_method_sig_opt = state
-                    .env
-                    .read()
-                    .unwrap()
-                    .get_class(class_name)
+                    .classes
+                    .iter()
+                    .find(|c| c.name == class_name)
+                    .cloned()
                     .and_then(|cd| {
                         cd.method_signatures
                             .iter()
@@ -1187,8 +1019,8 @@ pub(crate) async fn infer_instance_decl_from_surface(
             // Insert into the parent dict env at the resolver-assigned slot, or append.
             {
                 let mut env_write = env.write().unwrap();
-                let slot = find_slot_in_frames(&state.resolver_frames, &binding_name)
-                    .unwrap_or_else(|| env_write.slots.len());
+                // Append at end - slot ordering is not critical for instance methods.
+                let slot = env_write.slots.len();
                 env_write.insert_at_slot(slot, binding_name, scheme, None);
             }
         }
@@ -1229,11 +1061,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             instance_decl.class_name,
             type_args_for_mangling.join(",")
         );
-        state
-            .env
-            .write()
-            .unwrap()
-            .insert_instance(mangled, instance_decl);
+        state.instances.insert(mangled, instance_decl);
         state.invalidate_env_caches();
     }
 

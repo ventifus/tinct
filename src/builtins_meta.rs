@@ -1621,7 +1621,10 @@ pub(crate) fn builtin_var_resolution(
                         }
                     }
                 }
-                SurfaceExpression::Dict(entries) => {
+                SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } => {
                     for e in entries {
                         if let Some(k) = &e.node.key {
                             if let Some(r) = find_in_node(k, line, col) {
@@ -2574,7 +2577,6 @@ pub(crate) fn builtin_typecheck_doc(
         let (mut state, parent_env) = {
             let guard = tc_arc.lock().unwrap();
             let mut state = crate::types::InferState::new();
-            state.env = Arc::clone(&guard.inference_env);
             state.eval_ctx = Some(Arc::clone(&ctx));
 
             // Derive type_name_to_id from the type-stage scope if not already populated.
@@ -2615,19 +2617,9 @@ pub(crate) fn builtin_typecheck_doc(
             (state, parent_env)
         };
 
-        let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-            &parent_env,
-            &state.resolver_frames,
-            &state.type_stage_scope,
-            &state.type_stage_fns,
-            &state.type_stage_type_vars,
-            &state.type_name_to_id,
-        );
-        state.frame_envs = all_envs;
-        state.frame_cursor = doc_idx;
-
-        // Update state.env to point at doc_env so class/instance lookups work.
-        state.env = Arc::clone(&doc_env);
+        // build_env_from_frames removed in S-1046 Phase 2.
+        // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
+        let doc_env = Arc::clone(&parent_env);
 
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
@@ -2658,12 +2650,34 @@ pub(crate) fn builtin_typecheck_doc(
             crate::env::merge_env_chain_into(&doc_env, &guard.inference_env);
             // guard.inference_env stays unchanged — it is the single flat root
 
-            // Merge classes and instances from state.env into inference_env.
-            // Class/instance pre-registration step registers ClassDecl records (with populated method_signatures)
-            // into state.env, which is child_env — a sibling of doc_env, not an
-            // ancestor. merge_env_chain_into above only traverses doc_env's chain,
-            // so classes written to child_env are lost without this merge.
-            crate::env::merge_env_chain_into(&state.env, &guard.inference_env);
+            // Classes and instances now live on InferState.classes/instances, not in env.
+            // Merge them into guard's flat registries.
+            for class in &state.classes {
+                // Skip if already present (or_insert semantics)
+                if !guard
+                    .inference_env
+                    .read()
+                    .unwrap()
+                    .all_classes()
+                    .iter()
+                    .any(|c| c.name == class.name)
+                {
+                    guard
+                        .inference_env
+                        .write()
+                        .unwrap()
+                        .insert_class(class.clone());
+                }
+            }
+            for (name, instance) in &state.instances {
+                guard
+                    .inference_env
+                    .write()
+                    .unwrap()
+                    .instances
+                    .entry(name.clone())
+                    .or_insert_with(|| instance.clone());
+            }
 
             // Write back type_stage_scope: merge new declarations (ADTs, classes) from
             // frame[0] back into TypeContextData so subsequent typecheck calls see them.

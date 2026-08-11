@@ -202,7 +202,10 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Recursively process composite expressions
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 let mut processed_entries = Vec::with_capacity(entries.len());
                 for entry in entries {
                     // Handle unquote-splicing in dict entry value position
@@ -325,7 +328,10 @@ fn eval_quote_preprocess<'a>(
                         ));
                     }
                 }
-                Ok(make_node(SurfaceExpression::Dict(processed_entries)))
+                Ok(make_node(SurfaceExpression::Dict {
+                    entries: processed_entries,
+                    scope_frame: std::sync::OnceLock::new(),
+                }))
             }
 
             SurfaceExpression::Call {
@@ -392,7 +398,7 @@ fn eval_quote_preprocess<'a>(
                 params,
                 body,
                 desugared,
-                resolved_return_annotation: _,
+                ..
             } => {
                 let processed_body =
                     eval_quote_preprocess(Arc::clone(body), Arc::clone(&frame), ctx).await?;
@@ -402,6 +408,7 @@ fn eval_quote_preprocess<'a>(
                     body: processed_body,
                     desugared: *desugared,
                     resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+                    scope_frame: std::sync::OnceLock::new(),
                 }))
             }
 
@@ -503,6 +510,7 @@ fn eval_quote_preprocess<'a>(
                         guard: processed_guard,
                         body: processed_body,
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
+                        scope_frame: std::sync::OnceLock::new(),
                     });
                 }
                 Ok(make_node(SurfaceExpression::Match {

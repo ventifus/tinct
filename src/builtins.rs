@@ -656,27 +656,17 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let root_frame = ctx.root_group_resolver_map();
-        let (_table, resolver_frames) =
+        let (_table, _resolver_frames) =
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         {
-            let env = crate::builtins::build_core_env();
-            let mut infer_state = crate::type_infer::InferState::with_env(Arc::clone(&env));
-            infer_state.resolver_frames = resolver_frames;
+            let _env = crate::builtins::build_core_env();
+            let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-                    &env,
-                    &infer_state.resolver_frames,
-                    &infer_state.type_stage_scope,
-                    &infer_state.type_stage_fns,
-                    &infer_state.type_stage_type_vars,
-                    &infer_state.type_name_to_id,
-                );
-                infer_state.frame_envs = all_envs;
-                infer_state.frame_cursor = doc_idx;
+                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
                 let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &doc_env, &mut infer_state, &mut None)
+                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
                         .await;
             }
         }

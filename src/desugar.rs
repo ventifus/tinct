@@ -136,7 +136,10 @@ fn try_wrap_surface(node: &mut Arc<SurfaceNode>) -> bool {
         }
 
         // WRAP-DICT: any value (not key) is DIRECT
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             let has_direct_value = entries
                 .iter()
                 .any(|e| is_direct_underscore_surface(&e.node.value.expr));
@@ -217,6 +220,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
             body,
             desugared: true,
             resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+            scope_frame: std::sync::OnceLock::new(),
         },
         span,
     ));
@@ -310,7 +314,7 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         }
 
         // Dict: recurse into keys and values
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict { entries, scope_frame: _ } => {
             for entry_spanned in entries {
                 desugar_surface_entry(&mut entry_spanned.node, depth);
             }

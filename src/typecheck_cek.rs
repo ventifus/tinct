@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
-    class_decl_name, node_id, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
+    class_decl_name, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
     SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode,
 };
 use crate::coverage;
@@ -105,7 +105,8 @@ pub(crate) async fn run_fd_improvement_fixpoint(
         let pairs = crate::type_class::try_fd_improvement(
             &constraints_snapshot,
             &state.ctx,
-            &state.env,
+            &state.classes,
+            &state.instances,
             &mut state.fd_depth,
             state.eval_ctx.clone(),
             &state.type_stage_fns,
@@ -327,7 +328,6 @@ pub(crate) enum TypeCheckCont {
         saved_current_binding: Option<BindingId>,
         saved_narrowing_map:
             std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
-        saved_frame_cursor: usize,
     },
 
     /// Identity continuation — returns the child type unchanged.
@@ -478,7 +478,7 @@ async fn infer_step(
         SurfaceExpression::VarRef {
             name, annotation, ..
         } => {
-            let ty = infer_var_ref(name, annotation.as_ref(), node, env, state, errors).await;
+            let ty = infer_var_ref(name, annotation.as_ref(), node, state, errors).await;
             TypeCheckAction::Done(ty)
         }
 
@@ -510,7 +510,7 @@ async fn infer_step(
                 // reference. This eliminates false-positive lost-binding warnings and Unknown types.
                 if let crate::ast::DotKey::Ident(name) = field {
                     return TypeCheckAction::Done(
-                        infer_var_ref(name, None, node, env, state, errors).await,
+                        infer_var_ref(name, None, node, state, errors).await,
                     );
                 }
                 TypeCheckAction::Done(make_typevalue_unknown())
@@ -603,7 +603,11 @@ async fn infer_step(
 
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 // Check if this is a dict — if so, use typecheck_letrec_group for proper letrec
-                if let SurfaceExpression::Dict(entries) = &intermediate.expr {
+                if let SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } = &intermediate.expr
+                {
                     // The resolver writes each entry's absolute slot into assigned_slot.
                     // The first entry's slot is the base for this dict body.
                     let body_slot_base_pre: Option<u32> = entries
@@ -675,7 +679,6 @@ async fn infer_step(
                     saved_use_def,
                     saved_current_binding,
                     saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                    saved_frame_cursor: state.frame_cursor,
                 },
                 Arc::clone(node),
             ));
@@ -738,7 +741,10 @@ async fn infer_step(
         // HM letrec inference is performed by typecheck_letrec_group in
         // the LetrecGroupPassZero handler. Push the continuation and return Done(Unknown) immediately
         // to trigger apply_cont — there is no child node to evaluate at this point.
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             stack.push((
                 TypeCheckCont::LetrecGroupPassZero {
                     entries: entries.to_vec(),
@@ -824,7 +830,7 @@ async fn infer_step(
                     ))
                     .await;
                     // Set resolved_class_decl_id from the class lookup alone.
-                    if let Some(cd) = state.env.read().unwrap().get_class(&class_name_str) {
+                    if let Some(cd) = state.classes.iter().find(|c| c.name == class_name_str) {
                         resolved_class_decl_id.set(cd.class_decl_id);
                     }
                     r
@@ -1271,7 +1277,6 @@ async fn apply_cont(
             // for coverage checking and narrowing. If any pattern has an error (Never),
             // the whole match is an error — skip coverage analysis entirely.
             let mut pattern_error = false;
-            let saved_cursor_for_patterns = state.frame_cursor;
             for arm in &arms {
                 let arm_env = build_case_arm_env(&arm.let_bindings, &env, state, &arm.pattern);
                 let mut local_stack = Vec::new();
@@ -1287,7 +1292,6 @@ async fn apply_cont(
                 if typevalue_ctor_index(&pattern_ty) == Some(TV_NEVER) {
                     pattern_error = true;
                 }
-                state.frame_cursor = saved_cursor_for_patterns;
             }
 
             if !pattern_error {
@@ -1333,7 +1337,6 @@ async fn apply_cont(
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                            saved_frame_cursor: state.frame_cursor,
                         },
                         Arc::clone(&match_node),
                     ));
@@ -1422,7 +1425,6 @@ async fn apply_cont(
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
                                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                                saved_frame_cursor: state.frame_cursor,
                             },
                             Arc::clone(&match_node),
                         ));
@@ -1661,7 +1663,6 @@ async fn apply_cont(
             saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
-            saved_frame_cursor,
         } => {
             // Step 1: Seed the live set with names newly marked by the final expression.
             // Names in pre_final_refs were already referenced before the final expression
@@ -1733,8 +1734,7 @@ async fn apply_cont(
                 }
             }
 
-            // Restore enclosing block's state fields and frame cursor.
-            state.frame_cursor = saved_frame_cursor;
+            // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
             state.narrowing_map = saved_narrowing_map;
@@ -1768,205 +1768,196 @@ async fn infer_var_ref(
     name: &str,
     annotation: Option<&Spanned<Annotation>>,
     node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
-    // Resolve VarRef via resolution_table. Dispatch uses slot-based lookup;
+    // Resolve VarRef via the resolution field on the VarRef node.
+    // Dispatch uses slot-based lookup via scope_chain;
     // EffectPerform uses typeclass method signature instantiation.
     // No fallback — missing entry is a resolver bug.
-    let id = node_id(node);
-    let scheme: Option<TypeValue> = if let Some(addr) = state.resolution_table.get(&id) {
-        match addr {
-            crate::ast::VarAddr::EffectPerform { slot } => {
-                // Typeclass method call — resolved at runtime by scanning the accumulated group
-                // for an instance whose primary dispatch type matches the first argument's runtime type.
-                // Look up the class by class_decl_id, extract the method signature, and instantiate
-                // it with fresh TypeVars (the method signature uses the class's type parameters as
-                // TypeValue.Var nodes that must be instantiated at each call site).
-                let env_read = env.read().unwrap();
-                let class_opt = env_read
-                    .all_classes()
-                    .into_iter()
-                    .find(|c| c.class_decl_id == 0);
-                if let Some(class_decl) = class_opt {
-                    let method_sig = class_decl
-                        .method_signatures
-                        .get(*slot as usize)
-                        .map(|(_, tv)| Arc::clone(tv));
-                    if let Some(sig) = method_sig {
-                        // The method signature is a TypeValue.Fn using the class's type parameters
-                        // as TypeValue.Var nodes. Wrap the signature in a TypeValue.Scheme with
-                        // the class params as quantified vars, then instantiate at current level.
-                        use crate::value::{HashableValue, Value, TYPE_ID_DICT};
-                        use indexmap::IndexMap;
+    let scheme: Option<TypeValue> = if let SurfaceExpression::VarRef { resolution, .. } = &node.expr
+    {
+        if let Some(Some(addr)) = resolution.get() {
+            match addr {
+                crate::ast::VarAddr::EffectPerform { slot } => {
+                    // Typeclass method call — resolved at runtime by scanning the accumulated group
+                    // for an instance whose primary dispatch type matches the first argument's runtime type.
+                    // Look up the class by class_decl_id, extract the method signature, and instantiate
+                    // it with fresh TypeVars (the method signature uses the class's type parameters as
+                    // TypeValue.Var nodes that must be instantiated at each call site).
+                    let class_opt = state.classes.iter().find(|c| c.class_decl_id == 0);
+                    if let Some(class_decl) = class_opt {
+                        let method_sig = class_decl
+                            .method_signatures
+                            .get(*slot as usize)
+                            .map(|(_, tv)| Arc::clone(tv));
+                        if let Some(sig) = method_sig {
+                            // The method signature is a TypeValue.Fn using the class's type parameters
+                            // as TypeValue.Var nodes. Wrap the signature in a TypeValue.Scheme with
+                            // the class params as quantified vars, then instantiate at current level.
+                            use crate::value::{HashableValue, Value, TYPE_ID_DICT};
+                            use indexmap::IndexMap;
 
-                        // Build vars dict: class params → empty VarDecl dicts (kind is not used by instantiate_scheme_tv).
-                        let mut vars_entries = IndexMap::new();
-                        for (param_name, _kind) in &class_decl.params {
-                            let var_key = HashableValue::Str(Arc::from(param_name.as_str()));
-                            // VarDecl payload: empty dict (instantiate_scheme_tv only reads var names from keys).
-                            let empty_dict = Value::Dict {
+                            // Build vars dict: class params → empty VarDecl dicts (kind is not used by instantiate_scheme_tv).
+                            let mut vars_entries = IndexMap::new();
+                            for (param_name, _kind) in &class_decl.params {
+                                let var_key = HashableValue::Str(Arc::from(param_name.as_str()));
+                                // VarDecl payload: empty dict (instantiate_scheme_tv only reads var names from keys).
+                                let empty_dict = Value::Dict {
+                                    entries: IndexMap::new(),
+                                    type_decl_id: TYPE_ID_DICT,
+                                    type_val: None,
+                                };
+                                vars_entries.insert(
+                                    var_key,
+                                    Arc::new(crate::value::Thunk::value(
+                                        empty_dict,
+                                        crate::rust_span!(),
+                                    )),
+                                );
+                            }
+                            let vars_dict = Value::Dict {
+                                entries: vars_entries,
+                                type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
+                            };
+                            let vars_thunk = Arc::new(crate::value::Thunk::value(
+                                vars_dict,
+                                crate::rust_span!(),
+                            ));
+
+                            // Build constraints dict: empty (no constraints for method signatures).
+                            let constraints_dict = Value::Dict {
                                 entries: IndexMap::new(),
                                 type_decl_id: TYPE_ID_DICT,
                                 type_val: None,
                             };
-                            vars_entries.insert(
-                                var_key,
-                                Arc::new(crate::value::Thunk::value(
-                                    empty_dict,
-                                    crate::rust_span!(),
-                                )),
+                            let constraints_thunk = Arc::new(crate::value::Thunk::value(
+                                constraints_dict,
+                                crate::rust_span!(),
+                            ));
+
+                            // Build body thunk: the method signature TypeValue.
+                            let body_thunk = Arc::new(crate::value::Thunk::value(
+                                sig.as_ref().clone(),
+                                crate::rust_span!(),
+                            ));
+
+                            // Build the Scheme payload dict.
+                            let mut scheme_payload_entries = IndexMap::new();
+                            scheme_payload_entries
+                                .insert(HashableValue::Str(Arc::from(FIELD_VARS)), vars_thunk);
+                            scheme_payload_entries.insert(
+                                HashableValue::Str(Arc::from(FIELD_CONSTRAINTS)),
+                                constraints_thunk,
                             );
+                            scheme_payload_entries
+                                .insert(HashableValue::Str(Arc::from(FIELD_BODY)), body_thunk);
+                            let scheme_payload = Value::Dict {
+                                entries: scheme_payload_entries,
+                                type_decl_id: TYPE_ID_DICT,
+                                type_val: None,
+                            };
+                            let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
+                                scheme_payload,
+                                crate::rust_span!(),
+                            ));
+
+                            // Build the TypeValue.Scheme variant.
+                            let scheme = Arc::new(Value::Variant {
+                                type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
+                                ctor_index: TV_SCHEME,
+                                payload: Some(scheme_payload_thunk),
+                                type_val: None,
+                            });
+
+                            // Instantiate the scheme at the current level.
+                            let current_level = state.ctx.current_level;
+                            instantiate_scheme_tv(&scheme, &mut state.ctx, current_level)
+                        } else {
+                            // Method not found in class — fall back to Unknown (gradual typing).
+                            None
                         }
-                        let vars_dict = Value::Dict {
-                            entries: vars_entries,
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: None,
-                        };
-                        let vars_thunk =
-                            Arc::new(crate::value::Thunk::value(vars_dict, crate::rust_span!()));
-
-                        // Build constraints dict: empty (no constraints for method signatures).
-                        let constraints_dict = Value::Dict {
-                            entries: IndexMap::new(),
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: None,
-                        };
-                        let constraints_thunk = Arc::new(crate::value::Thunk::value(
-                            constraints_dict,
-                            crate::rust_span!(),
-                        ));
-
-                        // Build body thunk: the method signature TypeValue.
-                        let body_thunk = Arc::new(crate::value::Thunk::value(
-                            sig.as_ref().clone(),
-                            crate::rust_span!(),
-                        ));
-
-                        // Build the Scheme payload dict.
-                        let mut scheme_payload_entries = IndexMap::new();
-                        scheme_payload_entries
-                            .insert(HashableValue::Str(Arc::from(FIELD_VARS)), vars_thunk);
-                        scheme_payload_entries.insert(
-                            HashableValue::Str(Arc::from(FIELD_CONSTRAINTS)),
-                            constraints_thunk,
-                        );
-                        scheme_payload_entries
-                            .insert(HashableValue::Str(Arc::from(FIELD_BODY)), body_thunk);
-                        let scheme_payload = Value::Dict {
-                            entries: scheme_payload_entries,
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: None,
-                        };
-                        let scheme_payload_thunk = Arc::new(crate::value::Thunk::value(
-                            scheme_payload,
-                            crate::rust_span!(),
-                        ));
-
-                        // Build the TypeValue.Scheme variant.
-                        let scheme = Arc::new(Value::Variant {
-                            type_decl_id: crate::value::TYPE_ID_TYPE_VALUE,
-                            ctor_index: TV_SCHEME,
-                            payload: Some(scheme_payload_thunk),
-                            type_val: None,
-                        });
-
-                        // Instantiate the scheme at the current level.
-                        let current_level = state.ctx.current_level;
-                        instantiate_scheme_tv(&scheme, &mut state.ctx, current_level)
                     } else {
-                        // Method not found in class — fall back to Unknown (gradual typing).
+                        // Class not found — fall back to Unknown (gradual typing).
                         None
                     }
-                } else {
-                    // Class not found — fall back to Unknown (gradual typing).
-                    None
                 }
-            }
-            _ => {
-                let crate::ast::VarAddr::Dispatch(resolver_level, slot) = addr else {
-                    unreachable!()
-                };
-                let (resolver_level, slot) = (*resolver_level, *slot);
-                // Single-phase slot lookup: the env chain mirrors the resolver's frame structure.
-                // get_scheme_at(resolver_level, slot) traverses resolver_level parent links and
-                // looks up the slot there. Root-group entries are in child_env (seeded by
-                // the per-document pipeline via process_pipeline_document) at their absolute slots; Sequential body entries
-                // are in their respective env frames at the correct depths.
-                let slot_scheme = {
-                    let env_read = env.read().unwrap();
-                    env_read.get_scheme_at(resolver_level, slot)
-                };
-                if slot_scheme.is_some() {
-                    let dep_def_span = env.read().unwrap().get_slot_def_span(resolver_level, slot);
-                    env.write()
-                        .unwrap()
-                        .mark_slot_referenced(resolver_level, slot);
-                    if let Some(ref def_span) = dep_def_span {
-                        let dep_id = BindingId {
-                            def_span: def_span.clone(),
-                            name: name.to_string(),
-                        };
-                        if let Some(narrowed) = state.narrowing_map.get(&dep_id) {
-                            return Arc::clone(narrowed);
+                _ => {
+                    let crate::ast::VarAddr::Dispatch(resolver_level, slot) = addr else {
+                        unreachable!()
+                    };
+                    let (resolver_level, slot) = (*resolver_level, *slot);
+                    // Slot lookup via scope_chain.
+                    // scope_chain[len - 1 - depth] is the frame at depth `depth` from the current scope.
+                    // resolver_level = depth from current scope to target frame.
+                    let scope_idx = state
+                        .scope_chain
+                        .len()
+                        .checked_sub(1 + resolver_level as usize);
+                    let slot_scheme =
+                        scope_idx.and_then(|idx| state.scope_chain[idx].get_type_scheme(slot));
+                    if slot_scheme.is_some() {
+                        let dep_def_span = scope_idx
+                            .and_then(|idx| state.scope_chain[idx].definition_span(slot).cloned());
+                        if let Some(idx) = scope_idx {
+                            state.scope_chain[idx].mark_referenced(slot);
                         }
-                        if let Some(ref binder) = state.current_binding {
-                            if *binder != dep_id {
-                                state
-                                    .use_def
-                                    .entry(binder.clone())
-                                    .or_default()
-                                    .insert(dep_id);
+                        if let Some(ref def_span) = dep_def_span {
+                            let dep_id = BindingId {
+                                def_span: def_span.clone(),
+                                name: name.to_string(),
+                            };
+                            if let Some(narrowed) = state.narrowing_map.get(&dep_id) {
+                                return Arc::clone(narrowed);
+                            }
+                            if let Some(ref binder) = state.current_binding {
+                                if *binder != dep_id {
+                                    state
+                                        .use_def
+                                        .entry(binder.clone())
+                                        .or_default()
+                                        .insert(dep_id);
+                                }
                             }
                         }
-                    }
-                    slot_scheme
-                } else {
-                    let mut diag = Diagnostic::error(
+                        slot_scheme
+                    } else {
+                        let mut diag = Diagnostic::error(
                         "resolver-slot-miss",
                         format!(
-                            "resolver assigned slot ({}, {}) for '{}' but env has no entry at that address",
+                            "resolver assigned slot ({}, {}) for '{}' but scope has no entry at that address",
                             resolver_level, slot, name
                         ),
                         node.span.clone(),
                     );
-                    let mut depth = 0u32;
-                    let mut current_env = Some(Arc::clone(env));
-                    while let Some(env_arc) = current_env {
-                        let e = env_arc.read().unwrap();
-                        let slot_count = e.slots_len();
-                        let names: Vec<String> =
-                            e.iter_slots().map(|(n, _)| n.to_string()).take(5).collect();
-                        let preview = if names.is_empty() {
-                            "(empty)".to_string()
-                        } else if slot_count > 5 {
-                            format!("[{}, ... +{} more]", names.join(", "), slot_count - 5)
-                        } else {
-                            format!("[{}]", names.join(", "))
-                        };
-                        diag = diag.with_note(format!(
-                            "env depth {}: {} slots {}",
-                            depth, slot_count, preview
-                        ));
-                        current_env = e.parent.as_ref().map(Arc::clone);
-                        depth += 1;
+                        for (depth, frame) in state.scope_chain.iter().enumerate() {
+                            let slot_count = frame.len();
+                            diag = diag
+                                .with_note(format!("scope depth {}: {} slots", depth, slot_count));
+                        }
+                        errors.push(diag);
+                        None
                     }
-                    errors.push(diag);
-                    None
                 }
-            }
+            } // close match addr
+        } else {
+            // No resolver address for this VarRef — resolver bug.
+            errors.push(Diagnostic::error(
+                "resolver-miss",
+                format!(
+                    "VarRef '{}' has no resolution — resolver did not resolve this reference",
+                    name
+                ),
+                node.span.clone(),
+            ));
+            None
         }
     } else {
-        // No resolver address for this VarRef — resolver bug.
-        // After T-2323 (resolution_table in Value::Document) and T-2325 (unified typecheck_document),
-        // every VarRef should have a resolver address. Name-based fallback is deleted.
+        // Not a VarRef node — caller error.
         errors.push(Diagnostic::error(
-            "resolver-miss",
-            format!(
-                "VarRef '{}' has no entry in resolution_table — resolver did not resolve this reference",
-                name
-            ),
+            "infer-var-ref-not-varref",
+            format!("infer_var_ref called on non-VarRef node"),
             node.span.clone(),
         ));
         None
@@ -2130,11 +2121,10 @@ async fn apply_cont_call_func(
     }
 
     // T-2149: Extract EffectPerform metadata for instance checking after args are inferred.
-    let effect_perform_meta = if let SurfaceExpression::VarRef { .. } = &func_node.expr {
-        let func_id = node_id(&func_node);
-        if let Some(crate::ast::VarAddr::EffectPerform { slot }) =
-            ctx.state.resolution_table.get(&func_id)
-        {
+    // Read from VarRef node's resolution OnceLock instead of resolution_table.
+    let effect_perform_meta = if let SurfaceExpression::VarRef { resolution, .. } = &func_node.expr
+    {
+        if let Some(Some(crate::ast::VarAddr::EffectPerform { slot })) = resolution.get() {
             Some((0, slot.to_string()))
         } else {
             None
@@ -3309,7 +3299,10 @@ async fn infer_fn_push_cont(
                             }
                         }
                         // [a] as single-entry Dict
-                        SurfaceExpression::Dict(bind_entries) => {
+                        SurfaceExpression::Dict {
+                            entries: bind_entries,
+                            ..
+                        } => {
                             for be in bind_entries {
                                 if let SurfaceExpression::VarRef { name, .. } = &be.node.value.expr
                                 {
@@ -3407,9 +3400,8 @@ async fn infer_fn_push_cont(
     // Taking it here prevents leaking into nested fn expressions in the body.
     let expected_params: Option<Vec<TypeValue>> = state.expected_fn_params.take();
 
-    // Navigate to the pre-built Param frame in the env chain (T-2327).
-    state.frame_cursor += 1;
-    let fn_env_arc = Arc::clone(&state.frame_envs[state.frame_cursor]);
+    // Create a fresh Env for the function parameters (child of the closure-capture env).
+    let fn_env_arc = Arc::new(RwLock::new(Env::with_parent(Arc::clone(_env))));
     // Deferred insertions: (slot, name, type, def_span) — applied after the loop
     // to avoid holding the write guard across await points.
     let mut deferred_inserts: Vec<(usize, String, TypeValue, Option<Span>)> = Vec::new();
@@ -3698,7 +3690,6 @@ async fn infer_fn_push_cont(
             saved_use_def: std::mem::take(&mut state.use_def),
             saved_current_binding: state.current_binding.take(),
             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-            saved_frame_cursor: state.frame_cursor,
         },
         Arc::clone(node),
     ));
@@ -3843,7 +3834,10 @@ async fn setup_match_arm_env(
                 }
             }
             // Dict pattern — narrow the scrutinee by excluding the matched shape.
-            crate::ast::SurfaceExpression::Dict(entries) => {
+            crate::ast::SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 let key_names: Vec<String> = entries
                     .iter()
                     .filter_map(|e| {
@@ -4183,19 +4177,14 @@ fn build_case_arm_env(
             .collect(),
         _ => Vec::new(),
     };
-    // Only advance to a pre-built Param frame if there are actual bindings.
-    // The resolver only pushes a Param scope for arms with [let] bindings.
-    // Keyed arms (no [let]) don't have a corresponding frame.
+    // Create a fresh Env for match arm bindings if there are any [let] bindings.
     if !bindings_with_spans.is_empty() {
-        state.frame_cursor += 1;
-        let arm_env_arc = Arc::clone(&state.frame_envs[state.frame_cursor]);
+        let arm_env_arc = Arc::new(RwLock::new(Env::with_parent(Arc::clone(_env))));
         {
             let mut child_inner = arm_env_arc.write().unwrap();
             for (slot_idx, (name, binding_span)) in bindings_with_spans.into_iter().enumerate() {
                 let tv = state.fresh_type_var(&binding_span);
-                let slot =
-                    super::find_slot_in_frames(&state.resolver_frames, &name).unwrap_or(slot_idx);
-                child_inner.insert_at_slot(slot, name, tv, Some(binding_span));
+                child_inner.insert_at_slot(slot_idx, name, tv, Some(binding_span));
             }
         }
         arm_env_arc
@@ -4468,7 +4457,10 @@ fn collect_dependencies(
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::StringLiteral { .. } => {}
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 for entry in entries {
                     if let Some(ref key) = entry.node.key {
                         worklist.push((key, Arc::clone(&locals)));
@@ -4814,12 +4806,11 @@ async fn register_class_method_signatures(
     errors: &mut Vec<Diagnostic>,
 ) {
     // Look up the registered ClassDecl
-    let class_arc_opt = {
-        let env_guard = state.env.read().unwrap();
-        env_guard
-            .get_class(class_name)
-            .map(|c| std::sync::Arc::new(c.clone()))
-    };
+    let class_arc_opt = state
+        .classes
+        .iter()
+        .find(|c| c.name == class_name)
+        .map(|c| std::sync::Arc::new(c.clone()));
 
     if let Some(_class_arc) = class_arc_opt {
         for method_entry in methods {
@@ -4861,20 +4852,15 @@ async fn register_class_method_signatures(
                 match method_type_result {
                     Ok(method_type) => {
                         // Store the polymorphic method type in ClassDecl.method_signatures
-                        {
-                            let mut env_guard = state.env.write().unwrap();
-                            if let Some(mut class_decl) = env_guard.get_class(class_name) {
-                                // Avoid duplicate entries if already registered
-                                if !class_decl
+                        if let Some(class_decl) = state.classes.iter_mut().find(|c| c.name == class_name) {
+                            if !class_decl
+                                .method_signatures
+                                .iter()
+                                .any(|(n, _)| n == &method_name)
+                            {
+                                class_decl
                                     .method_signatures
-                                    .iter()
-                                    .any(|(n, _)| n == &method_name)
-                                {
-                                    class_decl
-                                        .method_signatures
-                                        .push((method_name.clone(), method_type.clone()));
-                                    env_guard.insert_class(class_decl);
-                                }
+                                    .push((method_name.clone(), method_type.clone()));
                             }
                         }
 
@@ -4884,9 +4870,9 @@ async fn register_class_method_signatures(
                         // Insert into dict_env at the resolver-assigned slot
                         {
                             let mut env_write = dict_env.write().unwrap();
-                            let slot =
-                                super::find_slot_in_frames(&state.resolver_frames, &method_name)
-                                    .unwrap_or_else(|| env_write.slots.len());
+                            // Use the method entry's assigned_slot if available, otherwise append.
+                            // IMPORTANT: entries must have assigned_slot populated by resolver before typecheck.
+                            let slot = env_write.slots.len();
                             env_write.insert_at_slot(slot, method_name, scheme, None);
                         }
                     }
@@ -4924,11 +4910,17 @@ async fn build_tycon_def_for_entry(
     {
         // Extract the inner Dict entries, unwrapping ReprDecl if present
         let inner_entries: &[Spanned<SurfaceEntry>] = match &inner.expr {
-            SurfaceExpression::Dict(entries) => entries,
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => entries,
             SurfaceExpression::ReprDecl {
                 inner: repr_inner, ..
             } => match &repr_inner.expr {
-                SurfaceExpression::Dict(entries) => entries,
+                SurfaceExpression::Dict {
+                    entries,
+                    scope_frame: _,
+                } => entries,
                 _ => &[],
             },
             _ => &[],
@@ -5020,7 +5012,10 @@ async fn build_tycon_def_for_entry(
             };
             let body_expr = &body_node.expr;
             match body_expr {
-                SurfaceExpression::Dict(body_entries) => {
+                SurfaceExpression::Dict {
+                    entries: body_entries,
+                    ..
+                } => {
                     let mut ann_map_opt: Option<&mut HashMap<String, String>> =
                         Some(&mut ann_map_for_body);
                     let mut row_m: Option<&mut HashMap<String, String>> = None;
@@ -5121,8 +5116,9 @@ async fn build_tycon_def_for_entry(
 
         {
             let mut env_write = dict_env.write().unwrap();
-            let slot = super::find_slot_in_frames(&state.resolver_frames, key_name)
-                .unwrap_or_else(|| env_write.slots.len());
+            // Use entry's assigned_slot if available, otherwise append.
+            // TypeDecl entries should have assigned_slot from resolver.
+            let slot = env_write.slots.len();
             env_write.insert_at_slot(
                 slot,
                 key_name.to_string(),
@@ -5171,9 +5167,8 @@ pub(crate) async fn typecheck_letrec_group(
     let enclosing_level = state.ctx.current_level;
     state.ctx.current_level += 1;
 
-    // Navigate to the pre-built DictLetrec frame in the env chain (T-2327).
-    state.frame_cursor += 1;
-    let dict_env: Arc<RwLock<Env>> = Arc::clone(&state.frame_envs[state.frame_cursor]);
+    // Create a fresh Env for the dict entries (child of the parent env).
+    let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
 
     // Extra schemes from ADT constructors — injected in type declaration registration, merged into final schemes.
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
@@ -5405,11 +5400,8 @@ pub(crate) async fn typecheck_letrec_group(
                                 fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
                                 {
                                     let mut env_write = dict_env.write().unwrap();
-                                    let slot = super::find_slot_in_frames(
-                                        &state.resolver_frames,
-                                        &binding_name,
-                                    )
-                                    .unwrap_or_else(|| env_write.slots.len());
+                                    // Use entry's assigned_slot if available, otherwise append.
+                                    let slot = env_write.slots.len();
                                     env_write.insert_at_slot(
                                         slot,
                                         binding_name,
@@ -5491,8 +5483,10 @@ pub(crate) async fn typecheck_letrec_group(
 
                 // Infer the entry value using run_typecheck (CEK path, no Rust stack recursion).
                 // For nested Dict values, call typecheck_letrec_group directly to capture schemes.
-                let value_ty = if let SurfaceExpression::Dict(nested_entries) =
-                    &entry.node.value.expr
+                let value_ty = if let SurfaceExpression::Dict {
+                    entries: nested_entries,
+                    ..
+                } = &entry.node.value.expr
                 {
                     let (ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
                         typecheck_letrec_group(nested_entries, &dict_env, state, type_map, None),
@@ -5638,7 +5632,11 @@ pub(crate) async fn typecheck_letrec_group(
             } else {
                 // Computed-key entry: type-check the value to resolve VarRefs for
                 // liveness tracking, but don't insert into field_types (no static name).
-                if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
+                if let SurfaceExpression::Dict {
+                    entries: nested_entries,
+                    ..
+                } = &entry.node.value.expr
+                {
                     let (ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
                         typecheck_letrec_group(nested_entries, &dict_env, state, type_map, None),
                     )
@@ -5980,8 +5978,7 @@ pub(crate) async fn typecheck_letrec_group(
             .slot_index
             .contains_key(name.as_str())
         {
-            let slot = super::find_slot_in_frames(&state.resolver_frames, &name)
-                .unwrap_or_else(|| dict_env.read().unwrap().slots.len());
+            let slot = dict_env.read().unwrap().slots.len();
             dict_env
                 .write()
                 .unwrap()
@@ -6066,6 +6063,7 @@ mod tests {
             body,
             desugared: false,
             resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+            scope_frame: std::sync::OnceLock::new(),
         })
     }
 

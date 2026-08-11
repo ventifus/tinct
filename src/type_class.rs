@@ -460,11 +460,9 @@ fn lookup_instance_for_fd(
     class_name: &str,
     source_positions: &[usize],
     source_types: &[Arc<Value>],
-    env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+    instances: &std::collections::HashMap<String, crate::type_class::InstanceDecl>,
 ) -> Option<HashMap<i64, Arc<Value>>> {
-    let env_guard = env.read().unwrap();
-    let instances = env_guard.all_instances();
-    drop(env_guard);
+    let instances: Vec<(String, crate::type_class::InstanceDecl)> = instances.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
     for (_, inst) in &instances {
         if inst.class_name != class_name {
@@ -605,7 +603,8 @@ fn typevalue_matches_fd(pattern: &Arc<Value>, target: &Arc<Value>) -> bool {
 pub(crate) async fn try_fd_improvement(
     constraints: &[Arc<Value>],
     ctx: &crate::type_infer::InferenceContext,
-    state_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+    classes: &[crate::type_class::ClassDecl],
+    instances: &std::collections::HashMap<String, crate::type_class::InstanceDecl>,
     fd_depth: &mut u32,
     eval_ctx: Option<std::sync::Arc<crate::eval::EvalContext>>,
     type_stage_fns: &std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
@@ -624,10 +623,7 @@ pub(crate) async fn try_fd_improvement(
             None => continue,
         };
         // Look up the class declaration.
-        let class_decl = {
-            let env_guard = state_env.read().unwrap();
-            env_guard.get_class(&class_name)
-        };
+        let class_decl = classes.iter().find(|c| c.name == class_name).cloned();
         let class_decl = match class_decl {
             Some(c) => c,
             None => continue,
@@ -749,7 +745,7 @@ pub(crate) async fn try_fd_improvement(
                 class_name.as_str(),
                 source_positions,
                 &source_types,
-                state_env,
+                instances,
             );
 
             let instance_field_map = match instance_field_map {

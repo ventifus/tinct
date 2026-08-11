@@ -326,7 +326,10 @@ fn lower_expr(
             inferred_type: make_typevalue_unknown(),
         },
 
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
                 let key = se.node.key.as_ref().map(|k| {
@@ -449,6 +452,7 @@ fn lower_expr(
             body,
             desugared,
             resolved_return_annotation,
+            ..
         } => {
             // Lower the body first to get its span for wrapping.
             let lowered_body_spanned = lower_inner(body, diagnostics, type_display_names);
@@ -983,6 +987,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 body: core_expr_to_surface_node(&clause.body),
                 desugared: *desugared,
                 resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+                scope_frame: std::sync::OnceLock::new(),
             }
         }
         CoreExpr::TypeAssert { check, expr, .. } => {
@@ -1056,6 +1061,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                         guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                         body: vec![core_expr_to_surface_node(&arm.body)],
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
+                        scope_frame: std::sync::OnceLock::new(),
                     }
                 })
                 .collect(),
@@ -1075,8 +1081,8 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::LetDecl { bindings, .. } => SurfaceExpression::LetDecl {
             bindings: bindings.iter().map(core_expr_to_surface_node).collect(),
         },
-        CoreExpr::Dict { entries, .. } => SurfaceExpression::Dict(
-            entries
+        CoreExpr::Dict { entries, .. } => SurfaceExpression::Dict {
+            entries: entries
                 .iter()
                 .map(|e| {
                     crate::ast::Spanned::new(
@@ -1089,7 +1095,8 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                     )
                 })
                 .collect(),
-        ),
+            scope_frame: std::sync::OnceLock::new(),
+        },
         CoreExpr::Placeholder { .. } => SurfaceExpression::Placeholder(None, None),
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
@@ -1517,6 +1524,7 @@ mod tests {
                 body,
                 desugared: false,
                 resolved_return_annotation: TypeAnnotation::new(),
+                scope_frame: std::sync::OnceLock::new(),
             },
             span,
         ))
@@ -1605,6 +1613,7 @@ mod tests {
                 body,
                 desugared: false,
                 resolved_return_annotation: TypeAnnotation::new(),
+                scope_frame: std::sync::OnceLock::new(),
             },
             span,
         ));

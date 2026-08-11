@@ -37,7 +37,7 @@ impl PipelineState {
     pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
         let env = crate::builtins::build_core_env();
         let root_frame = ctx.root_group_resolver_map();
-        let mut infer_state = InferState::with_env(Arc::clone(&env));
+        let mut infer_state = InferState::new();
         infer_state.eval_ctx = Some(Arc::clone(ctx));
 
         // Seed the type checker's env with Unknown type schemes for all builtins.
@@ -117,16 +117,9 @@ pub async fn typecheck_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-        &state.env,
-        &state.infer_state.resolver_frames,
-        &state.infer_state.type_stage_scope,
-        &state.infer_state.type_stage_fns,
-        &state.infer_state.type_stage_type_vars,
-        &state.infer_state.type_name_to_id,
-    );
-    state.infer_state.frame_envs = all_envs;
-    state.infer_state.frame_cursor = doc_idx;
+    // build_env_from_frames removed in S-1046 Phase 2.
+    // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
+    let doc_env = Arc::clone(&state.env);
 
     let (new_env, _result_ty, tc_errors) =
         crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;
@@ -199,16 +192,9 @@ pub async fn process_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    let (doc_env, all_envs, doc_idx) = crate::typecheck::build_env_from_frames(
-        &state.env,
-        &state.infer_state.resolver_frames,
-        &state.infer_state.type_stage_scope,
-        &state.infer_state.type_stage_fns,
-        &state.infer_state.type_stage_type_vars,
-        &state.infer_state.type_name_to_id,
-    );
-    state.infer_state.frame_envs = all_envs;
-    state.infer_state.frame_cursor = doc_idx;
+    // build_env_from_frames removed in S-1046 Phase 2.
+    // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
+    let doc_env = Arc::clone(&state.env);
 
     let (new_env, _result_ty, tc_errors) =
         crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;

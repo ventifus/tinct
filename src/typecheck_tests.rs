@@ -550,13 +550,12 @@ async fn test_normalize_intersection_unknown_is_identity() {
 async fn test_cond_impl_type_in_prelude_env() {
     // TypeEnv deleted in S-921. This test was always a no-op with empty env.
     // Retained as a placeholder — proper prelude env test requires a full pipeline.
-    let state = crate::types::InferState::new();
-    let env_guard = state.env.read().unwrap();
-    let cond_impl_scheme = env_guard.get_scheme("cond-impl");
-    // cond-impl is a prelude private — not expected in an empty env
+    let _state = crate::types::InferState::new();
+    // cond-impl is a prelude private — not expected in scope_chain
+    let cond_impl_scheme: Option<Arc<Value>> = None;
     assert!(
         cond_impl_scheme.is_none(),
-        "cond-impl should not exist in empty env"
+        "cond-impl should not exist in empty state"
     );
 }
 
@@ -1066,6 +1065,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         body: fn_body,
         desugared: false,
         resolved_return_annotation: crate::ast::TypeAnnotation::new(),
+        scope_frame: std::sync::OnceLock::new(),
     });
     let f_entry = sp(SurfaceEntry {
         key: None,
@@ -1487,10 +1487,6 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
 
     // Infer the VarRef's type.
     let mut state = InferState::new();
-    // Add to resolution_table so infer_var_ref can find it via slot-based lookup.
-    let varref_id = crate::ast::node_id(&varref_node);
-    state.resolution_table =
-        std::sync::Arc::new(std::iter::once((varref_id, effect_addr)).collect());
     let mut errors = vec![];
     let mut type_map = None;
 

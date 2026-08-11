@@ -74,7 +74,10 @@ pub(crate) async fn resolve_fn_metadata(
                     // for compatibility, though the parser does not produce it for bare-name
                     // lists.
                     match &entry.node.value.expr {
-                        SurfaceExpression::Dict(bind_entries) => {
+                        SurfaceExpression::Dict {
+                            entries: bind_entries,
+                            scope_frame: _,
+                        } => {
                             for bind_entry in bind_entries {
                                 if bind_entry.node.key.is_some() {
                                     return Err(Diagnostic::error("type-error",
@@ -244,7 +247,10 @@ pub(crate) async fn resolve_fn_metadata(
                 if key_name == "kinds" {
                     // kinds: [f: Operator key: Label] — dict mapping TypeVar names to kinds
                     match &entry.node.value.expr {
-                        SurfaceExpression::Dict(kinds_entries) => {
+                        SurfaceExpression::Dict {
+                            entries: kinds_entries,
+                            scope_frame: _,
+                        } => {
                             for kind_entry in kinds_entries {
                                 let typevar_name = match &kind_entry.node.key {
                                     Some(k) => {
@@ -343,7 +349,10 @@ pub(crate) async fn resolve_fn_metadata(
                 if key_name == "constraint" {
                     // constraint: [a: Comparable] or [a: [each Comparable Printable]]
                     match &entry.node.value.expr {
-                        SurfaceExpression::Dict(constraint_entries) => {
+                        SurfaceExpression::Dict {
+                            entries: constraint_entries,
+                            scope_frame: _,
+                        } => {
                             for c_entry in constraint_entries {
                                 // Skip positional entries (MPTC) — handled in Step 1b
                                 if c_entry.node.key.is_none() {
@@ -502,7 +511,10 @@ pub(crate) async fn resolve_fn_metadata(
             {
                 if key_name == "constraint" {
                     match &entry.node.value.expr {
-                        SurfaceExpression::Dict(constraint_entries) => {
+                        SurfaceExpression::Dict {
+                            entries: constraint_entries,
+                            scope_frame: _,
+                        } => {
                             let mut i = 0;
                             while i < constraint_entries.len() {
                                 let c_entry = &constraint_entries[i];
@@ -519,20 +531,21 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
-                                        let class_decl = {
-                                            let env_guard = state.env.read().unwrap();
-                                            env_guard.get_class(class_name)
-                                        }
-                                        .ok_or_else(|| {
-                                            Diagnostic::error(
-                                                "type-error",
-                                                format!(
-                                                    "undefined class '{}' in constraint",
-                                                    class_name
-                                                ),
-                                                c_entry.node.value.span.clone(),
-                                            )
-                                        })?;
+                                        let class_decl = state
+                                            .classes
+                                            .iter()
+                                            .find(|c| c.name == *class_name)
+                                            .cloned()
+                                            .ok_or_else(|| {
+                                                Diagnostic::error(
+                                                    "type-error",
+                                                    format!(
+                                                        "undefined class '{}' in constraint",
+                                                        class_name
+                                                    ),
+                                                    c_entry.node.value.span.clone(),
+                                                )
+                                            })?;
 
                                         // Collect TypeVar names from subsequent positional entries
                                         let mut typevar_names = Vec::new();
@@ -1317,7 +1330,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
             &entry.node.value.expr,
             SurfaceExpression::StringLiteral { .. }
                 | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
-                | SurfaceExpression::Dict(_)
+                | SurfaceExpression::Dict { .. }
         );
         has_str_key && value_is_type_shaped
     })
@@ -1472,8 +1485,7 @@ async fn instantiate_tycon_def(
         // from ClassDecl.method_signatures and check that a mangled instance key exists for
         // at least one method with the given type tags.
         let instance_found = {
-            let env_guard = state.env.read().unwrap();
-            let class_opt = env_guard.get_class(&class_name);
+            let class_opt = state.classes.iter().find(|c| c.name == class_name);
             match class_opt {
                 None => true, // Unknown class — not yet in env (e.g., forward reference); defer checking.
                 Some(class_decl) => {
@@ -1486,7 +1498,7 @@ async fn instantiate_tycon_def(
                         class_decl
                             .method_signatures
                             .iter()
-                            .any(|(method_name, _)| env_guard.get_instance(method_name).is_some())
+                            .any(|(method_name, _)| state.instances.contains_key(method_name))
                     }
                 }
             }
@@ -1645,10 +1657,7 @@ async fn resolve_type_head(
     }
 
     // Step 4: check env (class registry) for a class declaration.
-    let class_decl_opt = {
-        let env_read = state.env.read().unwrap();
-        env_read.get_class(name).map(|c| c.clone())
-    };
+    let class_decl_opt = state.classes.iter().find(|c| c.name == name).cloned();
     if let Some(class_decl) = class_decl_opt {
         let level = state.ctx.current_level;
         let (fresh, _fresh_ty) = state.fresh_type_var_with(Some(name), Some(level), "Type", &span);
@@ -1916,7 +1925,10 @@ pub(crate) async fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             Box::pin(resolve_type_dict(
                 entries,
                 node.span.clone(),
@@ -1972,7 +1984,10 @@ pub(crate) async fn resolve_type_expr(
                     let mut params = Vec::new();
                     if let Some(param_list) = args.first() {
                         match &param_list.expr {
-                            SurfaceExpression::Dict(param_entries) => {
+                            SurfaceExpression::Dict {
+                                entries: param_entries,
+                                scope_frame: _,
+                            } => {
                                 for entry in param_entries {
                                     // Extract parameter name from key if present
                                     let param_name = if let Some(ref key) = entry.node.key {
@@ -2513,7 +2528,7 @@ pub(crate) async fn resolve_type_dict(
                         .any(|s| s.contains_key(name.as_str()))
                         || state.type_stage_fns.contains_key(name.as_str())
                         || state.type_stage_type_vars.contains_key(name.as_str())
-                        || state.env.read().unwrap().get_class(name.as_str()).is_some();
+                        || state.classes.iter().any(|c| c.name == name.as_str());
 
                     if in_scope {
                         // Resolve argument types from the remaining positional entries.
@@ -2599,7 +2614,10 @@ pub(crate) async fn resolve_type_dict(
                         // Resolve the payload dict. The value should be a Dict of named fields.
                         let variant_fields: indexmap::IndexMap<String, Arc<crate::value::Value>> =
                             match &entry.node.value.expr {
-                                SurfaceExpression::Dict(field_entries) => {
+                                SurfaceExpression::Dict {
+                                    entries: field_entries,
+                                    scope_frame: _,
+                                } => {
                                     let mut fields = indexmap::IndexMap::new();
                                     for fe in field_entries {
                                         let field_name = match &fe.node.key {
@@ -3052,7 +3070,7 @@ pub(crate) async fn resolve_type_dict(
 ///   synthesize `SurfaceExpression::Call { implied: true, func, args }`.
 ///
 /// - **Dict form** (keyed entries or first entry is not a VarRef):
-///   synthesize `SurfaceExpression::Dict(entries)`. Dict evaluation in the type-stage
+///   synthesize `SurfaceExpression::Dict { entries: entries, scope_frame: std::sync::OnceLock::new() }`. Dict evaluation in the type-stage
 ///   env produces an integer-keyed Dict value, which `typenode_value_to_type` will not
 ///   recognize — this is the correct fallback for metadata-style annotations that reach
 ///   the type-stage path (they will return `Type::Unknown` after failing conversion).
@@ -3084,7 +3102,10 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
         ))
     } else {
         Arc::new(SurfaceNode::new(
-            SurfaceExpression::Dict(entries.to_vec()),
+            SurfaceExpression::Dict {
+                entries: entries.to_vec(),
+                scope_frame: std::sync::OnceLock::new(),
+            },
             span,
         ))
     }
@@ -4073,13 +4094,16 @@ async fn try_resolve_fn_type_expr(
     .await?;
 
     // The parameter list can be:
-    // - SurfaceExpression::Dict(entries) — standard syntax: `[$a $b]` or `[$Number]`
+    // - SurfaceExpression::Dict { entries: entries, scope_frame: std::sync::OnceLock::new() } — standard syntax: `[$a $b]` or `[$Number]`
     //   (unnamed params) or new syntax: `[x: String  y: Bool]` (named params)
     // - SurfaceExpression::Call { implied: true, func, args } — bare identifiers like `[a b]`
     //   parse as implied calls. Extract func + args as the parameter type expressions.
     let mut params = Vec::new();
     match &second.node.value.expr {
-        SurfaceExpression::Dict(param_entries) => {
+        SurfaceExpression::Dict {
+            entries: param_entries,
+            scope_frame: _,
+        } => {
             for entry in param_entries.iter() {
                 // Extract parameter name from key if present
                 let param_name = if let Some(ref key) = entry.node.key {

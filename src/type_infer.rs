@@ -9,7 +9,7 @@
 //! Type representations now use `Arc<Value>` (TypeValue) throughout.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::ast::Span;
 use crate::type_tags::*;
@@ -2232,10 +2232,18 @@ pub struct InferState {
     /// Generated when overloaded builtins are called with type variables.
     /// During generalization, constraints on generalized variables are included in the TypeValue.Scheme.
     pub constraints: Vec<Arc<crate::value::Value>>,
-    /// Unified environment: the canonical store for classes, instances, type schemes, and values.
-    /// Class/instance lookups go through `state.env.read().unwrap().get_class(name)` and
-    /// `state.env.read().unwrap().get_instance(mangled)`.
-    pub env: Arc<RwLock<crate::env::Env>>,
+    /// Scope chain: references to ScopeFrames from AST nodes.
+    /// Pushed when entering a scope (Dict/Fn/MatchArm), popped when leaving.
+    /// These ARE the resolver's frames, not a parallel structure.
+    /// Type schemes are read via scope_chain[len - 1 - depth].get_type_scheme(slot).
+    /// Type schemes are written via scope_chain.last().unwrap().set_type_scheme(slot, scheme).
+    pub scope_chain: Vec<std::sync::Arc<crate::ast::ScopeFrame>>,
+    /// Type class declarations.
+    /// Moved from Env to InferState. Populated during type-stage processing.
+    pub classes: Vec<crate::type_class::ClassDecl>,
+    /// Type class instances.
+    /// Moved from Env to InferState. Populated during type-stage processing.
+    pub instances: std::collections::HashMap<String, crate::type_class::InstanceDecl>,
     /// Names of bindings that failed type inference, mapping to the span of the failed binding.
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
     /// that points to the failed definition site instead of just saying "not in scope".
@@ -2274,24 +2282,6 @@ pub struct InferState {
     /// name is hidden — it is noise for users). Only populated for parameters and let-bindings
     /// where a source name exists.
     pub type_var_source_names: HashMap<String, String>,
-    /// Resolution table for slot-indexed TypeEnv lookups.
-    ///
-    /// The CEK machine's VarRef handler uses the resolved (level, slot) coordinates to
-    /// call `env.get_scheme_at(level, slot)` — O(1) per-level. This is the single
-    /// authority for VarRef type resolution (no name-based fallback for user bindings).
-    ///
-    /// Always populated: entry points run the resolver before type-checking. Tests that
-    /// construct InferState directly get an empty table (no VarRef resolution → all lookups
-    /// return None from slots).
-    pub resolution_table: std::sync::Arc<crate::ast::ResolutionTable>,
-    /// Unified scope frames from the resolver pass: both Dict letrec frames and
-    /// BlockBody sequential injection frames, in injection order. Each entry is
-    /// `(name→slot map, FrameKind)` — the FrameKind lets the type checker distinguish
-    /// document-level sequential frames from fn-body/dict-letrec frames for
-    /// body_slot_base computation.
-    /// Populated from `resolve_surface_program`; used by `find_slot_in_frames` to assign
-    /// correct slot positions when inserting bindings that don't yet have one.
-    pub resolver_frames: Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>,
     /// EvalContext from tinct's evaluation pipeline — passed in when type-checking runs
     /// within a program evaluation (e.g. via builtin-typecheck). Used by resolve_type_head
     /// to materialize type-stage thunks without ambient filesystem access. Never created
@@ -2384,29 +2374,15 @@ pub struct InferState {
     /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build
     /// the type instantiation on the Call's SurfaceNode. Cleared after consumption.
     pub last_scheme_renaming: Option<std::collections::HashMap<String, String>>,
-    /// Pre-built env frames from build_env_from_frames — one per resolver scope frame.
-    /// The type checker navigates this chain via frame_cursor instead of creating
-    /// independent Env::with_parent frames.
-    pub frame_envs: Vec<Arc<RwLock<crate::env::Env>>>,
-    /// Current position in frame_envs. Advances when entering fn/dict/match scopes,
-    /// retreats when exiting. Matches the resolver's scope push/pop pattern.
-    pub frame_cursor: usize,
 }
 
 impl InferState {
     pub fn new() -> Self {
-        Self::with_env(Arc::new(RwLock::new(crate::env::Env::new())))
-    }
-
-    /// Create a new InferState with the given unified environment.
-    ///
-    /// All class/instance lookups go through `state.env`. The env must already contain
-    /// all classes and instances visible during this type-checking run (seeded from parent
-    /// environments via `Env::with_parent` chains).
-    pub fn with_env(env: Arc<RwLock<crate::env::Env>>) -> Self {
         Self {
             constraints: Vec::new(),
-            env,
+            scope_chain: Vec::new(),
+            classes: Vec::new(),
+            instances: std::collections::HashMap::new(),
             failed_bindings: HashMap::new(),
             scheme_map: None,
             expected_return: None,
@@ -2414,8 +2390,6 @@ impl InferState {
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
             type_var_source_names: HashMap::new(),
-            resolution_table: std::sync::Arc::new(std::collections::HashMap::new()),
-            resolver_frames: Vec::new(),
             eval_ctx: None,
             type_stage_scope: Vec::new(),
             type_stage_fns: std::collections::HashMap::new(),
@@ -2430,14 +2404,12 @@ impl InferState {
             ctx: InferenceContext::new(),
             last_scheme_renaming: None,
             eval_scope: None,
-            frame_envs: Vec::new(),
-            frame_cursor: 0,
         }
     }
 
     /// Add a type class constraint to an explicit constraint accumulator.
     /// Used by the new InferState API (HEAD~1 style) where constraints are passed explicitly.
-    /// Falls back gracefully: if the class is not in `env`, just skips the constraint.
+    /// Falls back gracefully: if the class is not in `classes`, just skips the constraint.
     pub fn add_constraint_to(
         &mut self,
         constraints: &mut Vec<Arc<crate::value::Value>>,
@@ -2446,9 +2418,7 @@ impl InferState {
     ) {
         let class_name = class_name.into();
         let var_name = var.into();
-        let env_arc = Arc::clone(&self.env);
-        let env_guard = env_arc.read().unwrap();
-        if env_guard.get_class(&class_name).is_some() {
+        if self.classes.iter().any(|c| c.name == class_name) {
             // Build a ConstraintDecl TypeValue via make_constraint_decl.
             let class_tv = crate::type_class::make_type_op(&class_name);
             let var_tv = make_typevar_value(&var_name);

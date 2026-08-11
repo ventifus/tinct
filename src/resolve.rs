@@ -362,7 +362,10 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 // Walk key expressions in outer scope.
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
@@ -444,6 +447,10 @@ impl SurfaceResolver {
                     // actual slot position of each static-key entry so that LGM(slot) →
                     // frame.group[slot] resolves to the correct thunk.
                     self.enter_scope_with_slot_pairs(&scope_pairs, FrameKind::DictLetrec);
+                    // Set ScopeFrame on the Dict AST node after entering scope.
+                    if let SurfaceExpression::Dict { scope_frame, .. } = &arc.expr {
+                        let _ = scope_frame.set(crate::ast::ScopeFrame::new(scope_pairs.len()));
+                    }
                     // Advance accumulated_dict_offset by the total slot count (all entries
                     // + instance method slots) so nested dicts use the correct base.
                     self.accumulated_dict_offset = base_offset + slot_idx;
@@ -475,7 +482,11 @@ impl SurfaceResolver {
                                     .set(crate::type_class::next_class_decl_id());
                             }
                         }
-                    } else if let SurfaceExpression::Dict(inner_entries) = &entry.node.value.expr {
+                    } else if let SurfaceExpression::Dict {
+                        entries: inner_entries,
+                        ..
+                    } = &entry.node.value.expr
+                    {
                         for inner_entry in inner_entries.iter() {
                             if let SurfaceExpression::Decl(inner_decl) =
                                 &inner_entry.node.value.expr
@@ -572,6 +583,10 @@ impl SurfaceResolver {
                         .set(self.accumulated_dict_offset + i as u32);
                 }
                 self.enter_param_scope(&param_names);
+                // Set ScopeFrame on the Fn AST node after entering param scope.
+                if let SurfaceExpression::Fn { scope_frame, .. } = &arc.expr {
+                    let _ = scope_frame.set(crate::ast::ScopeFrame::new(param_names.len()));
+                }
 
                 self.walk_surface_node(body);
 
@@ -591,7 +606,11 @@ impl SurfaceResolver {
                     let is_last = i == exprs.len() - 1;
 
                     if !is_last {
-                        if let SurfaceExpression::Dict(entries) = &e.expr {
+                        if let SurfaceExpression::Dict {
+                            entries,
+                            scope_frame: _,
+                        } = &e.expr
+                        {
                             for entry in entries {
                                 if let Some(key) = &entry.node.key {
                                     let is_static = matches!(
@@ -835,6 +854,10 @@ impl SurfaceResolver {
 
                     if has_bindings {
                         self.enter_param_scope(&bound_names);
+                        // Set ScopeFrame on the MatchArm after entering param scope for bindings.
+                        let _ = arm
+                            .scope_frame
+                            .set(crate::ast::ScopeFrame::new(bound_names.len()));
                     }
 
                     self.walk_surface_node(&arm.pattern);
@@ -919,7 +942,10 @@ impl SurfaceResolver {
     /// documents or paths where the expander has not yet run).
     fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
         match &body.expr {
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 // Multi-constructor union. Each entry is one constructor:
                 //   - Named constructor: `Constructor@[annotation]: [fields]`
                 //     The KEY holds the constructor name and annotation; the VALUE is
@@ -963,7 +989,10 @@ impl SurfaceResolver {
             // Bracket form: `[Dict@[as-type: ...] fields: ...]` or `[Int@[...]]`
             // The parser wraps annotated constructors in a bracket (a single-entry Dict).
             // Recurse through it to find the actual VarRef or Call inside.
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 for entry in entries {
                     self.walk_ctor_node(&entry.node.value);
                 }
@@ -1469,7 +1498,10 @@ pub fn collect_document_produced_keys(
     };
     let span = expr_node.span.clone();
     match &expr_node.expr {
-        SurfaceExpression::Dict(entries) => (surface_dict_static_keys(entries), span),
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => (surface_dict_static_keys(entries), span),
         _ => (Vec::new(), span),
     }
 }
@@ -1578,7 +1610,10 @@ fn collect_var_accesses_node(
             *dynamic_use = true;
         }
         // Recurse into child expressions
-        SurfaceExpression::Dict(entries) => {
+        SurfaceExpression::Dict {
+            entries,
+            scope_frame: _,
+        } => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
                     collect_var_accesses_node(key, var_name, accesses, dynamic_use);
@@ -1661,7 +1696,11 @@ fn find_class_decl_in_entries(
             };
             for entry in entries {
                 if entry_has_key(entry, base_name) {
-                    if let SurfaceExpression::Dict(inner_entries) = &entry.node.value.expr {
+                    if let SurfaceExpression::Dict {
+                        entries: inner_entries,
+                        ..
+                    } = &entry.node.value.expr
+                    {
                         return find_class_decl_by_key(field_name, inner_entries);
                     }
                 }
@@ -1814,7 +1853,11 @@ fn surface_dict_total_slots(entries: &[Spanned<SurfaceEntry>]) -> u32 {
 /// Requires that assigned_slot has already been set on entries (i.e., the Dict arm's
 /// walk has already run).
 fn surface_node_slot_pairs(node: &Arc<SurfaceNode>) -> Option<(Vec<(String, u32)>, u32)> {
-    if let SurfaceExpression::Dict(entries) = &node.expr {
+    if let SurfaceExpression::Dict {
+        entries,
+        scope_frame: _,
+    } = &node.expr
+    {
         let total = surface_dict_total_slots(entries);
         let mut pairs = Vec::new();
         for entry in entries {
@@ -1924,7 +1967,10 @@ mod tests {
             SurfaceExpression::VarRef { name: n, .. } if n == name => {
                 out.push((node_id(arc), Arc::clone(arc)));
             }
-            SurfaceExpression::Dict(entries) => {
+            SurfaceExpression::Dict {
+                entries,
+                scope_frame: _,
+            } => {
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
                         collect_varrefs_in_node(key, name, out);

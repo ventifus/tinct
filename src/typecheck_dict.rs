@@ -162,32 +162,35 @@ mod tests {
         // indices: A=0, B=1, C=2, D=3
         let a_entry = sp(SurfaceEntry {
             key: None,
-            value: sn(SurfaceExpression::Dict(vec![
-                sp(SurfaceEntry {
-                    key: None,
-                    value: sn(SurfaceExpression::VarRef {
-                        name: "b".to_string(),
-                        escaped: false,
-                        resolution: crate::ast::Resolution::new(),
+            value: sn(SurfaceExpression::Dict {
+                entries: vec![
+                    sp(SurfaceEntry {
+                        key: None,
+                        value: sn(SurfaceExpression::VarRef {
+                            name: "b".to_string(),
+                            escaped: false,
+                            resolution: crate::ast::Resolution::new(),
 
-                        annotation: None,
-                        do_infer_placeholder: false,
+                            annotation: None,
+                            do_infer_placeholder: false,
+                        }),
+                        assigned_slot: std::sync::OnceLock::new(),
                     }),
-                    assigned_slot: std::sync::OnceLock::new(),
-                }),
-                sp(SurfaceEntry {
-                    key: None,
-                    value: sn(SurfaceExpression::VarRef {
-                        name: "c".to_string(),
-                        escaped: false,
-                        resolution: crate::ast::Resolution::new(),
+                    sp(SurfaceEntry {
+                        key: None,
+                        value: sn(SurfaceExpression::VarRef {
+                            name: "c".to_string(),
+                            escaped: false,
+                            resolution: crate::ast::Resolution::new(),
 
-                        annotation: None,
-                        do_infer_placeholder: false,
+                            annotation: None,
+                            do_infer_placeholder: false,
+                        }),
+                        assigned_slot: std::sync::OnceLock::new(),
                     }),
-                    assigned_slot: std::sync::OnceLock::new(),
-                }),
-            ])),
+                ],
+                scope_frame: std::sync::OnceLock::new(),
+            }),
             assigned_slot: std::sync::OnceLock::new(),
         });
         let b_entry = entry_ref("d");
