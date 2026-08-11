@@ -3260,7 +3260,7 @@ async fn infer_fn_push_cont(
         // Only track definition_span for lost-binding detection when the body is not a
         // Placeholder (`...`). Placeholder bodies indicate Rust-implemented builtins whose
         // parameters are interface declarations, not tinct-level bindings that can be unused.
-        let param_definition_span =
+        let _param_definition_span =
             if matches!(body.expr, crate::ast::SurfaceExpression::Placeholder(..)) {
                 None
             } else {
@@ -3276,7 +3276,10 @@ async fn infer_fn_push_cont(
             .get()
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
-        let _ = (slot, param_definition_span); // will be used when ScopeFrame writes are added
+        // Write param type scheme into the Fn's ScopeFrame at the resolver-assigned slot.
+        if let Some(sf) = state.scope_chain.last() {
+            sf.set_type_scheme(slot as u32, Arc::clone(&param_ty));
+        }
         param_slot_idx += 1;
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
@@ -5544,9 +5547,13 @@ pub(crate) async fn typecheck_letrec_group(
     let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
     for (idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
         if let Some(name) = key_name {
-            if let Some(_slot) = entry_slots[idx] {
+            if let Some(slot) = entry_slots[idx] {
                 if let Some(ty) = field_types.get(name) {
                     schemes.insert(name.clone(), Arc::clone(ty));
+                    // Write type scheme into the current ScopeFrame at the resolver-assigned slot.
+                    if let Some(sf) = state.scope_chain.last() {
+                        sf.set_type_scheme(slot, Arc::clone(ty));
+                    }
                 }
             }
         }
