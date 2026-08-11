@@ -214,7 +214,6 @@ pub struct ClassDecl {
     pub params: Vec<(String, Arc<Value>)>,
     /// Superclass constraints as (class_name, Vec<param_names>) tuples.
     /// Example: ("Functor", vec!["f"]) means this class extends Functor with parameter f.
-    #[allow(dead_code)]
     pub superclasses: Vec<(String, Vec<String>)>,
     /// Functional dependencies: (determining_positions, determined_positions) pairs.
     /// Each pair is (Vec<usize>, Vec<usize>) indexing into `params`.
@@ -233,7 +232,6 @@ pub struct ClassDecl {
     pub resolver_injective: bool,
     /// Structural discharge rule — enables this typeclass to be satisfied by a structural
     /// property without a registered instance.
-    #[allow(dead_code)]
     pub structural_discharge: StructuralDischarge,
     /// Method signatures declared in the class body.
     /// Each entry is (method_name, method_type_as_TypeValue) where method_type is a
@@ -279,11 +277,9 @@ pub struct InstanceDecl {
     /// Determining positions (indices into the multi-param pattern) used to build the lookup key.
     /// Empty for single-parameter classes (no functional dependencies).
     /// Example: for `Add a b c` with FD `(a,b) → c`, this is `vec![0, 1]`.
-    #[allow(dead_code)]
     pub det_positions: Vec<usize>,
     /// Method implementations: method_name -> inferred type as TypeValue.
     /// (The actual runtime dictionary value is stored in eval::ClassDictionary)
-    #[allow(dead_code)]
     pub method_types: HashMap<String, Arc<Value>>,
 }
 

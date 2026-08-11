@@ -90,14 +90,12 @@ pub(crate) struct ClassDeclSurface<'a> {
 /// - `errors`: type errors encountered during inference (non-fatal — env always propagated)
 /// Extract fields from a TypeValue.Record as `Vec<(field_name, TypeValue)>`.
 /// Public alias for use by typecheck_narrow.rs.
-#[allow(dead_code)]
 pub(crate) fn extract_record_fields_pub(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
     extract_record_fields(tv)
 }
 ///
 /// Returns `Some(fields)` for TypeValue.Record variants where the payload can be read
 /// synchronously (settled thunks). Returns `None` for non-Record TypeValues or unsettled payloads.
-#[allow(dead_code)]
 fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
     use crate::value::HashableValue;
     match tv.as_ref() {

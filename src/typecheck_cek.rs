@@ -3542,7 +3542,7 @@ async fn setup_match_arm_env(
             &mut local_stack,
         ))
         .await;
-        typecheck_narrow::extract_narrowings(guard, &state.type_name_to_id)
+        typecheck_narrow::extract_narrowings(guard, &state.type_name_to_id, &state.scope_chain)
     } else {
         Vec::new()
     };

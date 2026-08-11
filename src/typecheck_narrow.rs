@@ -52,7 +52,6 @@ use crate::value::Value;
 /// TypeValue.Scheme has an optional `narrowings` field (an indexed dict: `{ 0: TypeValue | [] }`).
 /// Returns `Some(narrowing_ty)` if `narrowings[0]` is a TypeValue (non-empty dict/variant).
 /// Returns `None` if the scheme has no narrowings, or if `narrowings[0]` is `[]` (absent/null).
-#[allow(dead_code)] // Used by annotation-based narrowing (T-1761) once func scheme lookup is wired
 fn extract_scheme_narrowings_first(
     scheme: &Arc<crate::value::Value>,
 ) -> Option<Arc<crate::value::Value>> {
@@ -138,6 +137,7 @@ fn varref_addr(node: &SurfaceNode) -> Option<crate::ast::VarAddr> {
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
+    scope_chain: &[std::sync::Arc<crate::ast::ScopeFrame>],
 ) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
@@ -180,7 +180,7 @@ pub(crate) fn extract_narrowings(
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg, type_name_to_id));
+                            narrowings.extend(extract_narrowings(arg, type_name_to_id, scope_chain));
                         }
                         return narrowings;
                     }
@@ -190,12 +190,23 @@ pub(crate) fn extract_narrowings(
                     // mechanism — any function can declare narrowing via `@[narrows: T]`
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
-                        if let Some(addr) = varref_addr(&args[0]) {
-                            // TODO: annotation-based narrowing (T-1761) — look up func's scheme
-                            // via scope_chain to check for @[narrows: T] annotation.
-                            // For now, built-in narrowing patterns (=, has?, and) work;
-                            // annotation-based narrowing requires func scheme lookup.
-                            let _ = addr;
+                        if let Some(arg_addr) = varref_addr(&args[0]) {
+                            // Annotation-based narrowing: look up the FUNC's scheme via scope_chain.
+                            // If the func has a @[narrows: T] annotation, calling it narrows the arg to T.
+                            if let Some(func_addr) = varref_addr(func) {
+                                if let crate::ast::VarAddr::Dispatch(depth, slot) = &func_addr {
+                                    let scope_idx = scope_chain.len().checked_sub(1 + *depth as usize);
+                                    let func_scheme = scope_idx.and_then(|idx| scope_chain[idx].get_type_scheme(*slot));
+                                    if let Some(ref scheme_tv) = func_scheme {
+                                        if let Some(narrowing_ty) = extract_scheme_narrowings_first(scheme_tv) {
+                                            return vec![Narrowing::TypeOf {
+                                                addr: arg_addr,
+                                                ty: narrowing_ty,
+                                            }];
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}
