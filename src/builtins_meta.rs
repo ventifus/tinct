@@ -2615,12 +2615,8 @@ pub(crate) fn builtin_typecheck_doc(
             (state, parent_env)
         };
 
-        // Build child_env seeded with type-stage entries at their resolver-assigned slots.
-        // Uses the consolidated build_env_from_frames function.
-        let root_frame_for_ts: indexmap::IndexMap<String, u32> = ctx.root_group_resolver_map();
         let child_env = crate::typecheck::build_env_from_frames(
             &parent_env,
-            Some(&root_frame_for_ts),
             &state.resolver_frames,
             &state.type_stage_scope,
             &state.type_stage_fns,

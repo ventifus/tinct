@@ -119,7 +119,6 @@ pub async fn typecheck_pipeline_document(
 
     let doc_sequential_env = crate::typecheck::build_env_from_frames(
         &state.env,
-        None, // No ctx available in typecheck-only path
         &state.infer_state.resolver_frames,
         &state.infer_state.type_stage_scope,
         &state.infer_state.type_stage_fns,
@@ -203,12 +202,8 @@ pub async fn process_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    // Create a DocSequential env frame seeded with type-stage entries at their
-    // resolver-assigned slots. This matches the builtin path's env construction.
-    let root_frame = ctx.root_group_resolver_map();
     let doc_sequential_env = crate::typecheck::build_env_from_frames(
         &state.env,
-        Some(&root_frame),
         &state.infer_state.resolver_frames,
         &state.infer_state.type_stage_scope,
         &state.infer_state.type_stage_fns,

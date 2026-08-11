@@ -210,33 +210,26 @@ pub(crate) fn find_slot_in_frames(
 
 /// Build a type checker env frame seeded with type-stage entries at their resolver-assigned slots.
 ///
-/// This consolidates the env construction logic shared by:
-/// - Pipeline paths (pipeline.rs) — bootstrap type-checking for each document
-/// - Builtin path (builtins_meta.rs) — builtin-typecheck-doc
+/// Slot assignments come from the resolver's `unified_frames` — the single source of truth.
+/// Each entry is placed at the slot `find_slot_in_frames` returns. Entries not in the
+/// resolver frames are appended (they exist only at the type-stage level).
 ///
-/// Slot resolution priority:
-/// 1. root_frame.get(name) — highest (runtime root group from ctx.root_group_resolver_map())
-/// 2. resolver_frames.iter().find_map() — fallback (resolver's unified frames)
-/// 3. child_inner.slots.len() — append if neither has it
-///
-/// Seeding order:
-/// 1. type_stage_scope entries — TypeValues from type-stage evaluation
-/// 2. type_stage_fns entries — nominal TypeValues for parameterized type constructors
-/// 3. type_stage_type_vars entries — nominal TypeValues for type variable markers
-/// 4. Walk parent_env chain, copy entries that are in root_frame (if provided)
-/// 5. Fill remaining root_frame slots with Unknown (pure-Rust builtins, capability vars)
+/// Seeding order (type-stage wins over parent env for same-named entries):
+/// 1. type_stage_scope — TypeValues from type-stage evaluation
+/// 2. type_stage_fns — nominal TypeValues for parameterized type constructors
+/// 3. type_stage_type_vars — nominal TypeValues for type variable markers
+/// 4. Parent env chain — copy schemes for names present in resolver_frames
 ///
 /// Returns a child env with parent set to `parent_env`.
 pub(crate) fn build_env_from_frames(
     parent_env: &Arc<RwLock<Env>>,
-    root_frame: Option<&indexmap::IndexMap<String, u32>>,
     resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_stage_fns: &std::collections::HashMap<String, Arc<crate::value::Thunk>>,
     type_stage_type_vars: &std::collections::HashMap<String, String>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> Arc<RwLock<Env>> {
-    use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
+    use crate::type_infer::make_typevalue_nominal;
 
     let child_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
         Arc::clone(parent_env),
@@ -244,46 +237,19 @@ pub(crate) fn build_env_from_frames(
     let mut child_inner = child_env.write().unwrap();
     let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-    // Resolve slot for a name: root_frame first, then resolver_frames, then append.
-    // Inlined (not a closure) to avoid borrow conflicts with child_inner.
-    fn resolve_slot_for(
-        name: &str,
-        root_frame: Option<&indexmap::IndexMap<String, u32>>,
-        resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
-        fallback_len: usize,
-    ) -> usize {
-        if let Some(rf) = root_frame {
-            if let Some(&slot) = rf.get(name) {
-                return slot as usize;
-            }
-        }
-        if let Some(slot) = find_slot_in_frames(resolver_frames, name) {
-            return slot;
-        }
-        fallback_len
-    }
-
-    // 1. Type-stage scope entries (highest priority)
+    // 1. Type-stage scope entries
     for (name, tv) in type_stage_scope.iter().flat_map(|m| m.iter()) {
-        let idx = resolve_slot_for(
-            name.as_str(),
-            root_frame,
-            resolver_frames,
-            child_inner.slots.len(),
-        );
+        let idx = find_slot_in_frames(resolver_frames, name)
+            .unwrap_or(child_inner.slots.len());
         child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
         covered.insert(idx);
     }
 
-    // 2. Type-stage function entries (parameterized type constructors)
+    // 2. Type-stage function entries
     for (name, _thunk) in type_stage_fns {
         let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
-        let idx = resolve_slot_for(
-            name.as_str(),
-            root_frame,
-            resolver_frames,
-            child_inner.slots.len(),
-        );
+        let idx = find_slot_in_frames(resolver_frames, name)
+            .unwrap_or(child_inner.slots.len());
         child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
         covered.insert(idx);
     }
@@ -291,18 +257,14 @@ pub(crate) fn build_env_from_frames(
     // 3. Type-stage type variable entries
     for (name, _kind) in type_stage_type_vars {
         let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
-        let idx = resolve_slot_for(
-            name.as_str(),
-            root_frame,
-            resolver_frames,
-            child_inner.slots.len(),
-        );
+        let idx = find_slot_in_frames(resolver_frames, name)
+            .unwrap_or(child_inner.slots.len());
         child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
         covered.insert(idx);
     }
 
-    // 4. Walk parent_env chain and copy entries that are in root_frame (if provided)
-    if let Some(rf) = root_frame {
+    // 4. Copy parent env schemes for names in resolver_frames not yet covered.
+    {
         let mut chain: Vec<Arc<std::sync::RwLock<crate::env::Env>>> = Vec::new();
         {
             let mut cursor = Some(Arc::clone(parent_env));
@@ -313,34 +275,22 @@ pub(crate) fn build_env_from_frames(
         }
         for frame in chain.iter().rev() {
             let frame_read = frame.read().unwrap();
-            for (_, slot_entry) in frame_read.slots.iter().enumerate() {
+            for slot_entry in frame_read.slots.iter() {
                 if let Some((name, env_slot)) = slot_entry {
                     if let Some(ref scheme) = env_slot.scheme {
-                        // Remap to the runtime slot; skip names not in the runtime root frame.
-                        if let Some(&rt_slot) = rf.get(name.as_str()) {
-                            let target_idx = rt_slot as usize;
-                            if !covered.contains(&target_idx) {
+                        if let Some(resolver_slot) = find_slot_in_frames(resolver_frames, name) {
+                            if !covered.contains(&resolver_slot) {
                                 child_inner.insert_at_slot(
-                                    target_idx,
+                                    resolver_slot,
                                     name.clone(),
                                     Arc::clone(scheme),
                                     None,
                                 );
-                                covered.insert(target_idx);
+                                covered.insert(resolver_slot);
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // 5. Fill remaining root-frame slots with Unknown.
-        // Pure-Rust builtins and capability vars have no tinct-side type scheme —
-        // they are typed as Unknown so get_scheme_at finds them (rather than returning None).
-        for (name, &slot) in rf {
-            let idx = slot as usize;
-            if !covered.contains(&idx) {
-                child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
             }
         }
     }
