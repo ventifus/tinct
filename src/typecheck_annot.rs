@@ -519,38 +519,20 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
-                                        // Validate the class exists in env and get the ClassDecl.
-                                        // During bootstrap (e.g. test-loader.llt type-checked
-                                        // before prelude loads), classes like Indexable/Indexed
-                                        // may not exist yet. Skip the constraint group rather
-                                        // than erroring — gradual typing: unresolvable constraints
-                                        // in a context without the class definition are ignored.
-                                        let class_decl_opt = {
+                                        let class_decl = {
                                             let env_guard = state.env.read().unwrap();
                                             env_guard.get_class(class_name)
-                                        };
-                                        let class_decl = if let Some(cd) = class_decl_opt {
-                                            cd
-                                        } else {
-                                            // Skip this MPTC group: advance past the class name
-                                            // and any subsequent positional TypeVar entries.
-                                            i += 1;
-                                            while i < constraint_entries.len() {
-                                                let subsequent = &constraint_entries[i];
-                                                if subsequent.node.key.is_some() {
-                                                    break;
-                                                }
-                                                match &subsequent.node.value.expr {
-                                                    SurfaceExpression::VarRef {
-                                                        escaped: true,
-                                                        ..
-                                                    } => break,
-                                                    _ => {}
-                                                }
-                                                i += 1;
-                                            }
-                                            continue;
-                                        };
+                                        }
+                                        .ok_or_else(|| {
+                                            Diagnostic::error(
+                                                "type-error",
+                                                format!(
+                                                    "undefined class '{}' in constraint",
+                                                    class_name
+                                                ),
+                                                c_entry.node.value.span.clone(),
+                                            )
+                                        })?;
 
                                         // Collect TypeVar names from subsequent positional entries
                                         let mut typevar_names = Vec::new();
@@ -2345,7 +2327,7 @@ pub(crate) async fn resolve_type_expr(
                         _ => {}
                     }
                     // General case: try eval_type_stage_expr for other lowercase-headed calls.
-                    return eval_type_stage_expr(node, state).await;
+                    return eval_type_stage_expr(node, state).await.map_err(|e| *e);
                 }
             }
 
@@ -3121,7 +3103,7 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
 async fn variant_payload_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> crate::error::EvalResult<Option<HashMap<String, Value>>> {
+) -> Result<Option<HashMap<String, Value>>, Box<crate::error::Diagnostic>> {
     let payload_id = match val {
         Value::Variant {
             payload: Some(id), ..
@@ -3159,7 +3141,7 @@ async fn collect_typenode_seq(
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> crate::error::EvalResult<Option<Vec<TypeValue>>> {
+) -> Result<Option<Vec<TypeValue>>, Box<crate::error::Diagnostic>> {
     // Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
         Value::Dict { entries: d, .. } => d,
@@ -3205,7 +3187,7 @@ pub(crate) async fn typenode_value_to_type(
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> crate::error::EvalResult<Option<TypeValue>> {
+) -> Result<Option<TypeValue>, Box<crate::error::Diagnostic>> {
     Box::pin(async move {
         match val {
             // TypeValue.* variants — already in TypeValue form: return as-is.
@@ -3831,7 +3813,7 @@ pub(crate) async fn typenode_value_to_type(
 pub(crate) async fn as_type_dispatch(
     val: &Value,
     state: &mut InferState,
-) -> crate::error::EvalResult<Option<TypeValue>> {
+) -> Result<Option<TypeValue>, Box<crate::error::Diagnostic>> {
     // Step 1: locate the `AS_TYPENODE_PROTOCOL_NAME` resolver in type_stage_fns.
     // This function is a parameterized type constructor that dispatches TypeNode values.
     let resolver_thunk = {
@@ -3878,7 +3860,7 @@ pub(crate) async fn as_type_dispatch(
     let result_thunk = match fn_val {
         Value::Function {
             ref clauses,
-            ref closure_env,
+            ref definition_scope,
             ..
         } => {
             // Arity check: AS_TYPENODE_PROTOCOL_NAME must be a single-parameter function.
@@ -3890,7 +3872,7 @@ pub(crate) async fn as_type_dispatch(
             }
             let call_ctx = crate::eval_call::CallContext {
                 clauses,
-                closure_env: Arc::clone(closure_env),
+                definition_scope: Arc::clone(definition_scope),
                 positional: &[arg_thunk],
                 named: None,
                 call_span: origin_span.clone(),
@@ -3947,7 +3929,7 @@ pub(crate) async fn as_type_dispatch(
 pub(crate) async fn eval_expr(
     node: &Arc<SurfaceNode>,
     state: &InferState,
-) -> Result<crate::value::Value, Diagnostic> {
+) -> Result<crate::value::Value, Box<crate::error::Diagnostic>> {
     let node_span = node.span.clone();
 
     let ctx: std::sync::Arc<crate::eval::EvalContext> = if let Some(ref eval_ctx) = state.eval_ctx {
@@ -3956,64 +3938,27 @@ pub(crate) async fn eval_expr(
         crate::eval::EvalContext::new_empty()
     };
 
-    let (lowered, lower_diags) = crate::lower::lower(node, &state.type_display_names);
-    {
-        let (info_diags, other_diags): (Vec<_>, Vec<_>) = lower_diags
-            .into_iter()
-            .partition(|d| d.level == crate::error::DiagnosticLevel::Info);
-        for diag in info_diags {
-            ctx.runtime_diagnostics
-                .lock()
-                .expect("runtime_diagnostics mutex poisoned")
-                .push(diag);
-        }
-        let (err_opt, warnings) = crate::eval_materialize::lower_errors_to_eval_error(other_diags);
-        for w in warnings {
-            ctx.runtime_diagnostics
-                .lock()
-                .expect("runtime_diagnostics mutex poisoned")
-                .push(w);
-        }
-        if let Some(lower_err) = err_opt {
-            return Err(Diagnostic::error(
-                "eval-error",
-                format!("expression lowering failed: {lower_err}"),
-                node_span.clone(),
-            ));
-        }
-    }
-    let root_frame = {
-        let group = crate::value::empty_scope();
-        std::sync::Arc::new(crate::value::EvalFrame {
-            group,
-            closure_env: crate::value::empty_scope(),
-            params: std::sync::Arc::new(vec![]),
-            caller_evidence: crate::value::empty_scope(),
-            type_inst: std::collections::HashMap::new(),
-        })
-    };
-    let core_thunk = Arc::new(Thunk::core_expr(
-        Arc::new(lowered),
-        root_frame,
-        Arc::clone(&ctx),
-        node_span.clone(),
-    ));
+    let scope = state
+        .eval_scope
+        .as_ref()
+        .map_or_else(|| Arc::clone(&ctx.root_spine), |s| Arc::clone(s));
+    let frame = std::sync::Arc::new(crate::value::EvalFrame {
+        group: scope,
+        caller_evidence: crate::value::empty_scope(),
+        type_inst: std::collections::HashMap::new(),
+    });
 
-    crate::eval::materialize(&core_thunk, Some(&node_span), &ctx)
-        .await
-        .map_err(|e| {
-            Diagnostic::error(
-                "eval-error",
-                format!("expression evaluation failed: {e}"),
-                node_span.clone(),
-            )
-        })
+    let thunk = crate::eval::eval_expr(node, &frame, &ctx)
+        .take(&ctx.runtime_diagnostics)
+        .expect("eval_expr always succeeds");
+
+    crate::eval::materialize(&thunk, Some(&node_span), &ctx).await
 }
 
 pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     state: &mut InferState,
-) -> Result<TypeValue, Diagnostic> {
+) -> Result<TypeValue, Box<Diagnostic>> {
     let node_span = node.span.clone();
     let typenode_val = eval_expr(node, state).await?;
 
@@ -4055,11 +4000,14 @@ pub(crate) async fn eval_type_stage_expr(
         Some(ty) => return Ok(ty),
         None => {}
     }
-    Err(Diagnostic::error(
+    Err(Box::new(Diagnostic::error(
         "type-error",
-        format!("type-stage expression produced an unrecognized value: {typenode_val}"),
+        format!(
+            "type-stage expression produced an unrecognized value: {}",
+            typenode_val.render(state.tycon_env_ref())
+        ),
         node_span,
-    ))
+    )))
 }
 
 // ============================================================================

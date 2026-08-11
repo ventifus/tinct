@@ -1,6 +1,6 @@
-# Parameter VarAddr path: function body references a positional parameter.
-# The resolver assigns VarAddr::Parameter(0) to `x`; eval_core.rs looks it
-# up via frame.params[0] when f is called.
+# Parameter dispatch path: function body references a positional parameter.
+# The resolver assigns VarAddr::Dispatch(0, slot) to `x`; eval_core.rs looks
+# it up via frame.group.get(slot) when f is called.
 [f: [fn [let x] x]  result: [f 99]]
 ---
 %.result

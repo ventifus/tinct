@@ -1855,6 +1855,7 @@ pub(crate) fn get_param_list_field_with_aliases(
                 annotation,
                 variadic,
                 resolved_annotation_type: crate::ast::TypeAnnotation::new(),
+                resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
             },
             rust_span!(),
         ));

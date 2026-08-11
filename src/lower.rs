@@ -467,9 +467,10 @@ fn lower_expr(
                     // concrete (non-Unknown) TypeValue. Unknown passes all checks — no point emitting.
                     if let Some(ref tv) = resolved {
                         if !is_typevalue_unknown(tv) {
+                            let slot = p.node.resolved_dispatch_slot.get().unwrap_or(i as u32);
                             let param_ref = CoreExpr::Var {
                                 name: p.node.name.clone(),
-                                addr: VarAddr::Parameter(i as u32),
+                                addr: VarAddr::Dispatch(0, slot),
                                 annotation: None,
                                 inferred_type: make_typevalue_unknown(),
                             };
@@ -688,8 +689,8 @@ fn lower_expr(
                     // Build params from let_bindings (T-2128).
                     // Extract binding names from [let name1 name2 ...], mirroring
                     // resolve.rs::extract_case_arm_binding_names. The resolver assigns
-                    // Parameter(i) to each name via enter_param_scope; lowering now
-                    // materializes that as CoreParam entries (slot = i, variadic = false).
+                    // Dispatch(0, accumulated_dict_offset + i) to each name via enter_param_scope;
+                    // lowering materializes that as CoreParam entries (slot = i, variadic = false).
                     // `_` is excluded — it is a wildcard, not a binding.
                     let let_bindings = &arm.let_bindings;
                     let params: Vec<crate::ast::Spanned<CoreParam>> = {
@@ -973,6 +974,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                                 annotation: p.node.annotation.clone(),
                                 variadic: p.node.variadic,
                                 resolved_annotation_type: crate::ast::TypeAnnotation::new(),
+                                resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
                             },
                             p.span.clone(),
                         )

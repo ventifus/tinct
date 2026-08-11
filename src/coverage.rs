@@ -387,7 +387,7 @@ async fn ast_pattern_to_coverage_inner(
         SurfaceExpression::VarRef {
             name, resolution, ..
         } => match resolution.get() {
-            Some(Some(crate::ast::VarAddr::Parameter(_))) => Ok(CoveragePattern::Wildcard),
+            Some(Some(crate::ast::VarAddr::Dispatch(0, _))) => Ok(CoveragePattern::Wildcard),
             Some(Some(_)) => Ok(CoveragePattern::Constructor {
                 tag: ConstructorTag::DictKey(format!("__pin_{}__", name)),
                 sub_patterns: vec![],
@@ -1856,9 +1856,9 @@ mod tests {
     }
 
     /// Build a VarRef expression with a resolved Resolution.
-    fn varref_resolved(name: &str, _level: u32, slot: u32) -> SurfaceExpression {
+    fn varref_resolved(name: &str, level: u32, slot: u32) -> SurfaceExpression {
         let r = crate::ast::Resolution::new();
-        r.set(Some(crate::ast::VarAddr::Dispatch(0, slot)));
+        r.set(Some(crate::ast::VarAddr::Dispatch(level, slot)));
         SurfaceExpression::VarRef {
             name: name.to_string(),
             escaped: false,

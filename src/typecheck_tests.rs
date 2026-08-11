@@ -1057,6 +1057,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         annotation: None,
         variadic: false,
         resolved_annotation_type: crate::ast::TypeAnnotation::new(),
+        resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
     };
     let fn_body = varref_node("sibling");
     let fn_node = sn(SurfaceExpression::Fn {
@@ -1064,7 +1065,6 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         params: vec![crate::test_util::sp(param)],
         body: fn_body,
         desugared: false,
-        resolved_captures: crate::ast::CapturesCell::new(),
         resolved_return_annotation: crate::ast::TypeAnnotation::new(),
     });
     let f_entry = sp(SurfaceEntry {
@@ -1399,8 +1399,8 @@ fn test_type_stage_type_vars_contains_kind_entries() {
 // S-1037: closure-captured bindings must not produce false-positive lost-binding
 // ============================================================================
 
-/// A binding referenced only from inside a nested fn body (ClosureCapture) must NOT
-/// produce a lost-binding warning. Before S-1037, ClosureCapture marks landed on
+/// A binding referenced only from inside a nested fn body (cross-fn capture) must NOT
+/// produce a lost-binding warning. Before S-1037, capture marks landed on
 /// scc_env (a clone) and were lost; now they land on dict_env directly.
 
 // ============================================================================
@@ -1480,12 +1480,17 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     });
 
     // Manually set the resolution to EffectPerform.
+    let effect_addr = VarAddr::EffectPerform { slot: 0 };
     if let SurfaceExpression::VarRef { resolution, .. } = &varref_node.expr {
-        resolution.set(Some(VarAddr::EffectPerform { slot: 0 }));
+        resolution.set(Some(effect_addr.clone()));
     }
 
     // Infer the VarRef's type.
     let mut state = InferState::new();
+    // Add to resolution_table so infer_var_ref can find it via slot-based lookup.
+    let varref_id = crate::ast::node_id(&varref_node);
+    state.resolution_table =
+        std::sync::Arc::new(std::iter::once((varref_id, effect_addr)).collect());
     let mut errors = vec![];
     let mut type_map = None;
 
@@ -1523,6 +1528,101 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         actual_errors.is_empty(),
         "EffectPerform VarRef inference should not produce errors; got: {:?}",
         actual_errors
+    );
+}
+
+/// T-2323: resolution_table is carried in Value::Document and survives clone.
+/// Verifies that Value::Document.resolution_table is preserved through clone,
+/// ensuring that builtin-resolve → builtin-typecheck-doc propagation works.
+#[test]
+fn test_resolution_table_carried_in_value_document() {
+    use crate::ast::{NodeId, VarAddr};
+    use crate::value::Value;
+
+    let mut table = std::collections::HashMap::new();
+    table.insert(NodeId(42), VarAddr::Dispatch(0, 5));
+    table.insert(NodeId(99), VarAddr::EffectPerform { slot: 3 });
+    let table_arc = Arc::new(table);
+
+    let doc_val = Value::Document {
+        doc: Arc::new(crate::ast::SurfaceDocument {
+            header: indexmap::IndexMap::new(),
+            items: vec![],
+        }),
+        resolver_frames: Arc::new(vec![]),
+        resolution_table: Arc::clone(&table_arc),
+        type_val: None,
+    };
+
+    // Clone preserves resolution_table
+    let cloned = doc_val.clone();
+    if let Value::Document {
+        resolution_table, ..
+    } = &cloned
+    {
+        assert_eq!(resolution_table.len(), 2);
+        assert_eq!(
+            resolution_table.get(&NodeId(42)),
+            Some(&VarAddr::Dispatch(0, 5))
+        );
+        assert_eq!(
+            resolution_table.get(&NodeId(99)),
+            Some(&VarAddr::EffectPerform { slot: 3 })
+        );
+    } else {
+        panic!("cloned value is not Document");
+    }
+}
+
+/// T-2326: resolver-miss diagnostic fires when resolution_table lacks a VarRef entry.
+/// After removing the name-based fallback, a VarRef with no resolution_table entry
+/// must emit a "resolver-miss" diagnostic instead of silently falling back.
+#[tokio::test]
+async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
+    use crate::ast::{SurfaceExpression, SurfaceNode};
+    use crate::env::Env;
+    use crate::type_infer::InferState;
+    use crate::typecheck::typecheck_cek::{run_typecheck, TypeCheckCont};
+
+    fn sn(expr: SurfaceExpression) -> Arc<SurfaceNode> {
+        Arc::new(SurfaceNode::new(
+            expr,
+            crate::ast::Span::rust_source(file!(), line!()),
+        ))
+    }
+
+    let varref_node = sn(SurfaceExpression::VarRef {
+        name: "unresolved_name".to_string(),
+        escaped: false,
+        resolution: crate::ast::Resolution::new(),
+        annotation: None,
+        do_infer_placeholder: false,
+    });
+
+    let env = Arc::new(RwLock::new(Env::new()));
+    let mut state = InferState::new();
+    // resolution_table is empty — no entry for this VarRef
+    let mut errors = vec![];
+    let mut type_map = None;
+    let mut stack: Vec<(TypeCheckCont, Arc<SurfaceNode>)> = vec![];
+
+    let _inferred = run_typecheck(
+        &varref_node,
+        &env,
+        &mut state,
+        &mut errors,
+        &mut type_map,
+        &mut stack,
+    )
+    .await;
+
+    let resolver_miss_errors: Vec<_> = errors
+        .iter()
+        .filter(|d| d.kind == "resolver-miss")
+        .collect();
+    assert!(
+        !resolver_miss_errors.is_empty(),
+        "Expected resolver-miss diagnostic for VarRef with no resolution_table entry"
     );
 }
 

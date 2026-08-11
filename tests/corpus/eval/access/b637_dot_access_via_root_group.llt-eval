@@ -1,0 +1,5 @@
+# B-637: dot access on a parameter works through the root group's accumulated scope.
+# Verifies that x.inner correctly resolves when x is a fn param (Dispatch slot in group).
+[build: [fn [let x] x.inner]  result: [build [inner: 42]]]
+=== out
+{"build": <fn>, "result": 42}

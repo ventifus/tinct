@@ -449,6 +449,7 @@ fn expand_type_alias(
                             annotation: None,
                             variadic: false,
                             resolved_annotation_type: crate::ast::TypeAnnotation::new(),
+                            resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
                         },
                         span.clone(),
                     )
@@ -514,7 +515,6 @@ fn expand_type_alias(
                     params: fn_params,
                     body: variant_body,
                     desugared: false,
-                    resolved_captures: crate::ast::CapturesCell::new(),
                     resolved_return_annotation: crate::ast::TypeAnnotation::new(),
                 },
                 span.clone(),

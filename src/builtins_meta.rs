@@ -1692,7 +1692,6 @@ pub(crate) fn builtin_var_resolution(
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
                 let (addr_type, index_val): (&str, i64) = match addr {
                     VarAddr::Dispatch(_, slot) => ("letrec", slot as i64),
-                    VarAddr::Parameter(i) => ("param", i as i64),
                     VarAddr::EffectPerform { .. } => ("effect-perform", 0),
                 };
                 result.insert(
@@ -2251,7 +2250,7 @@ pub(crate) fn builtin_resolve(
                 std::collections::HashMap::new()
             }
         };
-        let (_resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
+        let (resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
                 &[scope_frame],
@@ -2312,6 +2311,7 @@ pub(crate) fn builtin_resolve(
             mk(Value::Document {
                 doc: std::sync::Arc::clone(&doc_arc),
                 resolver_frames: Arc::new(dispatcher_frames),
+                resolution_table: Arc::new(resolve_table),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DOCUMENT,
                 )),
@@ -2531,12 +2531,13 @@ pub(crate) fn builtin_typecheck_doc(
 
         // arg0: Value::Document — extract doc_arc and resolver_frames.
         let doc_val = args[0].require_value()?.clone();
-        let (doc_arc, resolver_frames) = match doc_val {
+        let (doc_arc, resolver_frames, resolution_table) = match doc_val {
             Value::Document {
                 doc: d,
                 resolver_frames: rf,
+                resolution_table: rt,
                 ..
-            } => (d, rf),
+            } => (d, rf, rt),
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-typecheck-doc".to_string(),
@@ -2573,182 +2574,60 @@ pub(crate) fn builtin_typecheck_doc(
         let (mut state, parent_env) = {
             let guard = tc_arc.lock().unwrap();
             let mut state = crate::types::InferState::new();
-            state.tycon_env = guard.tycon_env.clone();
             state.env = Arc::clone(&guard.inference_env);
             state.eval_ctx = Some(Arc::clone(&ctx));
 
-            // Install the TypeContextData's accumulated type-stage data.
-            // Ensure an innermost scope frame exists for declarations discovered during this typecheck.
-            state.type_stage_scope = guard.type_stage_scope.clone();
-            state.type_stage_fns = guard.type_stage_fns.clone();
-            state.type_stage_type_vars = guard.type_stage_type_vars.clone();
-            state.type_name_to_id = guard.type_name_to_id.clone();
             // Derive type_name_to_id from the type-stage scope if not already populated.
             // This covers the first typecheck after a fresh TypeContext is created,
             // where guard.type_name_to_id is empty but the scope carries nominal IDs.
-            for scope_map in &state.type_stage_scope {
+            let mut type_name_to_id = guard.type_name_to_id.clone();
+            for scope_map in &guard.type_stage_scope {
                 for (name, tv) in scope_map {
                     if let Some(id) = crate::type_infer::typevalue_nominal_id(tv) {
                         if id > 0 {
-                            state.type_name_to_id.entry(name.clone()).or_insert(id);
+                            type_name_to_id.entry(name.clone()).or_insert(id);
                         }
                     }
                 }
             }
-            state.ctx.type_name_to_id = state.type_name_to_id.clone();
-            if state.type_stage_scope.is_empty() {
-                state
-                    .type_stage_scope
-                    .push(std::collections::HashMap::new());
+
+            // Ensure an innermost scope frame exists for declarations discovered during this typecheck.
+            let mut type_stage_scope = guard.type_stage_scope.clone();
+            if type_stage_scope.is_empty() {
+                type_stage_scope.push(std::collections::HashMap::new());
             }
+
+            // Use build_infer_state to configure all common fields.
+            // type_display_names is empty for builtin path (derived during typecheck, not from guard).
+            crate::typecheck::build_infer_state(
+                &mut state,
+                Arc::clone(&resolution_table),
+                (*resolver_frames).clone(),
+                type_stage_scope,
+                guard.type_stage_fns.clone(),
+                guard.type_stage_type_vars.clone(),
+                guard.tycon_env.clone(),
+                type_name_to_id,
+                std::collections::HashMap::new(), // type_display_names starts empty
+            );
 
             let parent_env = Arc::clone(&guard.inference_env);
             (state, parent_env)
         };
 
-        // Install the child document's resolver frames into state so that slot-based lookups
-        // (get_scheme_at, find_slot_in_frames) use the correct slot assignments for THIS document.
-        // resolver_frames comes from Value::Document (produced by builtin-resolve) and contains
-        // the unified scope frames for the document being type-checked. Without this, state.resolver_frames
-        // stays empty, causing find_slot_in_frames to always return None and child_env seeding to
-        // append entries sequentially rather than at their correct runtime slot positions.
-        // state.resolution_table is intentionally not set here. builtin_typecheck_doc calls
-        // process_document directly (never the old bootstrap path), so the InferState
-        // resolution_table is empty. All VarRef lookups in infer_var_ref therefore take the
-        // "no resolver address" branch and fall through to the name-based env.get_scheme()
-        // lookup. This is correct: builtin-resolve has already set OnceLock coordinates on
-        // each VarRef node, but the type checker reads those via state.resolution_table which
-        // is not populated here — so every VarRef appears to have no address and hits the
-        // name-based fallback. The env is properly seeded, so name-based lookup succeeds.
-        state.resolver_frames = (*resolver_frames).clone();
-
-        // Build root_frame_for_ts: the runtime root group resolver map (builtins + caps).
-        // This mirrors the per-document pipeline's approach: parent env entries are remapped
-        // to their runtime slot positions (not the parent's slot positions, which are for a
-        // different document's resolver scope).
+        // Build child_env seeded with type-stage entries at their resolver-assigned slots.
+        // Uses the consolidated build_env_from_frames function.
         let root_frame_for_ts: indexmap::IndexMap<String, u32> = ctx.root_group_resolver_map();
+        let child_env = crate::typecheck::build_env_from_frames(
+            &parent_env,
+            Some(&root_frame_for_ts),
+            &state.resolver_frames,
+            &state.type_stage_scope,
+            &state.type_stage_fns,
+            &state.type_stage_type_vars,
+            &state.type_name_to_id,
+        );
 
-        // Seed child_env with all root-group entries so that get_scheme_at(N, slot) correctly
-        // finds them at depth N via normal parent-chain traversal. Same priority model as
-        // the per-document pipeline (process_pipeline_document): type-stage entries first, then parent_env chain, then Unknown.
-        let child_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
-            Arc::clone(&parent_env),
-        )));
-        {
-            use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
-            let mut child_inner = child_env.write().unwrap();
-            let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
-
-            // Type-stage entries get their actual TypeValues (highest priority).
-            // Use root_frame_for_ts slot if available; otherwise append at end.
-            for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
-                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state
-                        .resolver_frames
-                        .iter()
-                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
-                });
-                if let Some(slot) = abs_slot {
-                    let idx = slot as usize;
-                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
-                    covered.insert(idx);
-                } else {
-                    let idx = child_inner.slots.len();
-                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
-                }
-            }
-            for (name, _thunk) in &state.type_stage_fns {
-                let tv = make_typevalue_nominal(
-                    state
-                        .type_name_to_id
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(0),
-                );
-                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state
-                        .resolver_frames
-                        .iter()
-                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
-                });
-                if let Some(slot) = abs_slot {
-                    let idx = slot as usize;
-                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
-                    covered.insert(idx);
-                } else {
-                    let idx = child_inner.slots.len();
-                    child_inner.insert_at_slot(idx, name.clone(), tv, None);
-                }
-            }
-            for (name, _kind) in &state.type_stage_type_vars {
-                let tv = make_typevalue_nominal(
-                    state
-                        .type_name_to_id
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(0),
-                );
-                let abs_slot = root_frame_for_ts.get(name.as_str()).copied().or_else(|| {
-                    state
-                        .resolver_frames
-                        .iter()
-                        .find_map(|(f, _kind)| f.get(name.as_str()).copied())
-                });
-                if let Some(slot) = abs_slot {
-                    let idx = slot as usize;
-                    child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
-                    covered.insert(idx);
-                } else {
-                    let idx = child_inner.slots.len();
-                    child_inner.insert_at_slot(idx, name.clone(), tv, None);
-                }
-            }
-
-            // Walk parent_env chain from outermost to innermost, remapping entries to their
-            // runtime root-group slot positions (via root_frame_for_ts). This mirrors
-            // the per-document pipeline's approach: only copy entries whose names are in the
-            // runtime root group, at the slot root_frame_for_ts assigns them. Entries not in
-            // root_frame_for_ts are skipped — they belong to a different document's scope
-            // and are accessible via the parent chain's name-based lookup (get_scheme).
-            let mut chain: Vec<Arc<std::sync::RwLock<crate::env::Env>>> = Vec::new();
-            {
-                let mut cursor = Some(Arc::clone(&parent_env));
-                while let Some(arc) = cursor {
-                    chain.push(Arc::clone(&arc));
-                    cursor = arc.read().unwrap().parent.as_ref().map(Arc::clone);
-                }
-            }
-            for frame in chain.iter().rev() {
-                let frame_read = frame.read().unwrap();
-                for (_, slot_entry) in frame_read.slots.iter().enumerate() {
-                    if let Some((name, env_slot)) = slot_entry {
-                        if let Some(ref scheme) = env_slot.scheme {
-                            // Remap to the runtime slot; skip names not in the runtime root frame.
-                            if let Some(&rt_slot) = root_frame_for_ts.get(name.as_str()) {
-                                let target_idx = rt_slot as usize;
-                                if !covered.contains(&target_idx) {
-                                    child_inner.insert_at_slot(
-                                        target_idx,
-                                        name.clone(),
-                                        Arc::clone(scheme),
-                                        None,
-                                    );
-                                    covered.insert(target_idx);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Fill remaining root-frame slots with Unknown (pure-Rust builtins, capability vars).
-            for (name, &slot) in &root_frame_for_ts {
-                let idx = slot as usize;
-                if !covered.contains(&idx) {
-                    child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
-                }
-            }
-        }
         // Update state.env to point at child_env so class/instance lookups work.
         state.env = Arc::clone(&child_env);
 
@@ -2862,6 +2741,7 @@ pub(crate) fn builtin_typecheck_doc(
             mk(Value::Document {
                 doc: doc_arc,
                 resolver_frames,
+                resolution_table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DOCUMENT,
                 )),
@@ -3472,6 +3352,7 @@ pub(crate) fn builtin_program_docs(
                 Value::Document {
                     doc: doc_arc,
                     resolver_frames: Arc::new(Vec::new()),
+                    resolution_table: Arc::new(std::collections::HashMap::new()),
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DOCUMENT,
                     )),

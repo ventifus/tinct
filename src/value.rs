@@ -146,17 +146,17 @@ pub fn scope_extend(parent: &Scope, new_entries: Vec<std::sync::Arc<Thunk>>) -> 
 /// - `group[i]`: thunk for `VarAddr::Dispatch(_, i)` references (slot = i).
 ///   At document level, `group` is the accumulated_group: root-scope entries at slots 0..N-1,
 ///   followed by each dict's entries at cumulative slot offsets. Inside a function body,
-///   `group` is the definition-site scope captured when the function was created.
+///   `group` is the definition-site scope captured when the function was created, with
+///   function parameters appended after definition_scope entries.
 ///   No outer-frame traversal needed.
-/// - `params[i]`: thunk for `VarAddr::Parameter(i)` references
 ///
 /// All VarAddr variants index directly into this frame's vectors (EffectPerform does a
 /// direct slot lookup in caller_evidence). No outer-frame chain traversal — cross-scope
-/// references resolve through Dispatch (absolute group slot) or Parameter.
+/// Frame for evaluating expressions. Params are appended to the group after definition_scope entries.
+/// Variable references resolve through Dispatch (absolute group slot) or EffectPerform.
 #[derive(Debug, Clone)]
 pub struct EvalFrame {
     pub group: Scope,
-    pub params: std::sync::Arc<Vec<std::sync::Arc<Thunk>>>,
     pub caller_evidence: Scope,
     pub type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
 }
@@ -165,7 +165,6 @@ impl EvalFrame {
     pub fn empty() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             group: empty_scope(),
-            params: std::sync::Arc::new(vec![]),
             caller_evidence: empty_scope(),
             type_inst: std::collections::HashMap::new(),
         })
@@ -176,9 +175,15 @@ impl EvalFrame {
         params: Vec<std::sync::Arc<Thunk>>,
         caller_evidence: Scope,
     ) -> std::sync::Arc<Self> {
+        let group = if params.is_empty() {
+            definition_scope
+        } else {
+            let mut g = (*definition_scope).clone();
+            g.extend(params);
+            std::sync::Arc::new(g)
+        };
         std::sync::Arc::new(Self {
-            group: definition_scope,
-            params: std::sync::Arc::new(params),
+            group,
             caller_evidence,
             type_inst: std::collections::HashMap::new(),
         })
@@ -190,9 +195,15 @@ impl EvalFrame {
         caller_evidence: Scope,
         type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
     ) -> std::sync::Arc<Self> {
+        let group = if params.is_empty() {
+            definition_scope
+        } else {
+            let mut g = (*definition_scope).clone();
+            g.extend(params);
+            std::sync::Arc::new(g)
+        };
         std::sync::Arc::new(Self {
-            group: definition_scope,
-            params: std::sync::Arc::new(params),
+            group,
             caller_evidence,
             type_inst,
         })
@@ -988,6 +999,9 @@ pub enum Value {
         ///
         /// Set by builtin-resolve. Empty if the document was not resolved.
         resolver_frames: Arc<Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>>,
+        /// Resolution table from the resolver — maps NodeId → VarAddr for slot-based lookup.
+        /// Set by builtin-resolve. Empty if the document was not resolved.
+        resolution_table: Arc<crate::ast::ResolutionTable>,
         type_val: Option<std::sync::Arc<Value>>,
     },
 
@@ -1270,10 +1284,12 @@ impl Clone for Value {
             Value::Document {
                 doc,
                 resolver_frames,
+                resolution_table,
                 type_val,
             } => Value::Document {
                 doc: Arc::clone(doc),
                 resolver_frames: Arc::clone(resolver_frames),
+                resolution_table: Arc::clone(resolution_table),
                 type_val: type_val.clone(),
             },
             Value::Expression { node, type_val } => Value::Expression {

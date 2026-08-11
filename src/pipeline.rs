@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
 use crate::env::Env;
-use crate::error::EvalResult;
 use crate::eval::EvalContext;
 use crate::type_infer::{InferState, TypeStageData, TypeValue};
 
@@ -69,7 +68,6 @@ impl PipelineState {
         }
     }
 
-
     /// Access type checker diagnostics collected during pipeline processing.
     pub fn diagnostics(&self) -> &[crate::error::Diagnostic] {
         &self.infer_state.diagnostics
@@ -107,23 +105,27 @@ pub async fn typecheck_pipeline_document(
     let resolve_table = Arc::new(resolve_table);
 
     // Step 2: Typecheck this document.
-    state.infer_state.resolution_table = Arc::clone(&resolve_table);
-    state.infer_state.resolver_frames = resolve_frames;
-    state.infer_state.type_stage_scope = state.type_stage_data.scope.clone();
-    state.infer_state.type_stage_fns = state.type_stage_data.fns.clone();
-    state.infer_state.type_stage_type_vars = state.type_stage_data.type_vars.clone();
-    state.infer_state.tycon_env = state.tycon_env.clone();
-    state.infer_state.type_name_to_id = state.type_name_to_id.clone();
-    state.infer_state.type_display_names = state.type_display_names.clone();
-    state.infer_state.ctx.type_name_to_id = state.type_name_to_id.clone();
-    state.infer_state.ctx.type_display_names = state.type_display_names.clone();
-    for (id, def) in &state.tycon_env {
-        state.infer_state.ctx.tycon_env.insert(*id, Arc::clone(def));
-    }
+    crate::typecheck::build_infer_state(
+        &mut state.infer_state,
+        Arc::clone(&resolve_table),
+        resolve_frames,
+        state.type_stage_data.scope.clone(),
+        state.type_stage_data.fns.clone(),
+        state.type_stage_data.type_vars.clone(),
+        state.tycon_env.clone(),
+        state.type_name_to_id.clone(),
+        state.type_display_names.clone(),
+    );
 
-    let doc_sequential_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+    let doc_sequential_env = crate::typecheck::build_env_from_frames(
         &state.env,
-    ))));
+        None, // No ctx available in typecheck-only path
+        &state.infer_state.resolver_frames,
+        &state.infer_state.type_stage_scope,
+        &state.infer_state.type_stage_fns,
+        &state.infer_state.type_stage_type_vars,
+        &state.infer_state.type_name_to_id,
+    );
 
     let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
         doc,
@@ -158,7 +160,7 @@ pub async fn process_pipeline_document(
     doc_spanned: &Spanned<Arc<SurfaceDocument>>,
     state: &mut PipelineState,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<()> {
+) -> Result<(), Box<crate::error::Diagnostic>> {
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current environment.
@@ -189,27 +191,30 @@ pub async fn process_pipeline_document(
 
     // Step 2: Typecheck this document.
     // Set the resolution table and type-stage data on InferState before type-checking.
-    state.infer_state.resolution_table = Arc::clone(&resolve_table);
-    state.infer_state.resolver_frames = resolve_frames;
-    state.infer_state.type_stage_scope = state.type_stage_data.scope.clone();
-    state.infer_state.type_stage_fns = state.type_stage_data.fns.clone();
-    state.infer_state.type_stage_type_vars = state.type_stage_data.type_vars.clone();
-    state.infer_state.tycon_env = state.tycon_env.clone();
-    state.infer_state.type_name_to_id = state.type_name_to_id.clone();
-    state.infer_state.type_display_names = state.type_display_names.clone();
-    // Sync into the embedded InferenceContext.
-    state.infer_state.ctx.type_name_to_id = state.type_name_to_id.clone();
-    state.infer_state.ctx.type_display_names = state.type_display_names.clone();
-    for (id, def) in &state.tycon_env {
-        state.infer_state.ctx.tycon_env.insert(*id, Arc::clone(def));
-    }
+    crate::typecheck::build_infer_state(
+        &mut state.infer_state,
+        Arc::clone(&resolve_table),
+        resolve_frames,
+        state.type_stage_data.scope.clone(),
+        state.type_stage_data.fns.clone(),
+        state.type_stage_data.type_vars.clone(),
+        state.tycon_env.clone(),
+        state.type_name_to_id.clone(),
+        state.type_display_names.clone(),
+    );
 
-    // Create a DocSequential env frame between state.env and the dict env.
-    // This matches the resolver's scope structure: seed_frame → DocSequential → dict.
-    // The DocSequential frame is empty for the first document (no previous exports).
-    let doc_sequential_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
+    // Create a DocSequential env frame seeded with type-stage entries at their
+    // resolver-assigned slots. This matches the builtin path's env construction.
+    let root_frame = ctx.root_group_resolver_map();
+    let doc_sequential_env = crate::typecheck::build_env_from_frames(
         &state.env,
-    ))));
+        Some(&root_frame),
+        &state.infer_state.resolver_frames,
+        &state.infer_state.type_stage_scope,
+        &state.infer_state.type_stage_fns,
+        &state.infer_state.type_stage_type_vars,
+        &state.infer_state.type_name_to_id,
+    );
 
     let (new_env, _result_ty, tc_errors) = crate::typecheck::process_document(
         doc,

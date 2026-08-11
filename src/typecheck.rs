@@ -208,6 +208,190 @@ pub(crate) fn find_slot_in_frames(
     None
 }
 
+/// Build a type checker env frame seeded with type-stage entries at their resolver-assigned slots.
+///
+/// This consolidates the env construction logic shared by:
+/// - Pipeline paths (pipeline.rs) — bootstrap type-checking for each document
+/// - Builtin path (builtins_meta.rs) — builtin-typecheck-doc
+///
+/// Slot resolution priority:
+/// 1. root_frame.get(name) — highest (runtime root group from ctx.root_group_resolver_map())
+/// 2. resolver_frames.iter().find_map() — fallback (resolver's unified frames)
+/// 3. child_inner.slots.len() — append if neither has it
+///
+/// Seeding order:
+/// 1. type_stage_scope entries — TypeValues from type-stage evaluation
+/// 2. type_stage_fns entries — nominal TypeValues for parameterized type constructors
+/// 3. type_stage_type_vars entries — nominal TypeValues for type variable markers
+/// 4. Walk parent_env chain, copy entries that are in root_frame (if provided)
+/// 5. Fill remaining root_frame slots with Unknown (pure-Rust builtins, capability vars)
+///
+/// Returns a child env with parent set to `parent_env`.
+pub(crate) fn build_env_from_frames(
+    parent_env: &Arc<RwLock<Env>>,
+    root_frame: Option<&indexmap::IndexMap<String, u32>>,
+    resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
+    type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
+    type_stage_fns: &std::collections::HashMap<String, Arc<crate::value::Thunk>>,
+    type_stage_type_vars: &std::collections::HashMap<String, String>,
+    type_name_to_id: &std::collections::HashMap<String, u64>,
+) -> Arc<RwLock<Env>> {
+    use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
+
+    let child_env = Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(
+        Arc::clone(parent_env),
+    )));
+    let mut child_inner = child_env.write().unwrap();
+    let mut covered: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    // Resolve slot for a name: root_frame first, then resolver_frames, then append.
+    // Inlined (not a closure) to avoid borrow conflicts with child_inner.
+    fn resolve_slot_for(
+        name: &str,
+        root_frame: Option<&indexmap::IndexMap<String, u32>>,
+        resolver_frames: &[(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)],
+        fallback_len: usize,
+    ) -> usize {
+        if let Some(rf) = root_frame {
+            if let Some(&slot) = rf.get(name) {
+                return slot as usize;
+            }
+        }
+        if let Some(slot) = find_slot_in_frames(resolver_frames, name) {
+            return slot;
+        }
+        fallback_len
+    }
+
+    // 1. Type-stage scope entries (highest priority)
+    for (name, tv) in type_stage_scope.iter().flat_map(|m| m.iter()) {
+        let idx = resolve_slot_for(
+            name.as_str(),
+            root_frame,
+            resolver_frames,
+            child_inner.slots.len(),
+        );
+        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(tv), None);
+        covered.insert(idx);
+    }
+
+    // 2. Type-stage function entries (parameterized type constructors)
+    for (name, _thunk) in type_stage_fns {
+        let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
+        let idx = resolve_slot_for(
+            name.as_str(),
+            root_frame,
+            resolver_frames,
+            child_inner.slots.len(),
+        );
+        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+        covered.insert(idx);
+    }
+
+    // 3. Type-stage type variable entries
+    for (name, _kind) in type_stage_type_vars {
+        let tv = make_typevalue_nominal(type_name_to_id.get(name.as_str()).copied().unwrap_or(0));
+        let idx = resolve_slot_for(
+            name.as_str(),
+            root_frame,
+            resolver_frames,
+            child_inner.slots.len(),
+        );
+        child_inner.insert_at_slot(idx, name.clone(), Arc::clone(&tv), None);
+        covered.insert(idx);
+    }
+
+    // 4. Walk parent_env chain and copy entries that are in root_frame (if provided)
+    if let Some(rf) = root_frame {
+        let mut chain: Vec<Arc<std::sync::RwLock<crate::env::Env>>> = Vec::new();
+        {
+            let mut cursor = Some(Arc::clone(parent_env));
+            while let Some(arc) = cursor {
+                chain.push(Arc::clone(&arc));
+                cursor = arc.read().unwrap().parent.as_ref().map(Arc::clone);
+            }
+        }
+        for frame in chain.iter().rev() {
+            let frame_read = frame.read().unwrap();
+            for (_, slot_entry) in frame_read.slots.iter().enumerate() {
+                if let Some((name, env_slot)) = slot_entry {
+                    if let Some(ref scheme) = env_slot.scheme {
+                        // Remap to the runtime slot; skip names not in the runtime root frame.
+                        if let Some(&rt_slot) = rf.get(name.as_str()) {
+                            let target_idx = rt_slot as usize;
+                            if !covered.contains(&target_idx) {
+                                child_inner.insert_at_slot(
+                                    target_idx,
+                                    name.clone(),
+                                    Arc::clone(scheme),
+                                    None,
+                                );
+                                covered.insert(target_idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Fill remaining root-frame slots with Unknown.
+        // Pure-Rust builtins and capability vars have no tinct-side type scheme —
+        // they are typed as Unknown so get_scheme_at finds them (rather than returning None).
+        for (name, &slot) in rf {
+            let idx = slot as usize;
+            if !covered.contains(&idx) {
+                child_inner.insert_at_slot(idx, name.clone(), make_typevalue_unknown(), None);
+            }
+        }
+    }
+
+    drop(child_inner);
+    child_env
+}
+
+/// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
+///
+/// Sets:
+/// - resolution_table, resolver_frames
+/// - type_stage_scope, type_stage_fns, type_stage_type_vars
+/// - tycon_env, type_name_to_id, type_display_names
+/// - ctx.type_name_to_id, ctx.type_display_names, ctx.tycon_env
+///
+/// Mutates `state` in place — the bootstrap path accumulates state across documents.
+pub(crate) fn build_infer_state(
+    state: &mut InferState,
+    resolution_table: Arc<crate::ast::ResolutionTable>,
+    resolver_frames: Vec<(indexmap::IndexMap<String, u32>, crate::resolve::FrameKind)>,
+    type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
+    type_stage_fns: std::collections::HashMap<String, Arc<crate::value::Thunk>>,
+    type_stage_type_vars: std::collections::HashMap<String, String>,
+    tycon_env: std::collections::HashMap<u64, Arc<crate::type_def::TyConDef>>,
+    type_name_to_id: std::collections::HashMap<String, u64>,
+    type_display_names: std::collections::HashMap<u64, String>,
+) {
+    // Set resolution table and resolver frames
+    state.resolution_table = resolution_table;
+    state.resolver_frames = resolver_frames;
+
+    // Set type-stage data
+    state.type_stage_scope = type_stage_scope;
+    state.type_stage_fns = type_stage_fns;
+    state.type_stage_type_vars = type_stage_type_vars;
+
+    // Set type constructor environment and name mappings
+    state.tycon_env = tycon_env;
+    state.type_name_to_id = type_name_to_id.clone();
+    state.type_display_names = type_display_names.clone();
+
+    // Sync into the embedded InferenceContext
+    state.ctx.type_name_to_id = type_name_to_id;
+    state.ctx.type_display_names = type_display_names;
+    state.ctx.tycon_env.clear();
+    for (id, def) in &state.tycon_env {
+        state.ctx.tycon_env.insert(*id, Arc::clone(def));
+    }
+}
+
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     parent_env: &Arc<RwLock<Env>>,

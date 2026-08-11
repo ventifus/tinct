@@ -5,10 +5,10 @@
 //!
 //! - `Dispatch(depth, slot)` — reference to `accumulated_group[slot]`. Slot is an
 //!   ABSOLUTE cumulative index: root-scope entries occupy slots 0..N-1 (from
-//!   `enter_scope_from_frame`), and each document dict's entries follow at cumulative
-//!   offsets assigned by `walk_surface_document_with_offset`. Cross-dict references
-//!   within a document use Dispatch with the absolute slot — no runtime frame traversal needed.
-//! - `Parameter(i)` — reference to the i-th parameter of the enclosing function.
+//!   `enter_scope_from_frame`), document dict entries follow at cumulative offsets assigned
+//!   by `walk_surface_document_with_offset`, and function/match-arm parameters are appended
+//!   after definition_scope entries. Cross-dict references within a document use Dispatch with
+//!   the absolute slot — no runtime frame traversal needed.
 //! - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
 //!
 //! **Invariants:**
@@ -63,6 +63,9 @@ pub enum FrameKind {
     /// Dict letrec frames exist for self-referential bindings within a dict body.
     /// Fn-body sequential frames have small absolute slots starting from 0.
     DictLetrec,
+    /// Function parameter scope (from `enter_param_scope`).
+    /// Params use Dispatch addresses with slots starting at accumulated_dict_offset.
+    Param,
 }
 
 struct SurfaceResolver {
@@ -196,14 +199,20 @@ impl SurfaceResolver {
         self.scopes.push(scope);
     }
 
-    /// Enter a function parameter scope: each param gets `Parameter(i)` as its VarAddr.
+    /// Enter a function parameter scope: each param gets `Dispatch(0, slot)` as its VarAddr.
+    /// Params are assigned slots starting at accumulated_dict_offset (the definition_scope size).
+    /// Advances accumulated_dict_offset by params.len() so body dict entries start after params.
     fn enter_param_scope(&mut self, params: &[String]) {
-        let mut scope: indexmap::IndexMap<String, VarAddr> =
-            indexmap::IndexMap::with_capacity(params.len());
+        let mut scope = indexmap::IndexMap::with_capacity(params.len());
+        let mut frame = indexmap::IndexMap::with_capacity(params.len());
         for (i, name) in params.iter().enumerate() {
-            scope.insert(name.clone(), VarAddr::Parameter(i as u32));
+            let slot = self.accumulated_dict_offset + i as u32;
+            scope.insert(name.clone(), VarAddr::Dispatch(0, slot));
+            frame.insert(name.clone(), slot);
         }
+        self.unified_frames.push((frame, FrameKind::Param));
         self.scopes.push(scope);
+        self.accumulated_dict_offset += params.len() as u32;
     }
 
     /// Seed scope from an external frame (initial_frames from the loader).
@@ -230,13 +239,13 @@ impl SurfaceResolver {
 
     /// Resolve `name` in the current scope stack, returning its `VarAddr`.
     ///
-    /// All variable addressing uses exactly three variants:
+    /// All variable addressing uses exactly two variants:
     /// - `Dispatch(depth, slot)` — absolute cumulative slot in the accumulated_group.
     ///   Root-scope entries occupy slots 0..N-1; document dict entries follow at cumulative
-    ///   offsets. Cross-dict references (a name from dict_i referenced in dict_j where j>i)
+    ///   offsets; function/match-arm parameters are appended after definition_scope entries.
+    ///   Cross-dict references (a name from dict_i referenced in dict_j where j>i)
     ///   resolve directly to Dispatch(depth, slot) because walk_surface_document assigns cumulative
     ///   slots via enter_scope_with_offset, making each slot unique across the document.
-    /// - `Parameter(i)` — fn argument.
     /// - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
     ///
     /// If a name crosses a fn boundary, it is added to the current function's capture list
@@ -548,6 +557,13 @@ impl SurfaceResolver {
                 }
 
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
+                // Set resolved dispatch slots on param nodes for lowerer use.
+                // Must happen BEFORE enter_param_scope so accumulated_dict_offset is correct.
+                for (i, p) in params.iter().enumerate() {
+                    p.node
+                        .resolved_dispatch_slot
+                        .set(self.accumulated_dict_offset + i as u32);
+                }
                 self.enter_param_scope(&param_names);
 
                 self.walk_surface_node(body);
@@ -1996,7 +2012,7 @@ mod tests {
         );
     }
 
-    /// In a Fn body, VarRef to the param resolves to Parameter(0).
+    /// In a Fn body, VarRef to the param resolves to Dispatch(0, 0).
     #[test]
     fn fn_param_scoping_in_body() {
         let (program, table) = parse_and_resolve("[fn [let myarg] $myarg]");
@@ -2008,8 +2024,8 @@ mod tests {
             .expect("$myarg should be resolved to fn param scope");
         assert_eq!(
             addr,
-            &VarAddr::Parameter(0),
-            "first fn param should be Parameter(0)"
+            &VarAddr::Dispatch(0, 0),
+            "first fn param should be Dispatch(0, 0)"
         );
     }
 
@@ -2023,8 +2039,8 @@ mod tests {
         let addr = table.get(id).expect("$b should be resolved");
         assert_eq!(
             addr,
-            &VarAddr::Parameter(1),
-            "b is the second param, should be Parameter(1)"
+            &VarAddr::Dispatch(0, 1),
+            "b is the second param (slot 1), should be Dispatch(0, 1)"
         );
     }
 
@@ -2054,11 +2070,11 @@ mod tests {
 
     /// Match arm pattern bindings should be resolved in the arm body.
     /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
-    /// and $n in the body resolves to the case arm's scope as Parameter(0).
+    /// and $n in the body resolves to the case arm's scope as Dispatch(0, 0).
     ///
-    /// Case arm bindings use enter_param_scope so they resolve to Parameter(i),
-    /// not Dispatch(depth, i). This avoids collision with root_group builtin slots
-    /// (which also start at Dispatch(0, 0)). At runtime, arm_frame.params[i] holds the bound thunk.
+    /// Case arm bindings use enter_param_scope so they resolve to Dispatch(0, slot),
+    /// where slot = accumulated_dict_offset + i. At runtime, arm bindings are appended
+    /// to the group after definition_scope entries.
     #[test]
     fn match_arm_pattern_binding() {
         // Bare lowercase names in match arm patterns are now Pin (not Variable).
@@ -2073,8 +2089,8 @@ mod tests {
             .expect("$n should be resolved (case arm binding in arm scope)");
         assert_eq!(
             addr,
-            &VarAddr::Parameter(0),
-            "n is the first (and only) binding — Parameter(0) via enter_param_scope (B-598)"
+            &VarAddr::Dispatch(0, 0),
+            "n is the first (and only) binding — Dispatch(0, 0) via enter_param_scope"
         );
     }
 
@@ -2082,9 +2098,8 @@ mod tests {
     /// Bare lowercase names in match arm patterns are now Pin (not Variable).
     /// To bind a variable, use [case [let n] pattern body] form.
     ///
-    /// Case arm bindings resolve to Parameter(i) so they don't conflict with
-    /// root_group builtin slots (LGM(0) = builtin-int-add). The arm body accesses `n`
-    /// via arm_frame.params[0] which holds the bound thunk from pattern matching.
+    /// Case arm bindings resolve to Dispatch(0, accumulated_dict_offset + i).
+    /// The arm body accesses `n` via the group which holds the bound thunk from pattern matching.
     #[test]
     fn match_arm_guard_sees_pattern_bindings() {
         // `n:` in match arm position creates a Pin pattern, not a variable binding.
@@ -2103,11 +2118,11 @@ mod tests {
             let addr = table
                 .get(id)
                 .expect("$n should be resolved via case arm [let n]");
-            // The case arm scope introduces n as Parameter(0) via enter_param_scope (B-598)
+            // The case arm scope introduces n as Dispatch(0, 0) via enter_param_scope
             assert_eq!(
                 addr,
-                &VarAddr::Parameter(0),
-                "n is Parameter(0) via enter_param_scope (B-598)"
+                &VarAddr::Dispatch(0, 0),
+                "n is Dispatch(0, 0) via enter_param_scope"
             );
         }
     }
@@ -2426,15 +2441,13 @@ mod tests {
     /// Nested dict inside a fn body intermediate dict value.
     ///
     /// `[fn [let x] [a: $x  nested: [c: $x]] ...]`
-    /// Fn resets accumulated_dict_offset to 0. Body dict: a→Dispatch(0,0), nested→Dispatch(0,1),
-    /// offset advances to 2. Inner dict: c→Dispatch(0,2). $x in c's value → Parameter(0).
+    /// Param x gets slot 0 (accumulated_dict_offset=0 at fn entry).
+    /// Body dict entries start after params: a→Dispatch(0,1), nested→Dispatch(0,2).
+    /// Inner dict: c→Dispatch(0,3). All $x refs have slot=0 but varying depth.
     #[test]
     fn nested_dict_inside_fn_body_dict() {
-        // fn with body dict containing a nested dict value.
-        // The sequential body is [a: $x  nested: [c: $x]]; $x should be Parameter(0) both times.
         let (program, table) = parse_and_resolve("[fn [let x] [a: $x  nested: [c: $x]] a]");
 
-        // All $x VarRefs inside the fn body should resolve to Parameter(0).
         let x_refs = find_varref_nodes(&program, "x");
         assert!(
             x_refs.len() >= 2,
@@ -2442,11 +2455,12 @@ mod tests {
         );
         for (id, _) in &x_refs {
             let addr = table.get(id).expect("$x should be resolved to fn param");
-            assert_eq!(
-                addr,
-                &VarAddr::Parameter(0),
-                "$x in fn body must be Parameter(0)"
-            );
+            match addr {
+                VarAddr::Dispatch(_, slot) => {
+                    assert_eq!(*slot, 0, "$x must be at slot 0 (param slot)");
+                }
+                other => panic!("expected Dispatch, got {:?}", other),
+            }
         }
     }
 
@@ -2468,10 +2482,10 @@ mod tests {
         );
         let (id, _) = &x_refs[0];
         let addr = table.get(id).expect("$x should be resolved");
-        // x is the outer fn's parameter — resolver produces Parameter(0) or Dispatch.
+        // x is the outer fn's parameter — resolver produces Dispatch.
         assert!(
-            matches!(addr, VarAddr::Parameter(_) | VarAddr::Dispatch(_, _)),
-            "$x in inner fn body should be Parameter or Dispatch, got {:?}",
+            matches!(addr, VarAddr::Dispatch(_, _)),
+            "$x in inner fn body should be Dispatch, got {:?}",
             addr
         );
     }
@@ -2486,10 +2500,10 @@ mod tests {
         assert!(!x_refs.is_empty());
         let (id, _) = &x_refs[0];
         let addr = table.get(id).expect("$x should be resolved");
-        // x is the outermost fn's parameter — resolver produces Parameter(0) or Dispatch.
+        // x is the outermost fn's parameter — resolver produces Dispatch.
         assert!(
-            matches!(addr, VarAddr::Parameter(_) | VarAddr::Dispatch(_, _)),
-            "$x in fn_C should be Parameter or Dispatch, got {:?}",
+            matches!(addr, VarAddr::Dispatch(_, _)),
+            "$x in fn_C should be Dispatch, got {:?}",
             addr
         );
     }

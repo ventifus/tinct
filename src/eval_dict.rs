@@ -577,13 +577,8 @@ pub(crate) async fn eval_dict_core(
         // placed at their assigned_slot positions.
         let group: crate::value::Scope = std::sync::Arc::new(scope_vec);
 
-        // Inherit outer_frame.params so that function parameters remain accessible
-        // from within intermediate dict bodies inside a function. Without this, an
-        // intermediate dict `[x: [fn-param-ref]]` inside `[fn [let p] [x: p] body]`
-        // would fail because the dict's letrec_frame has empty params.
         let letrec_frame = std::sync::Arc::new(EvalFrame {
             group,
-            params: std::sync::Arc::clone(&outer_frame.params),
             caller_evidence: std::sync::Arc::clone(&outer_frame.caller_evidence),
             type_inst: outer_frame.type_inst.clone(),
         });

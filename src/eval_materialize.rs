@@ -2454,7 +2454,6 @@ pub(crate) async fn apply_cont(
                             .collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
                             group: crate::value::scope_extend(&frame.group, new_thunks),
-                            params: std::sync::Arc::clone(&frame.params),
                             caller_evidence: frame.caller_evidence.clone(),
                             type_inst: frame.type_inst.clone(),
                         });
@@ -2545,7 +2544,6 @@ pub(crate) async fn apply_cont(
                             .collect();
                         let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
                             group: crate::value::scope_extend(&frame.group, new_thunks),
-                            params: std::sync::Arc::clone(&frame.params),
                             caller_evidence: frame.caller_evidence.clone(),
                             type_inst: frame.type_inst.clone(),
                         });
@@ -2712,11 +2710,10 @@ pub(crate) async fn apply_cont(
                         );
 
                         // If guard expression pattern, evaluate it to check if truthy.
-                        // EXCEPT: when the pattern is a simple VarRef to a Parameter
-                        // (i.e., one of the binding variables), it matches unconditionally.
-                        // Example: [case [let v] v body] — pattern `v` refers to Parameter(0),
-                        // which was just bound to the scrutinee. This is an unconditional match,
-                        // not a guard that needs truthiness checking.
+                        // EXCEPT: when the pattern is a simple VarRef to a binding variable
+                        // (i.e., one of the variables declared in [let ...]), it matches unconditionally.
+                        // Example: [case [let v] v body] — pattern `v` was bound to the scrutinee.
+                        // This is an unconditional match, not a guard that needs truthiness checking.
                         //
                         // WHY: A binding-var pattern unconditionally captures the scrutinee — it is
                         // not a guard predicate. Evaluating it as a guard would require calling the
@@ -2725,8 +2722,8 @@ pub(crate) async fn apply_cont(
                         // binding, not a guard expression.
                         let pattern_is_binding_var = if !is_structural {
                             match &lowered_pattern.node {
-                                CoreExpr::Var { addr, .. } => {
-                                    matches!(addr, crate::ast::VarAddr::Parameter(_))
+                                CoreExpr::Var { name, .. } => {
+                                    binding_map.contains_key(name.as_str())
                                 }
                                 _ => false,
                             }
@@ -2975,11 +2972,10 @@ pub(crate) async fn apply_cont(
 ///
 /// Returns `Ok(Some(bindings))` if the pattern matches, where `bindings` is a vec of
 /// `(param_index, thunk)` pairs — one entry per bound variable declared in `[let ...]`.
-/// Each `param_index` is the Parameter slot assigned by the resolver (0, 1, 2, ... in
-/// declaration order, via `enter_param_scope`). `thunk` is a pre-materialized thunk
-/// holding the matched scrutinee fragment for that variable. The caller builds
-/// `arm_frame.params` from these bindings so that `arm_frame.params[param_index]`
-/// returns the bound value when the body's `VarAddr::Parameter(i)` is looked up.
+/// Each `param_index` is the Dispatch slot assigned by the resolver (accumulated_dict_offset + i
+/// in declaration order, via `enter_param_scope`). `thunk` is a pre-materialized thunk
+/// holding the matched scrutinee fragment for that variable. The caller extends the group
+/// with these bindings so that `VarAddr::Dispatch(_, slot)` resolves the bound value.
 ///
 /// Returns `Ok(None)` if the pattern does not match, or `Err(e)` if evaluating the
 /// pattern itself produces an error (e.g., unresolvable pin reference, failed field-get
@@ -3694,9 +3690,9 @@ fn eval_structural_pattern_inner<'a>(
 ///
 /// - If `name` is in `binding_map`: create a pre-materialized Thunk::value for
 ///   `scrutinee_value` and push `(param_index, thunk)` onto `bindings`. The resolver
-///   uses `enter_param_scope` for case arm bindings, assigning `Parameter(param_index)`
-///   to uses of `name` in the arm body. The caller builds `arm_frame.params` from these
-///   bindings so that `arm_frame.params[param_index]` returns the bound value when the
+///   uses `enter_param_scope` for case arm bindings, assigning `Dispatch(_, slot)`
+///   to uses of `name` in the arm body. The caller extends the group with these
+///   bindings so that `VarAddr::Dispatch(_, slot)` returns the bound value when the
 ///   body evaluates.
 /// - If `name` is NOT in `binding_map`: it is a pin pattern — look up `name` via its
 ///   resolver-assigned `addr` in the parent `frame`, materialize it, and compare with
@@ -3713,7 +3709,7 @@ async fn bind_or_pin_name(
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
     if let Some(&slot) = binding_map.get(name) {
         // Binding: create a pre-materialized thunk holding the matched scrutinee fragment.
-        // The resolver assigned Parameter(slot) to uses of `name` in the arm body.
+        // The resolver assigned Dispatch(0, slot) to uses of `name` in the arm body.
         // Pushed onto `bindings`; the caller extends the parent EvalFrame's group at `slot`.
         let thunk = Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
         bindings.push((slot, thunk));
@@ -3728,20 +3724,6 @@ async fn bind_or_pin_name(
                     Some(thunk) => Arc::clone(thunk),
                     None => return Ok(false),
                 }
-            }
-            VarAddr::Parameter(i) => {
-                let i = *i as usize;
-                if i >= frame.params.len() {
-                    return Err(Diagnostic::internal(
-                        format!(
-                            "pattern pin '{name}': Parameter slot {i} out of range (params len {})",
-                            frame.params.len()
-                        ),
-                        match_span.clone(),
-                    )
-                    .into());
-                }
-                Arc::clone(&frame.params[i])
             }
             VarAddr::EffectPerform { .. } => {
                 return Err(Diagnostic::internal(

@@ -2377,15 +2377,6 @@ pub struct InferState {
     /// when pushed before a match arm body, and restored when AfterBlock fires. Same
     /// mechanism as `saved_use_def` and `saved_current_binding`.
     pub narrowing_map: std::collections::HashMap<BindingId, TypeValue>,
-    /// The innermost env frame whose bindings resolve to VarAddr::Parameter(i) (T-2084).
-    ///
-    /// Set by `infer_fn_push_cont` (to fn_env_arc) and by MatchScrutinee/MatchArm arm
-    /// setup (to the case arm env frame). `infer_var_ref` uses this directly for
-    /// VarAddr::Parameter lookup instead of the broken level=2 depth hack.
-    ///
-    /// Saved/restored via `AfterBlock.saved_parameter_frame` so nested functions and
-    /// nested matches correctly restore the enclosing frame when the block exits.
-    pub current_parameter_frame: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
     /// TypeValue substitution and level tracking (S-1003 TypeValue-native inference context).
     /// Replaces the deleted `Substitution` and `type_vars` fields.
     pub ctx: InferenceContext,
@@ -2435,7 +2426,6 @@ impl InferState {
             use_def: std::collections::HashMap::new(),
             closure_captures: Vec::new(),
             narrowing_map: std::collections::HashMap::new(),
-            current_parameter_frame: None,
             ctx: InferenceContext::new(),
             last_scheme_renaming: None,
             eval_scope: None,

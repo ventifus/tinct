@@ -120,7 +120,6 @@ pub(crate) async fn eval_document_exprs_with_env(
         // Build the frame from the current accumulated_group.
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
             type_inst: std::collections::HashMap::new(),
         });
@@ -248,7 +247,6 @@ pub(crate) async fn eval_core_document_exprs(
     for (i, (_key, spanned_core)) in core_entries.iter().enumerate() {
         let frame = Arc::new(EvalFrame {
             group: Arc::clone(&spine),
-            params: Arc::new(vec![]),
             caller_evidence: crate::value::empty_scope(),
             type_inst: std::collections::HashMap::new(),
         });

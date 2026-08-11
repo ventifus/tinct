@@ -723,7 +723,6 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
                     VarAddr::Dispatch(_, slot) => frame.group.get(*slot as usize).cloned(),
-                    VarAddr::Parameter(i) => frame.params.get(*i as usize).cloned(),
                     VarAddr::EffectPerform { slot } => {
                         let thunk = frame.caller_evidence.get(*slot as usize)
                             .ok_or_else(|| Diagnostic::user_error(
@@ -743,9 +742,8 @@ pub(crate) fn eval_core_expr<'a>(
                             format!(
                                 "'{name}' at addr={addr:?} resolved to None — \
                                  resolver/evaluator out of sync \
-                                 (frame.group.len()={}, frame.params.len()={})",
+                                 (frame.group.len()={})",
                                 frame.group.len(),
-                                frame.params.len(),
                             ),
                             span.clone(),
                         )
@@ -1273,7 +1271,6 @@ mod tests {
         ));
         let frame = Arc::new(EvalFrame {
             group: scope_from_flat(vec![Arc::clone(&known_thunk)]),
-            params: Arc::new(vec![]),
             caller_evidence: empty_scope(),
             type_inst: std::collections::HashMap::new(),
         });

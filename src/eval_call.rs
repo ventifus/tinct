@@ -708,8 +708,8 @@ pub(crate) async fn bind_args_thunks(
     }
 
     // Build param slots as a Vec<Arc<Thunk>> indexed by param.slot.
-    // EvalFrame::for_function_call(definition_scope, params) creates a frame where
-    // VarAddr::Parameter(i) resolves params[i].
+    // Params are appended to the group after definition_scope entries.
+    // EvalFrame::for_function_call(definition_scope, params) extends the group with params.
     let slot_count = params.len();
     let mut param_slots: Vec<Option<Arc<Thunk>>> = vec![None; slot_count];
 

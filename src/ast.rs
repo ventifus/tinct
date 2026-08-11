@@ -173,7 +173,8 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
+    /// Declaration-order index for VarAddr::Dispatch slot lookup in EvalFrame.group.
+    /// Params are appended to the group after definition_scope entries.
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
@@ -934,6 +935,10 @@ pub struct SurfaceParam {
     /// Set during `infer_fn_push_cont`; read by the lowerer to populate `CoreParam::resolved_type`.
     /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
     pub resolved_annotation_type: TypeAnnotation,
+    /// Dispatch slot resolved by the resolver during enter_param_scope.
+    /// Used by the lowerer to assign VarAddr::Dispatch slots to param references.
+    /// Clone resets to empty (cloned nodes in new scopes must be re-resolved).
+    pub resolved_dispatch_slot: ResolvedDispatchSlot,
 }
 
 /// Flatten a dot-access chain into a qualified tag string, or return `None` if the
@@ -1094,6 +1099,42 @@ impl Default for TypeAnnotation {
 impl std::fmt::Debug for TypeAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeAnnotation({:?})", self.0.get().map(|o| o.is_some()))
+    }
+}
+
+/// Dispatch slot resolved by the resolver for function parameters.
+/// Written by the resolver during enter_param_scope; read by the lowerer.
+/// Clone resets to empty (cloned nodes in new scopes must be re-resolved).
+pub struct ResolvedDispatchSlot(std::sync::OnceLock<u32>);
+impl ResolvedDispatchSlot {
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<u32> {
+        self.0.get().copied()
+    }
+    pub fn set(&self, slot: u32) {
+        let _ = self.0.set(slot);
+    }
+}
+impl Clone for ResolvedDispatchSlot {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for ResolvedDispatchSlot {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for ResolvedDispatchSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::fmt::Debug for ResolvedDispatchSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ResolvedDispatchSlot({:?})", self.0.get())
     }
 }
 
@@ -1376,13 +1417,13 @@ impl std::fmt::Debug for MatchableBinding {
 /// Variable addressing for evaluation.
 /// Replaces (level, slot) de Bruijn coordinates.
 ///
-/// All variable references use exactly four variants — no runtime frame traversal:
-/// - `Dispatch(depth, slot)` — same letrec group (current dict/doc accumulated group).
-///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots.
+/// All variable references use exactly two variants — no runtime frame traversal:
+/// - `Dispatch(depth, slot)` — index into the accumulated group.
+///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots;
+///   function/match-arm parameters are appended after definition_scope entries.
 ///   `depth` is the scope-stack traversal distance from the referencing scope to the defining
 ///   scope (0 = same frame, 1 = one level up). Used by the type-checker via `get_scheme_at`.
 ///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
-/// - `Parameter(slot)` — fn argument.
 /// - `EffectPerform { slot }` — typeclass method call; resolved by direct slot lookup
 ///   in the caller's evidence (scope).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1392,12 +1433,11 @@ pub enum VarAddr {
     /// document dict entries follow at cumulative slot offsets.
     /// Function bodies carry the definition-site group, so Dispatch addresses
     /// resolve directly to the captured scope.
+    /// Function parameters are appended to the group after definition_scope entries.
     /// `depth` is the resolver scope-stack traversal distance (0 = same frame, 1 = one
     /// level up). The evaluator ignores `depth` and uses `slot` directly; the type-checker
     /// uses `depth` to call `get_scheme_at(depth, slot)` for cross-scope references.
     Dispatch(u32, u32),
-    /// Index into EvalFrame.params (function call arguments)
-    Parameter(u32),
     /// Typeclass method call — resolved at runtime by direct slot lookup in
     /// the caller's evidence (scope). `slot` is the slot index assigned by the resolver.
     EffectPerform { slot: u32 },
@@ -1691,7 +1731,8 @@ pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
+    /// Declaration-order index for VarAddr::Dispatch slot lookup in EvalFrame.group.
+    /// Params are appended to the group after definition_scope entries.
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).

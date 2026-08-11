@@ -333,9 +333,6 @@ pub(crate) enum TypeCheckCont {
         /// Restored after AfterBlock fires so narrowings from one arm don't leak into others.
         saved_narrowing_map:
             std::collections::HashMap<crate::type_infer::BindingId, crate::type_infer::TypeValue>,
-        /// Saved state.current_parameter_frame from before this block.
-        /// Restored after AfterBlock fires so the enclosing function/arm frame is recovered.
-        saved_parameter_frame: Option<Arc<RwLock<Env>>>,
         /// Saved state.closure_captures from before this block.
         saved_closure_captures: Vec<BindingId>,
     },
@@ -686,7 +683,6 @@ async fn infer_step(
                     saved_use_def,
                     saved_current_binding,
                     saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                    saved_parameter_frame: state.current_parameter_frame.clone(),
                     saved_closure_captures,
                 },
                 Arc::clone(node),
@@ -1336,10 +1332,6 @@ async fn apply_cont(
                         },
                         Arc::clone(&match_node),
                     ));
-                    // For case arms: set current_parameter_frame to arm_env so
-                    // VarAddr::Parameter(i) refs (case arm bindings) resolve directly.
-                    let saved_parameter_frame = state.current_parameter_frame.take();
-                    state.current_parameter_frame = Some(Arc::clone(&arm_env));
                     stack.push((
                         TypeCheckCont::AfterBlock {
                             binding_envs: vec![Arc::clone(&arm_env)],
@@ -1347,7 +1339,6 @@ async fn apply_cont(
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                            saved_parameter_frame,
                             saved_closure_captures: std::mem::take(&mut state.closure_captures),
                         },
                         Arc::clone(&match_node),
@@ -1430,8 +1421,6 @@ async fn apply_cont(
                             },
                             Arc::clone(&match_node),
                         ));
-                        let saved_parameter_frame = state.current_parameter_frame.take();
-                        state.current_parameter_frame = Some(Arc::clone(&arm_env));
                         stack.push((
                             TypeCheckCont::AfterBlock {
                                 binding_envs: vec![Arc::clone(&arm_env)],
@@ -1439,7 +1428,6 @@ async fn apply_cont(
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
                                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-                                saved_parameter_frame,
                                 saved_closure_captures: std::mem::take(&mut state.closure_captures),
                             },
                             Arc::clone(&match_node),
@@ -1679,15 +1667,13 @@ async fn apply_cont(
             mut saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
-            saved_parameter_frame,
             saved_closure_captures,
         } => {
             // Step 1: Seed the live set with names newly marked by the final expression.
             // Names in pre_final_refs were already referenced before the final expression
             // ran (they were marked by inter-dict processing). Only names that the final
             // expression itself referenced are seeded as directly live.
-            // Read from SLOTS only — infer_var_ref marks slots directly via
-            // state.current_parameter_frame (T-2084); no extras fallback needed.
+            // Read from SLOTS only — infer_var_ref marks slots directly via Dispatch addresses.
             let mut live: std::collections::HashSet<BindingId> = std::collections::HashSet::new();
             for (frame_idx, env_frame) in binding_envs.iter().enumerate() {
                 let env_guard = env_frame.read().unwrap();
@@ -1792,7 +1778,6 @@ async fn apply_cont(
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
             state.narrowing_map = saved_narrowing_map;
-            state.current_parameter_frame = saved_parameter_frame;
 
             TypeCheckAction::Done(child_ty)
         }
@@ -1827,69 +1812,12 @@ async fn infer_var_ref(
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
-    // Resolver-address primary: resolution_table → direct frame lookup.
-    // Dispatch: slot-based via get_scheme_at; miss is a type-checker setup error.
-    // Parameter: direct lookup in state.current_parameter_frame (set by infer_fn_push_cont
-    //   and MatchScrutinee/MatchArm arm setup) — no level arithmetic needed.
-    // No resolver address: type-checker-internal only (narrowing overrides, class dispatch).
+    // Resolve VarRef via resolution_table. Dispatch uses slot-based lookup;
+    // EffectPerform uses typeclass method signature instantiation.
+    // No fallback — missing entry is a resolver bug.
     let id = node_id(node);
     let scheme: Option<TypeValue> = if let Some(addr) = state.resolution_table.get(&id) {
         match addr {
-            crate::ast::VarAddr::Parameter(i) => {
-                // Look up directly in current_parameter_frame — this is always the correct
-                // fn param or case arm env regardless of nesting depth.
-                if let Some(ref frame) = state.current_parameter_frame {
-                    let dep_def_span = frame.read().unwrap().get_slot_def_span(0, *i);
-                    let slot_scheme = frame.read().unwrap().get_scheme_at(0, *i);
-                    if slot_scheme.is_some() {
-                        frame.write().unwrap().mark_slot_referenced(0, *i);
-                        if let Some(ref def_span) = dep_def_span {
-                            let dep_id = BindingId {
-                                def_span: def_span.clone(),
-                                name: name.to_string(),
-                            };
-                            if let Some(ref binder) = state.current_binding {
-                                if *binder != dep_id {
-                                    state
-                                        .use_def
-                                        .entry(binder.clone())
-                                        .or_default()
-                                        .insert(dep_id);
-                                }
-                            } else {
-                                state.closure_captures.push(dep_id);
-                            }
-                        }
-                        if let Some(ref def_span) = dep_def_span {
-                            let bid = BindingId {
-                                def_span: def_span.clone(),
-                                name: name.to_string(),
-                            };
-                            if let Some(narrowed) = state.narrowing_map.get(&bid) {
-                                return Arc::clone(narrowed);
-                            }
-                        }
-                        slot_scheme
-                    } else {
-                        errors.push(Diagnostic::error(
-                            "resolver-param-miss",
-                            format!(
-                                "parameter '{}' at slot {} not found in current_parameter_frame",
-                                name, i
-                            ),
-                            node.span.clone(),
-                        ));
-                        None
-                    }
-                } else {
-                    errors.push(Diagnostic::error(
-                        "resolver-param-miss",
-                        format!("parameter '{}' referenced outside any parameter frame (current_parameter_frame is None)", name),
-                        node.span.clone(),
-                    ));
-                    None
-                }
-            }
             crate::ast::VarAddr::EffectPerform { slot } => {
                 // Typeclass method call — resolved at runtime by scanning the accumulated group
                 // for an instance whose primary dispatch type matches the first argument's runtime type.
@@ -2072,32 +2000,18 @@ async fn infer_var_ref(
             }
         }
     } else {
-        // No resolver address — either type-checker-internal bindings (narrowing overrides,
-        // class dispatch) or user bindings when resolution_table is empty (builtin-typecheck-doc
-        // path). Look up by name, mark slot referenced, and record use_def edges to prevent
-        // false-positive lost-binding warnings.
-        let scheme = { env.read().unwrap().get_scheme(name) };
-        if scheme.is_some() {
-            env.write().unwrap().mark_referenced_by_name(name);
-            if let Some(def_span) = Env::find_def_span_by_name(env, name) {
-                let dep_id = BindingId {
-                    def_span,
-                    name: name.to_string(),
-                };
-                if let Some(ref binder) = state.current_binding {
-                    if *binder != dep_id {
-                        state
-                            .use_def
-                            .entry(binder.clone())
-                            .or_default()
-                            .insert(dep_id);
-                    }
-                } else {
-                    state.closure_captures.push(dep_id);
-                }
-            }
-        }
-        scheme
+        // No resolver address for this VarRef — resolver bug.
+        // After T-2323 (resolution_table in Value::Document) and T-2325 (unified typecheck_document),
+        // every VarRef should have a resolver address. Name-based fallback is deleted.
+        errors.push(Diagnostic::error(
+            "resolver-miss",
+            format!(
+                "VarRef '{}' has no entry in resolution_table — resolver did not resolve this reference",
+                name
+            ),
+            node.span.clone(),
+        ));
+        None
     };
 
     if let Some(scheme) = scheme {
@@ -3541,9 +3455,8 @@ async fn infer_fn_push_cont(
     let mut typed_variadics: Vec<(String, TypeValue)> = Vec::new();
     let mut rest: Option<Box<(String, TypeValue)>> = None;
     let mut fixed_param_idx: usize = 0;
-    // param_slot_idx tracks the resolver's Parameter(i) index for ALL params in declaration order.
-    // The resolver assigns Parameter(i) where i is the position in the params list (including
-    // variadics). Used by insert_at_slot to ensure slot numbers match Parameter(i) addresses.
+    // param_slot_idx is a 0-based counter for fallback when resolved_dispatch_slot is unavailable.
+    // The resolver assigns absolute Dispatch slots and stores them in resolved_dispatch_slot.
     let mut param_slot_idx: usize = 0;
 
     for p in params.iter() {
@@ -3628,14 +3541,20 @@ async fn infer_fn_push_cont(
             } else {
                 Some(p.span.clone())
             };
-        // Insert params into SLOTS at position `param_slot_idx`.
-        // param_slot_idx matches Parameter(i) — the resolver assigns Parameter(i) to the
-        // i-th param in declaration order (including variadics).
-        // infer_var_ref uses state.current_parameter_frame for direct slot lookup (T-2084).
+        // Insert params into SLOTS at absolute slot positions.
+        // Resolver assigns Dispatch(0, accumulated_dict_offset + i) to each param and sets
+        // resolved_dispatch_slot on the SurfaceParam node. Use that slot, or fall back to
+        // param_slot_idx for params without resolved slots (shouldn't happen after resolver).
+        let slot = p
+            .node
+            .resolved_dispatch_slot
+            .get()
+            .map(|s| s as usize)
+            .unwrap_or(param_slot_idx);
         match param_definition_span {
             Some(ref span) => {
                 fn_env_inner.insert_at_slot(
-                    param_slot_idx,
+                    slot,
                     p.node.name.clone(),
                     Arc::clone(&param_ty),
                     Some(span.clone()),
@@ -3643,12 +3562,7 @@ async fn infer_fn_push_cont(
             }
             None => {
                 // No definition span — Placeholder param (builtin interface). Skip lost-binding.
-                fn_env_inner.insert_at_slot(
-                    param_slot_idx,
-                    p.node.name.clone(),
-                    Arc::clone(&param_ty),
-                    None,
-                );
+                fn_env_inner.insert_at_slot(slot, p.node.name.clone(), Arc::clone(&param_ty), None);
             }
         }
         param_slot_idx += 1;
@@ -3817,10 +3731,6 @@ async fn infer_fn_push_cont(
         },
         Arc::clone(node),
     ));
-    // Set current_parameter_frame to this fn's param env before evaluating the body.
-    // infer_var_ref uses it directly for VarAddr::Parameter(i) — no level=2 hack needed.
-    let saved_parameter_frame = state.current_parameter_frame.take();
-    state.current_parameter_frame = Some(Arc::clone(&fn_env_arc));
     stack.push((
         TypeCheckCont::AfterBlock {
             binding_envs: vec![Arc::clone(&fn_env_arc)],
@@ -3828,7 +3738,6 @@ async fn infer_fn_push_cont(
             saved_use_def: std::mem::take(&mut state.use_def),
             saved_current_binding: state.current_binding.take(),
             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
-            saved_parameter_frame,
             saved_closure_captures: std::mem::take(&mut state.closure_captures),
         },
         Arc::clone(node),
@@ -4316,11 +4225,13 @@ fn build_case_arm_env(
     };
     // Always create a fresh child frame so that AfterBlock's slot-based liveness check
     // reads ONLY this arm's own bindings, not inherited bindings from the parent chain.
-    // Slots only — infer_var_ref uses state.current_parameter_frame for direct lookup (T-2084).
     let mut child_inner = Env::with_parent(Arc::clone(env));
     for (slot_idx, (name, binding_span)) in bindings_with_spans.into_iter().enumerate() {
         let tv = state.fresh_type_var(&binding_span);
-        child_inner.insert_at_slot(slot_idx, name, tv, Some(binding_span));
+        // Use find_slot_in_frames to get the absolute slot assigned by the resolver.
+        // Fall back to slot_idx if the slot is not found (shouldn't happen after resolver).
+        let slot = super::find_slot_in_frames(&state.resolver_frames, &name).unwrap_or(slot_idx);
+        child_inner.insert_at_slot(slot, name, tv, Some(binding_span));
     }
     Arc::new(RwLock::new(child_inner))
 }
@@ -6176,6 +6087,7 @@ mod tests {
                     annotation: None,
                     variadic: false,
                     resolved_annotation_type: TypeAnnotation::new(),
+                    resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
                 })
             })
             .collect();

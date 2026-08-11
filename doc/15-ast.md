@@ -315,7 +315,8 @@ pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order index for VarAddr::Parameter(slot) lookup in EvalFrame.params.
+    /// Resolved Dispatch slot assigned by the resolver during enter_param_scope.
+    /// Used by the lowerer to assign VarAddr::Dispatch slots to param references.
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// None means unknown/unannotated — accept all values at runtime (gradual typing).
