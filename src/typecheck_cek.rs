@@ -15,14 +15,13 @@
 //! calls to `run_typecheck` itself, not all async behavior.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::ast::{
     class_decl_name, Annotation, Span, Spanned, SurfaceDeclaration, SurfaceEntry,
     SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode,
 };
 use crate::coverage;
-use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_tags::*;
 // Constraint is Vec<Arc<Value>> in the TypeValue migration — no Constraint type import needed.
@@ -49,10 +48,10 @@ use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
 /// Action returned by `infer_step` and `apply_cont`.
 ///
 /// `Done(ty)` means the current sub-expression has been fully inferred.
-/// `Eval(node, env)` means inference should continue by evaluating `node` in `env`.
+/// `Eval(node)` means inference should continue by evaluating `node`.
 pub(crate) enum TypeCheckAction {
     Done(TypeValue),
-    Eval(Arc<SurfaceNode>, Arc<RwLock<Env>>),
+    Eval(Arc<SurfaceNode>),
 }
 
 // ===== SCC =====
@@ -227,7 +226,6 @@ pub(crate) enum TypeCheckCont {
         func_node: Arc<SurfaceNode>,
         args: Vec<Arc<SurfaceNode>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
-        env: Arc<RwLock<Env>>,
         call_node: Arc<SurfaceNode>,
     },
 
@@ -249,7 +247,6 @@ pub(crate) enum TypeCheckCont {
         /// Untyped variadic fallback: (name, TypeVar_whole_dict).
         rest: Option<Box<(String, TypeValue)>>,
         fn_required: usize,
-        env: Arc<RwLock<Env>>,
         named_args: Vec<Spanned<SurfaceNamedArg>>,
         span: Span,
         call_node: Arc<SurfaceNode>,
@@ -261,7 +258,6 @@ pub(crate) enum TypeCheckCont {
     /// Inferred the scrutinee of a match — start processing arms.
     MatchScrutinee {
         arms: Vec<SurfaceMatchArm>,
-        env: Arc<RwLock<Env>>,
         span: Span,
         match_node: Arc<SurfaceNode>,
     },
@@ -269,7 +265,6 @@ pub(crate) enum TypeCheckCont {
     /// Inferred one match arm body — continue with remaining arms.
     MatchArm {
         remaining_arms: Vec<SurfaceMatchArm>,
-        env: Arc<RwLock<Env>>,
         accumulated_types: Vec<TypeValue>,
         scrutinee_ty: TypeValue,
         remaining_scrutinee: TypeValue,
@@ -282,45 +277,16 @@ pub(crate) enum TypeCheckCont {
     /// Pushed by the `Dict` arm of `infer_step`. The handler calls `typecheck_letrec_group`
     /// directly, which performs key resolution, SCC decomposition, and per-SCC inference
     /// inline. This avoids duplicating the letrec algorithm in the continuation chain.
-    LetrecGroupPassZero {
-        entries: Vec<Spanned<SurfaceEntry>>,
-        env: Arc<RwLock<Env>>,
-    },
+    LetrecGroupPassZero { entries: Vec<Spanned<SurfaceEntry>> },
 
-    /// All Dict intermediate bodies in a Sequential processed — emit lost-binding warnings
-    /// for unreferenced bindings in each intermediate env frame.
+    /// All Dict intermediate bodies in a Sequential processed — restores saved state.
     ///
     /// Pushed by the `Sequential` arm after all Dict intermediates are processed, just
-    /// before evaluating the final expression. The handler fires after the final expression
-    /// is inferred and performs BFS liveness analysis on `state.use_def` (T-2060).
+    /// before evaluating the final expression. Restores saved_use_def, saved_current_binding,
+    /// and saved_narrowing_map so that nested blocks don't corrupt the enclosing scope.
     ///
-    /// ## BFS liveness analysis (T-2060)
-    ///
-    /// A binding is "live" if it is reachable from the final expression via `state.use_def`.
-    /// 1. `pre_final_refs[i]` = names in frame i with `referenced = true` BEFORE the final
-    ///    expression was evaluated (marks from inter-dict processing only). This snapshot
-    ///    isolates which names the final expression newly references.
-    /// 2. Seed: names with `slot.referenced == true` AND NOT in `pre_final_refs[i]` — i.e.,
-    ///    names newly marked as referenced by the final expression specifically.
-    /// 3. BFS forward: for each live name A, look up `state.use_def[A]` and add those names
-    ///    to the live set if not already present. Continue until the queue is empty.
-    ///    `state.use_def[A] = {B, C}` means A's value expression referenced B and C, so if
-    ///    A is live, B and C must also be live (required for A's computation).
-    /// 4. Any intermediate binding NOT in the live set at BFS completion → emit warning.
-    ///
-    /// This replaces the old dep_graph backward fixpoint approximation (which was per-dict,
-    /// not per-binding) with exact per-binding BFS. The snapshot is retained to isolate
-    /// final-expression references from inter-dict references (a binding referenced only by
-    /// another intermediate dict — not by the final expression — remains dead if neither
-    /// it nor its dependents are used by the final expression).
-    ///
-    /// Only Dict intermediates are tracked — non-Dict intermediates use schemes without
-    /// user-visible definition spans and are not eligible for lost-binding warnings.
+    /// Lost-binding detection will be re-implemented using ScopeFrame in a future commit.
     AfterBlock {
-        binding_envs: Vec<Arc<RwLock<Env>>>,
-        /// Snapshot of each frame's referenced BindingId set taken just before the final
-        /// expression was evaluated. Used to isolate which marks came from the final expr.
-        pre_final_refs: Vec<std::collections::HashSet<BindingId>>,
         /// Saved state.use_def from the enclosing block (or empty map if at top level).
         /// Restored after AfterBlock fires so that nested blocks do not corrupt
         /// the outer block's liveness graph.
@@ -350,7 +316,6 @@ pub(crate) enum TypeCheckCont {
         /// The TypeAssert SurfaceNode — used to write back the resolved type to
         /// `resolved_type` OnceLock after the inner expression is inferred (B-658).
         assert_node: Arc<SurfaceNode>,
-        env: Arc<RwLock<Env>>,
         span: Span,
         annotation_span: Span,
     },
@@ -372,20 +337,17 @@ pub(crate) enum TypeCheckCont {
 /// Returns the final inferred TypeValue when the stack is empty.
 pub(crate) async fn run_typecheck(
     node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
 ) -> TypeValue {
     let mut current_node = Arc::clone(node);
-    let mut current_env = Arc::clone(env);
 
     loop {
-        match infer_step(&current_node, &current_env, state, errors, type_map, stack).await {
-            TypeCheckAction::Eval(next_node, next_env) => {
+        match infer_step(&current_node, state, errors, type_map, stack).await {
+            TypeCheckAction::Eval(next_node) => {
                 current_node = next_node;
-                current_env = next_env;
             }
             TypeCheckAction::Done(ty) => {
                 // Record this node's inferred type in type_map for LSP.
@@ -411,9 +373,8 @@ pub(crate) async fn run_typecheck(
                                     result_ty = t;
                                     // Continue popping the stack
                                 }
-                                TypeCheckAction::Eval(next_node, next_env) => {
+                                TypeCheckAction::Eval(next_node) => {
                                     current_node = next_node;
-                                    current_env = next_env;
                                     break; // Back to outer loop
                                 }
                             }
@@ -438,12 +399,11 @@ fn record_type_map(type_map: &mut Option<&mut TypeMap>, span: &Span, ty: &TypeVa
 /// Infer the type of a single SurfaceExpression node.
 ///
 /// For leaf expressions: returns `Done(ty)` directly without pushing any continuation.
-/// For compound expressions: pushes a continuation and returns `Eval(child, env)`.
+/// For compound expressions: pushes a continuation and returns `Eval(child)`.
 ///
 /// This is the "C" (control) step of the CEK machine.
 async fn infer_step(
     node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
@@ -485,12 +445,12 @@ async fn infer_step(
         // ===== Unquote / UnquoteSplice — compound =====
         SurfaceExpression::Unquote(inner) => {
             stack.push((TypeCheckCont::Unquote, Arc::clone(node)));
-            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(inner))
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
             stack.push((TypeCheckCont::UnquoteSplice, Arc::clone(node)));
-            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(inner))
         }
 
         // ===== Field access — structural TV_RECORD projection =====
@@ -524,7 +484,7 @@ async fn infer_step(
                     Arc::clone(node),
                 ));
                 stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
-                TypeCheckAction::Eval(Arc::clone(base), Arc::clone(env))
+                TypeCheckAction::Eval(Arc::clone(base))
             }
         },
 
@@ -560,39 +520,34 @@ async fn infer_step(
                             has_default,
                             default_node,
                             assert_node: Arc::clone(node),
-                            env: Arc::clone(env),
                             span: node.span.clone(),
                             annotation_span: annotation.span.clone(),
                         },
                         Arc::clone(node),
                     ));
-                    TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+                    TypeCheckAction::Eval(Arc::clone(inner))
                 }
                 Err(e) => {
                     let e = e.with_note("in type assertion annotation");
                     errors.push(e);
                     stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
-                    TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+                    TypeCheckAction::Eval(Arc::clone(inner))
                 }
             }
         }
 
-        // ===== Sequential — compound: process intermediate bodies inline, extending env =====
+        // ===== Sequential — compound: process intermediate bodies inline =====
         SurfaceExpression::Sequential(exprs) => {
             if exprs.is_empty() {
                 // Empty sequential: fresh TypeVar (unconstrained position)
                 return TypeCheckAction::Done(state.fresh_type_var(&node.span));
             }
             if exprs.len() == 1 {
-                return TypeCheckAction::Eval(Arc::clone(&exprs[0]), Arc::clone(env));
+                return TypeCheckAction::Eval(Arc::clone(&exprs[0]));
             }
 
-            // Process all intermediate bodies (all but last) inline, extending env after each.
-            // Collect each Dict intermediate's env frame for lost-binding detection.
-            let mut current_env = Arc::clone(env);
             let intermediates = &exprs[0..exprs.len() - 1];
             let last = &exprs[exprs.len() - 1];
-            let mut intermediate_envs: Vec<Arc<RwLock<Env>>> = Vec::new();
 
             // Save and reset use_def and current_binding at the start of each Sequential
             // so that edges from a previous (or outer) Sequential scope don't contaminate this
@@ -614,21 +569,9 @@ async fn infer_step(
                         .first()
                         .and_then(|e| e.node.assigned_slot.get().copied());
 
-                    let (_, _schemes, body_dict_env, mut dict_errs) = typecheck_letrec_group(
-                        entries,
-                        &current_env,
-                        state,
-                        type_map,
-                        body_slot_base_pre,
-                    )
-                    .await;
+                    let (_, _schemes, mut dict_errs) =
+                        typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
                     errors.append(&mut dict_errs);
-
-                    current_env = body_dict_env;
-                    // Track the intermediate env frame for lost-binding detection.
-                    // The frame is captured AFTER inserting schemes so the handler
-                    // iterates the correct slot entries.
-                    intermediate_envs.push(Arc::clone(&current_env));
                 } else {
                     // Every tinct expression is a dict. A non-Dict in intermediate position
                     // means the program is malformed (e.g. a corpus test with a syntax error).
@@ -638,51 +581,22 @@ async fn infer_step(
                         "expected record type: sequential intermediate body must be a dict expression",
                         intermediate.span.clone(),
                     ));
-                    // Do not advance current_env — no bindings are introduced.
-                    // Continue processing remaining intermediates.
                 }
             }
 
-            // All intermediates were Dict — snapshot referenced state before the final
-            // expression evaluates, then push AfterBlock and evaluate the last.
-            // The snapshot isolates which marks came from the final expression vs intermediates.
-            //
             // Clear current_binding: typecheck_letrec_group leaves state.current_binding set to the
             // last entry it processed. If left set, VarRefs in the final expression would be
             // attributed to that stale binding, creating spurious use_def edges.
             state.current_binding = None;
-            // Span-keyed BindingId: use slot.definition_span rather than frame_ptr.
-            // Bindings without a definition_span (synthetic/injected) are excluded from tracking.
-            // Read from SLOTS (the authoritative liveness location).
-            let pre_final_refs: Vec<std::collections::HashSet<BindingId>> = intermediate_envs
-                .iter()
-                .map(|frame| {
-                    let guard = frame.read().unwrap();
-                    guard
-                        .slots
-                        .iter()
-                        .filter_map(|entry| entry.as_ref())
-                        .filter(|(_, slot)| slot.referenced)
-                        .filter_map(|(name, slot)| {
-                            slot.definition_span.as_ref().map(|span| BindingId {
-                                def_span: span.clone(),
-                                name: name.clone(),
-                            })
-                        })
-                        .collect()
-                })
-                .collect();
             stack.push((
                 TypeCheckCont::AfterBlock {
-                    binding_envs: intermediate_envs,
-                    pre_final_refs,
                     saved_use_def,
                     saved_current_binding,
                     saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                 },
                 Arc::clone(node),
             ));
-            TypeCheckAction::Eval(Arc::clone(last), current_env)
+            TypeCheckAction::Eval(Arc::clone(last))
         }
 
         // ===== Call — compound: handle special cases inline, else eval func first =====
@@ -725,16 +639,15 @@ async fn infer_step(
                     func_node: Arc::clone(func),
                     args: args_cloned,
                     named_args: named_args_cloned,
-                    env: Arc::clone(env),
                     call_node: Arc::clone(node),
                 },
                 Arc::clone(node),
             ));
-            TypeCheckAction::Eval(Arc::clone(func), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(func))
         }
 
         // ===== Fn — resolve annotations, build env, push FnBody, eval body =====
-        SurfaceExpression::Fn { .. } => infer_fn_push_cont(node, env, state, errors, stack).await,
+        SurfaceExpression::Fn { .. } => infer_fn_push_cont(node, state, errors, stack).await,
 
         // ===== Dict — push LetrecGroupPassZero, complete inference via typecheck_letrec_group =====
         //
@@ -748,7 +661,6 @@ async fn infer_step(
             stack.push((
                 TypeCheckCont::LetrecGroupPassZero {
                     entries: entries.to_vec(),
-                    env: Arc::clone(env),
                 },
                 Arc::clone(node),
             ));
@@ -762,13 +674,12 @@ async fn infer_step(
             stack.push((
                 TypeCheckCont::MatchScrutinee {
                     arms: arms_cloned,
-                    env: Arc::clone(env),
                     span: node.span.clone(),
                     match_node: Arc::clone(node),
                 },
                 Arc::clone(node),
             ));
-            TypeCheckAction::Eval(Arc::clone(scrutinee), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(scrutinee))
         }
 
         // ===== Decl — call declaration helpers directly =====
@@ -824,7 +735,6 @@ async fn infer_step(
                         &class_name_str,
                         arms,
                         node.span.clone(),
-                        env,
                         state,
                         type_map,
                     ))
@@ -876,11 +786,11 @@ async fn infer_step(
         }
         SurfaceExpression::TypeDecl { inner, .. } => {
             stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
-            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(inner))
         }
         SurfaceExpression::ReprDecl { inner, .. } => {
             stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
-            TypeCheckAction::Eval(Arc::clone(inner), Arc::clone(env))
+            TypeCheckAction::Eval(Arc::clone(inner))
         }
 
         _ => {
@@ -904,7 +814,7 @@ async fn infer_step(
 /// Apply a continuation to the inferred type from the previous step.
 ///
 /// Each continuation handler receives the type from the child expression and either:
-/// - Returns `Eval(node, env)` to continue evaluation on a new node
+/// - Returns `Eval(node)` to continue evaluation on a new node
 /// - Returns `Done(ty)` when this continuation branch is complete
 ///
 /// This is the "K" (continuation) step of the CEK machine.
@@ -1151,7 +1061,6 @@ async fn apply_cont(
             func_node,
             args,
             named_args,
-            env,
             call_node,
         } => {
             let func_ty = if state.subst_is_empty() {
@@ -1166,7 +1075,7 @@ async fn apply_cont(
                 type_map,
             };
             apply_cont_call_func(
-                func_node, func_ty, args, named_args, env, call_node, &mut ctx, stack,
+                func_node, func_ty, args, named_args, call_node, &mut ctx, stack,
             )
             .await
         }
@@ -1182,7 +1091,6 @@ async fn apply_cont(
             typed_variadics,
             rest,
             fn_required,
-            env,
             named_args,
             span,
             call_node,
@@ -1205,7 +1113,6 @@ async fn apply_cont(
                         typed_variadics,
                         rest,
                         fn_required,
-                        env: Arc::clone(&env),
                         named_args,
                         span,
                         call_node: Arc::clone(&call_node),
@@ -1213,7 +1120,7 @@ async fn apply_cont(
                     },
                     Arc::clone(&call_node),
                 ));
-                return TypeCheckAction::Eval(next_arg, env);
+                return TypeCheckAction::Eval(next_arg);
             }
 
             // All positional args collected — unify and handle named args
@@ -1234,7 +1141,6 @@ async fn apply_cont(
                 arg_nodes,
                 sig,
                 named_args,
-                env,
                 span,
                 effect_perform,
                 &mut ctx,
@@ -1263,7 +1169,6 @@ async fn apply_cont(
         // ===== MatchScrutinee =====
         TypeCheckCont::MatchScrutinee {
             arms,
-            env,
             span,
             match_node,
         } => {
@@ -1278,11 +1183,9 @@ async fn apply_cont(
             // the whole match is an error — skip coverage analysis entirely.
             let mut pattern_error = false;
             for arm in &arms {
-                let arm_env = build_case_arm_env(&arm.let_bindings, &env, state, &arm.pattern);
                 let mut local_stack = Vec::new();
                 let pattern_ty = Box::pin(run_typecheck(
                     &arm.pattern,
-                    &arm_env,
                     state,
                     errors,
                     type_map,
@@ -1301,27 +1204,18 @@ async fn apply_cont(
 
             // Set up the first arm's environment iteratively; subsequent arms via MatchArm.
             let remaining_scrutinee = scrutinee_ty.clone();
-            match setup_match_arm_env(
-                &arms[0],
-                &remaining_scrutinee,
-                &env,
-                state,
-                errors,
-                type_map,
-            )
-            .await
+            match setup_match_arm_env(&arms[0], &remaining_scrutinee, state, errors, type_map).await
             {
                 None => {
                     // Setup failed: fresh TypeVar (unconstrained)
                     TypeCheckAction::Done(state.fresh_type_var(&span))
                 }
-                Some((arm_env, next_remaining_scrutinee, guard_narrowings)) => {
+                Some((next_remaining_scrutinee, _guard_narrowings)) => {
                     let remaining_arms: Vec<SurfaceMatchArm> = arms[1..].to_vec();
                     // MatchArm accumulates arm results; AfterBlock handles case arm liveness.
                     stack.push((
                         TypeCheckCont::MatchArm {
                             remaining_arms,
-                            env,
                             accumulated_types: Vec::new(),
                             scrutinee_ty,
                             remaining_scrutinee: next_remaining_scrutinee,
@@ -1332,19 +1226,13 @@ async fn apply_cont(
                     ));
                     stack.push((
                         TypeCheckCont::AfterBlock {
-                            binding_envs: vec![Arc::clone(&arm_env)],
-                            pre_final_refs: vec![],
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                         },
                         Arc::clone(&match_node),
                     ));
-                    // Apply this arm's narrowings AFTER the take so they're active during body eval.
-                    if !guard_narrowings.is_empty() {
-                        typecheck_narrow::apply_narrowings(&arm_env, &guard_narrowings, state);
-                    }
-                    TypeCheckAction::Eval(Arc::clone(arms[0].body_expr()), arm_env)
+                    TypeCheckAction::Eval(Arc::clone(arms[0].body_expr()))
                 }
             }
         }
@@ -1352,7 +1240,6 @@ async fn apply_cont(
         // ===== MatchArm — process one arm body result and continue with next arm =====
         TypeCheckCont::MatchArm {
             remaining_arms,
-            env,
             mut accumulated_types,
             scrutinee_ty,
             remaining_scrutinee,
@@ -1387,7 +1274,6 @@ async fn apply_cont(
                 match setup_match_arm_env(
                     &remaining_arms[0],
                     &remaining_scrutinee,
-                    &env,
                     state,
                     errors,
                     type_map,
@@ -1404,12 +1290,11 @@ async fn apply_cont(
                         };
                         TypeCheckAction::Done(match_ty)
                     }
-                    Some((arm_env, next_remaining_scrutinee, guard_narrowings)) => {
+                    Some((next_remaining_scrutinee, _guard_narrowings)) => {
                         let next_remaining: Vec<SurfaceMatchArm> = remaining_arms[1..].to_vec();
                         stack.push((
                             TypeCheckCont::MatchArm {
                                 remaining_arms: next_remaining,
-                                env,
                                 accumulated_types,
                                 scrutinee_ty,
                                 remaining_scrutinee: next_remaining_scrutinee,
@@ -1420,18 +1305,13 @@ async fn apply_cont(
                         ));
                         stack.push((
                             TypeCheckCont::AfterBlock {
-                                binding_envs: vec![Arc::clone(&arm_env)],
-                                pre_final_refs: vec![],
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
                                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
                             },
                             Arc::clone(&match_node),
                         ));
-                        if !guard_narrowings.is_empty() {
-                            typecheck_narrow::apply_narrowings(&arm_env, &guard_narrowings, state);
-                        }
-                        TypeCheckAction::Eval(Arc::clone(remaining_arms[0].body_expr()), arm_env)
+                        TypeCheckAction::Eval(Arc::clone(remaining_arms[0].body_expr()))
                     }
                 }
             }
@@ -1443,7 +1323,6 @@ async fn apply_cont(
             has_default,
             default_node,
             assert_node,
-            env,
             span,
             annotation_span,
         } => {
@@ -1497,7 +1376,6 @@ async fn apply_cont(
                     let mut local_stack = Vec::new();
                     Box::pin(run_typecheck(
                         default_n,
-                        &env,
                         state,
                         errors,
                         type_map,
@@ -1641,99 +1519,15 @@ async fn apply_cont(
         // ===== AfterBlock =====
         //
         // Fires after the final expression in a block (sequential intermediates, fn body,
-        // match arm). Performs BFS liveness analysis on state.use_def to emit lost-binding
-        // warnings (T-2060). Restores saved_use_def, saved_current_binding, and
+        // match arm). Restores saved_use_def, saved_current_binding, and
         // saved_narrowing_map so that nested blocks don't corrupt the enclosing scope.
         //
-        // Algorithm:
-        // 1. Seed: names that the final expression newly marked referenced (by comparing
-        //    current referenced state against pre_final_refs snapshot). These are directly live.
-        // 2. BFS forward: for each live name A, look up state.use_def[A] and add those names
-        //    to the live set if not already present. state.use_def[A] = {B, C} means A's value
-        //    expression referenced B and C — if A is live, B and C must also be live.
-        // 3. Emit a warning for every intermediate binding NOT in the live set that has a
-        //    user-visible definition_span.
-        //
-        // BFS is exact (per-binding) vs the old dep_graph (per-dict approximation). This
-        // eliminates false negatives: the old algorithm could fail to warn about truly unused
-        // bindings when multiple bindings in one dict had heterogeneous reachability.
+        // Lost-binding detection will be re-implemented using ScopeFrame in a future commit.
         TypeCheckCont::AfterBlock {
-            binding_envs,
-            pre_final_refs,
             saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
         } => {
-            // Step 1: Seed the live set with names newly marked by the final expression.
-            // Names in pre_final_refs were already referenced before the final expression
-            // ran (they were marked by inter-dict processing). Only names that the final
-            // expression itself referenced are seeded as directly live.
-            // Read from SLOTS only — infer_var_ref marks slots directly via Dispatch addresses.
-            let mut live: std::collections::HashSet<BindingId> = std::collections::HashSet::new();
-            for (frame_idx, env_frame) in binding_envs.iter().enumerate() {
-                let env_guard = env_frame.read().unwrap();
-                for slot_entry in &env_guard.slots {
-                    if let Some((name, slot)) = slot_entry {
-                        if let Some(ref span) = slot.definition_span {
-                            let id = BindingId {
-                                def_span: span.clone(),
-                                name: name.clone(),
-                            };
-                            let was_pre = pre_final_refs
-                                .get(frame_idx)
-                                .map_or(false, |s| s.contains(&id));
-                            if slot.referenced && !was_pre {
-                                live.insert(id);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Step 2: BFS forward through state.use_def.
-            // For each live BindingId A, if A's value expression referenced B (use_def[A] contains B),
-            // then B must also be live: A cannot be computed without B.
-            // Span-keyed BindingId prevents same-named bindings at different scopes from conflating.
-            let mut queue: std::collections::VecDeque<BindingId> = live.iter().cloned().collect();
-            while let Some(id) = queue.pop_front() {
-                if let Some(deps) = state.use_def.get(&id) {
-                    for dep in deps {
-                        if live.insert(dep.clone()) {
-                            queue.push_back(dep.clone());
-                        }
-                    }
-                }
-            }
-
-            // Step 3: emit warnings for non-live bindings.
-            // Bindings without definition_span are synthetic/injected — skip them.
-            // Read from SLOTS (the authoritative liveness location).
-            for env_frame in &binding_envs {
-                let env_guard = env_frame.read().unwrap();
-                for slot_entry in &env_guard.slots {
-                    if let Some((name, slot)) = slot_entry {
-                        if let Some(ref def_span) = slot.definition_span {
-                            let id = BindingId {
-                                def_span: def_span.clone(),
-                                name: name.clone(),
-                            };
-                            if !live.contains(&id) {
-                                // Skip internal names (prefixed with special chars).
-                                if !name.starts_with(INTERNAL_PREFIX_INSTANCE)
-                                    && !name.starts_with(INTERNAL_PREFIX_LABEL)
-                                {
-                                    state.diagnostics.push(Diagnostic::warn(
-                                        "lost-binding",
-                                        format!("variable '{}' is never referenced", name),
-                                        def_span.clone(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -1748,13 +1542,16 @@ async fn apply_cont(
         // Schemes are not propagated to the parent env: this is a terminal dict expression,
         // not an intermediate scope-chain body. The returned record type carries the full
         // structural type information.
-        TypeCheckCont::LetrecGroupPassZero { entries, env } => {
+        TypeCheckCont::LetrecGroupPassZero { entries } => {
             let body_slot_base_pre: Option<u32> = entries
                 .first()
                 .and_then(|e| e.node.assigned_slot.get().copied());
-            let (record_type, _schemes, _nested_dict_env, mut dict_errs) = Box::pin(
-                typecheck_letrec_group(&entries, &env, state, type_map, body_slot_base_pre),
-            )
+            let (record_type, _schemes, mut dict_errs) = Box::pin(typecheck_letrec_group(
+                &entries,
+                state,
+                type_map,
+                body_slot_base_pre,
+            ))
             .await;
             errors.append(&mut dict_errs);
             TypeCheckAction::Done(record_type)
@@ -2079,7 +1876,6 @@ async fn apply_cont_call_func(
     func_ty: TypeValue,
     args: Vec<Arc<SurfaceNode>>,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
-    env: Arc<RwLock<Env>>,
     call_node: Arc<SurfaceNode>,
     ctx: &mut TypeCheckCtx<'_, '_>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
@@ -2090,7 +1886,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     arg,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2102,7 +1897,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2203,14 +1997,9 @@ async fn apply_cont_call_func(
                     rest: inst_rest,
                     required_count: inst_required,
                 };
-                let result = finalize_call_no_positional_args(
-                    sig,
-                    named_args,
-                    &env,
-                    call_node.span.clone(),
-                    ctx,
-                )
-                .await;
+                let result =
+                    finalize_call_no_positional_args(sig, named_args, call_node.span.clone(), ctx)
+                        .await;
                 // Wire type instantiation on call_node.
                 if let Some(renaming) = ctx.state.last_scheme_renaming.take() {
                     let mut type_inst = std::collections::HashMap::new();
@@ -2241,7 +2030,6 @@ async fn apply_cont_call_func(
                         let mut local_stack = Vec::new();
                         let _ = Box::pin(run_typecheck(
                             arg,
-                            &env,
                             ctx.state,
                             ctx.errors,
                             ctx.type_map,
@@ -2253,7 +2041,6 @@ async fn apply_cont_call_func(
                         let mut local_stack = Vec::new();
                         let _ = Box::pin(run_typecheck(
                             &na.node.value,
-                            &env,
                             ctx.state,
                             ctx.errors,
                             ctx.type_map,
@@ -2294,7 +2081,6 @@ async fn apply_cont_call_func(
                     typed_variadics: inst_typed_variadics,
                     rest: inst_rest,
                     fn_required: inst_required,
-                    env: Arc::clone(&env),
                     named_args,
                     span: call_span,
                     call_node: Arc::clone(&call_node),
@@ -2302,7 +2088,7 @@ async fn apply_cont_call_func(
                 },
                 Arc::clone(&call_node),
             ));
-            TypeCheckAction::Eval(first_arg, env)
+            TypeCheckAction::Eval(first_arg)
         }
 
         Some(TV_VAR) => {
@@ -2311,7 +2097,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     arg,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2323,7 +2108,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2340,7 +2124,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     arg,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2352,7 +2135,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2378,7 +2160,6 @@ async fn apply_cont_call_func(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         arg,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2390,7 +2171,6 @@ async fn apply_cont_call_func(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         &na.node.value,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2426,7 +2206,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let arg_ty = Box::pin(run_typecheck(
                     &args[0],
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2465,7 +2244,6 @@ async fn apply_cont_call_func(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         &na.node.value,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2550,7 +2328,6 @@ async fn apply_cont_call_func(
                 selected,
                 args,
                 named_args,
-                env,
                 call_node,
                 ctx,
                 stack,
@@ -2580,7 +2357,6 @@ async fn apply_cont_call_func(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         arg,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2592,7 +2368,6 @@ async fn apply_cont_call_func(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         &na.node.value,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2611,7 +2386,6 @@ async fn apply_cont_call_func(
                 selected,
                 args,
                 named_args,
-                env,
                 call_node,
                 ctx,
                 stack,
@@ -2624,7 +2398,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     arg,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2636,7 +2409,6 @@ async fn apply_cont_call_func(
                 let mut local_stack = Vec::new();
                 let _ = Box::pin(run_typecheck(
                     &na.node.value,
-                    &env,
                     ctx.state,
                     ctx.errors,
                     ctx.type_map,
@@ -2667,7 +2439,6 @@ async fn apply_cont_call_func(
 async fn finalize_call_no_positional_args(
     sig: FnSig,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
-    env: &Arc<RwLock<Env>>,
     span: Span,
     ctx: &mut TypeCheckCtx<'_, '_>,
 ) -> TypeValue {
@@ -2718,7 +2489,6 @@ async fn finalize_call_no_positional_args(
                     let mut local_stack = Vec::new();
                     Box::pin(run_typecheck(
                         &na.node.value,
-                        env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2770,7 +2540,6 @@ async fn finalize_call_no_positional_args(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         &na.node.value,
-                        env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -2792,7 +2561,6 @@ async fn apply_call_args_poly(
     arg_nodes: Vec<Arc<SurfaceNode>>,
     sig: FnSig,
     named_args: Vec<Spanned<SurfaceNamedArg>>,
-    env: Arc<RwLock<Env>>,
     span: Span,
     effect_perform: Option<(u64, String)>,
     ctx: &mut TypeCheckCtx<'_, '_>,
@@ -2831,10 +2599,10 @@ async fn apply_call_args_poly(
 
             if is_concrete {
                 // Look up the class and check if any instance matches this argument type.
-                let env_read = env.read().unwrap();
-                let class_opt = env_read
-                    .all_classes()
-                    .into_iter()
+                let class_opt = ctx
+                    .state
+                    .classes
+                    .iter()
                     .find(|c| c.class_decl_id == class_id);
 
                 if let Some(class_decl) = class_opt {
@@ -2842,7 +2610,7 @@ async fn apply_call_args_poly(
                     // Simple best-effort check: compare TypeValue ctors (e.g., both TypeValue.Repr).
                     // Full structural equality or unification would be more precise but is complex.
                     let arg_ctor = typevalue_ctor_index(&arg_ty_applied);
-                    let has_matching_instance = env_read.all_instances().iter().any(|(_, inst)| {
+                    let has_matching_instance = ctx.state.instances.iter().any(|(_, inst)| {
                         if inst.class_name != class_decl.name {
                             return false;
                         }
@@ -3115,7 +2883,6 @@ async fn apply_call_args_poly(
                     let mut local_stack = Vec::new();
                     Box::pin(run_typecheck(
                         &na.node.value,
-                        &env,
                         ctx.state,
                         ctx.errors,
                         ctx.type_map,
@@ -3152,7 +2919,6 @@ async fn apply_call_args_poly(
                         let mut local_stack = Vec::new();
                         Box::pin(run_typecheck(
                             &na.node.value,
-                            &env,
                             ctx.state,
                             ctx.errors,
                             ctx.type_map,
@@ -3250,12 +3016,11 @@ fn extract_seq_elem_type(bucket_ty: &TypeValue) -> TypeValue {
 
 // ===== Inline helper: Fn inference via FnBody continuation =====
 
-/// Resolve all function annotations, build the parameter environment, push `FnBody`,
-/// and return `Eval(body, fn_env)` so the CEK loop evaluates the body iteratively without
+/// Resolve all function annotations, push `FnBody`,
+/// and return `Eval(body)` so the CEK loop evaluates the body iteratively without
 /// recursing on the Rust call stack.
 async fn infer_fn_push_cont(
     node: &Arc<SurfaceNode>,
-    _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
@@ -3400,11 +3165,7 @@ async fn infer_fn_push_cont(
     // Taking it here prevents leaking into nested fn expressions in the body.
     let expected_params: Option<Vec<TypeValue>> = state.expected_fn_params.take();
 
-    // Create a fresh Env for the function parameters (child of the closure-capture env).
-    let fn_env_arc = Arc::new(RwLock::new(Env::with_parent(Arc::clone(_env))));
-    // Deferred insertions: (slot, name, type, def_span) — applied after the loop
-    // to avoid holding the write guard across await points.
-    let mut deferred_inserts: Vec<(usize, String, TypeValue, Option<Span>)> = Vec::new();
+    // Fn param types will be written to ScopeFrame in a future commit.
     let mut param_types: Vec<(Option<String>, TypeValue)> = Vec::new();
     let mut typed_variadics: Vec<(String, TypeValue)> = Vec::new();
     let mut rest: Option<Box<(String, TypeValue)>> = None;
@@ -3505,12 +3266,7 @@ async fn infer_fn_push_cont(
             .get()
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
-        deferred_inserts.push((
-            slot,
-            p.node.name.clone(),
-            Arc::clone(&param_ty),
-            param_definition_span,
-        ));
+        let _ = (slot, param_definition_span); // will be used when ScopeFrame writes are added
         param_slot_idx += 1;
         if p.node.variadic {
             // Variadic param: goes into typed_variadics or rest, not fixed params.
@@ -3611,14 +3367,6 @@ async fn infer_fn_push_cont(
         }
     }
 
-    // Apply deferred inserts to the pre-built frame (scoped to avoid holding guard across await).
-    {
-        let mut fn_env_guard = fn_env_arc.write().unwrap();
-        for (slot, name, ty, def_span) in deferred_inserts {
-            fn_env_guard.insert_at_slot(slot, name, ty, def_span);
-        }
-    }
-
     let saved_level = state.ctx.current_level;
     let saved_expected_return = state.expected_return.clone();
 
@@ -3685,8 +3433,6 @@ async fn infer_fn_push_cont(
     ));
     stack.push((
         TypeCheckCont::AfterBlock {
-            binding_envs: vec![Arc::clone(&fn_env_arc)],
-            pre_final_refs: vec![std::collections::HashSet::new()],
             saved_use_def: std::mem::take(&mut state.use_def),
             saved_current_binding: state.current_binding.take(),
             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
@@ -3695,7 +3441,7 @@ async fn infer_fn_push_cont(
     ));
 
     // Evaluate body iteratively via the CEK loop.
-    TypeCheckAction::Eval(Arc::clone(body), fn_env_arc)
+    TypeCheckAction::Eval(Arc::clone(body))
 }
 
 // ===== Inline helper: Match arm environment setup =====
@@ -3704,7 +3450,7 @@ async fn infer_fn_push_cont(
 // apply them — the caller must save state.narrowing_map, then apply the returned narrowings
 // to the now-empty map, so AfterBlock can restore the outer narrowing_map after the arm.
 //
-// Returns (arm_env, next_remaining_scrutinee, guard_narrowings).
+// Returns (next_remaining_scrutinee, guard_narrowings).
 // Returns `None` only if called with no arms (should not happen in practice).
 
 /// Extract `(type_decl_id, ctor_index)` from a pattern node's `inferred_type_decl_id`.
@@ -3744,19 +3490,10 @@ fn extract_ctor_identity_from_inferred_type(node: &SurfaceNode) -> Option<(u64, 
 async fn setup_match_arm_env(
     arm: &SurfaceMatchArm,
     remaining_scrutinee: &TypeValue,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
-) -> Option<(
-    Arc<RwLock<Env>>,
-    TypeValue,
-    Vec<typecheck_narrow::Narrowing>,
-)> {
-    // Build a case arm env with the binding names from let_bindings.
-    // For keyed arms (empty PatternDecl), build_case_arm_env returns a clone of env.
-    let arm_env: Arc<RwLock<Env>> = build_case_arm_env(&arm.let_bindings, env, state, &arm.pattern);
-
+) -> Option<(TypeValue, Vec<typecheck_narrow::Narrowing>)> {
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
     // arm body sees them. AfterBlock restores the outer narrowing_map after the arm.
@@ -3764,18 +3501,17 @@ async fn setup_match_arm_env(
         let mut local_stack = Vec::new();
         let _guard_ty = Box::pin(run_typecheck(
             guard,
-            &arm_env,
             state,
             errors,
             type_map,
             &mut local_stack,
         ))
         .await;
-        typecheck_narrow::extract_narrowings(guard, &arm_env, &state.type_name_to_id)
+        // TODO: extract_narrowings needs to be updated to not require env
+        Vec::new()
     } else {
         Vec::new()
     };
-    let arm_env = arm_env; // no change — narrowings not applied here
 
     // Compute updated remaining_scrutinee (I-Case3 negation accumulation) for next arm.
     let next_remaining_scrutinee = if arm.guard.is_none() {
@@ -3881,7 +3617,7 @@ async fn setup_match_arm_env(
         Arc::clone(remaining_scrutinee)
     };
 
-    Some((arm_env, next_remaining_scrutinee, guard_narrowings))
+    Some((next_remaining_scrutinee, guard_narrowings))
 }
 
 // ===== Inline helper: Match exhaustiveness checking =====
@@ -4150,48 +3886,7 @@ async fn run_match_exhaustiveness_check(
     }
 }
 
-// ===== Inline helper: CaseArm env setup =====
-
-fn build_case_arm_env(
-    let_bindings: &Arc<SurfaceNode>,
-    _env: &Arc<RwLock<Env>>,
-    state: &mut InferState,
-    _node: &Arc<SurfaceNode>,
-) -> Arc<RwLock<Env>> {
-    // Extract binding names with their individual spans for lost-binding diagnostics.
-    // Each binding node's span points at the binding name in `[let v w ...]`.
-    let bindings_with_spans: Vec<(String, Span)> = match &let_bindings.expr {
-        SurfaceExpression::LetDecl { bindings } => bindings
-            .iter()
-            .filter_map(|b| {
-                if let SurfaceExpression::VarRef { name, .. } = &b.expr {
-                    if name == "_" {
-                        None // wildcard, not a binding
-                    } else {
-                        Some((name.clone(), b.span.clone()))
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    // Create a fresh Env for match arm bindings if there are any [let] bindings.
-    if !bindings_with_spans.is_empty() {
-        let arm_env_arc = Arc::new(RwLock::new(Env::with_parent(Arc::clone(_env))));
-        {
-            let mut child_inner = arm_env_arc.write().unwrap();
-            for (slot_idx, (name, binding_span)) in bindings_with_spans.into_iter().enumerate() {
-                let tv = state.fresh_type_var(&binding_span);
-                child_inner.insert_at_slot(slot_idx, name, tv, Some(binding_span));
-            }
-        }
-        arm_env_arc
-    } else {
-        Arc::clone(_env)
-    }
-}
+// CaseArm env setup removed — will be re-implemented using ScopeFrame.
 
 // ===== Inline helper: TypeAssert mismatch computation =====
 
@@ -4708,7 +4403,6 @@ pub(crate) fn adt_value_type(alias_body: &TypeValue) -> TypeValue {
 pub(crate) async fn entry_key_name(
     entry: &SurfaceEntry,
     auto_index: &mut i64,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
@@ -4721,7 +4415,6 @@ pub(crate) async fn entry_key_name(
             _ => {
                 let key_ty = Box::pin(run_typecheck(
                     key_node,
-                    env,
                     state,
                     errors,
                     type_map,
@@ -4801,7 +4494,6 @@ async fn register_class_method_signatures(
     params: &[String],
     methods: &[Spanned<SurfaceEntry>],
     state: &mut InferState,
-    dict_env: &Arc<RwLock<Env>>,
     enclosing_level: u32,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -4852,7 +4544,9 @@ async fn register_class_method_signatures(
                 match method_type_result {
                     Ok(method_type) => {
                         // Store the polymorphic method type in ClassDecl.method_signatures
-                        if let Some(class_decl) = state.classes.iter_mut().find(|c| c.name == class_name) {
+                        if let Some(class_decl) =
+                            state.classes.iter_mut().find(|c| c.name == class_name)
+                        {
                             if !class_decl
                                 .method_signatures
                                 .iter()
@@ -4865,16 +4559,7 @@ async fn register_class_method_signatures(
                         }
 
                         // Generalize the method type at the current enclosing level
-                        let scheme = generalize_tv(enclosing_level, &method_type, &state.ctx);
-
-                        // Insert into dict_env at the resolver-assigned slot
-                        {
-                            let mut env_write = dict_env.write().unwrap();
-                            // Use the method entry's assigned_slot if available, otherwise append.
-                            // IMPORTANT: entries must have assigned_slot populated by resolver before typecheck.
-                            let slot = env_write.slots.len();
-                            env_write.insert_at_slot(slot, method_name, scheme, None);
-                        }
+                        let _scheme = generalize_tv(enclosing_level, &method_type, &state.ctx);
                     }
                     Err(type_err) => {
                         errors.push(type_err);
@@ -4896,7 +4581,6 @@ async fn build_tycon_def_for_entry(
     entry: &Spanned<SurfaceEntry>,
     key_name: &str,
     state: &mut InferState,
-    dict_env: &Arc<RwLock<Env>>,
     ctor_schemes: &mut indexmap::IndexMap<String, TypeValue>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -5086,10 +4770,6 @@ async fn build_tycon_def_for_entry(
         state
             .type_display_names
             .insert(*ast_type_decl_id, key_name.to_string());
-        dict_env
-            .write()
-            .unwrap()
-            .insert_tycon_def(key_name.to_string(), std::sync::Arc::clone(&tycon_def));
         state
             .tycon_env
             .entry(*ast_type_decl_id)
@@ -5113,19 +4793,6 @@ async fn build_tycon_def_for_entry(
         for (ctor_name, ctor_tv) in ctor_fields {
             ctor_schemes.insert(ctor_name, ctor_tv);
         }
-
-        {
-            let mut env_write = dict_env.write().unwrap();
-            // Use entry's assigned_slot if available, otherwise append.
-            // TypeDecl entries should have assigned_slot from resolver.
-            let slot = env_write.slots.len();
-            env_write.insert_at_slot(
-                slot,
-                key_name.to_string(),
-                Arc::clone(&value_scheme_ty),
-                None,
-            );
-        }
     }
 }
 
@@ -5136,14 +4803,11 @@ async fn build_tycon_def_for_entry(
 /// Implements the standard HM letrec algorithm: key resolution, SCC decomposition,
 /// per-SCC pre-allocation + inference + generalization, and epilogue.
 ///
-/// Returns `(record_type, schemes, referenced, errors)` where:
+/// Returns `(record_type, schemes, errors)` where:
 /// - `record_type` is the inferred TypeValue.Record for the dict literal
 /// - `schemes` is an `IndexMap<String, Arc<Value>>` of per-entry generalized schemes (needed
 ///   by `process_document` for cross-document scoping and by `Sequential` for
 ///   let-polymorphism across multi-body function steps)
-/// - `dict_env` is the env frame created for this dict, containing all entries at their
-///   resolver-assigned slots with schemes, definition_spans, and referenced flags. The
-///   Sequential handler uses this frame directly in the env chain — no copying needed.
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
@@ -5153,22 +4817,17 @@ async fn build_tycon_def_for_entry(
 /// - Recursively for nested Dict values within the SCC per-entry loop
 pub(crate) async fn typecheck_letrec_group(
     entries: &[Spanned<SurfaceEntry>],
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     slot_base_override: Option<u32>,
 ) -> (
     TypeValue,
     indexmap::IndexMap<String, TypeValue>,
-    Arc<RwLock<Env>>,
     Vec<Diagnostic>,
 ) {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.ctx.current_level;
     state.ctx.current_level += 1;
-
-    // Create a fresh Env for the dict entries (child of the parent env).
-    let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
 
     // Extra schemes from ADT constructors — injected in type declaration registration, merged into final schemes.
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
@@ -5179,15 +4838,8 @@ pub(crate) async fn typecheck_letrec_group(
 
     // Step 1: Key resolution
     for entry in entries {
-        let key_name = entry_key_name(
-            &entry.node,
-            &mut auto_index,
-            env,
-            state,
-            &mut errors,
-            type_map,
-        )
-        .await;
+        let key_name =
+            entry_key_name(&entry.node, &mut auto_index, state, &mut errors, type_map).await;
         let is_type_decl = matches!(&entry.node.value.expr, SurfaceExpression::TypeDecl { .. });
         let is_static_key = entry.node.key.as_ref().is_some_and(|k| {
             matches!(
@@ -5260,7 +4912,6 @@ pub(crate) async fn typecheck_letrec_group(
                         &entries[idx],
                         name,
                         state,
-                        &dict_env,
                         &mut ctor_schemes,
                         &mut errors,
                     )
@@ -5320,7 +4971,7 @@ pub(crate) async fn typecheck_letrec_group(
 
             if is_static_key {
                 if let Some(ref name) = key_name {
-                    let abs_slot = entry_slots[idx];
+                    let _abs_slot = entry_slots[idx];
                     if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
                         let mut fn_params: Vec<(Option<String>, TypeValue)> = Vec::new();
                         let mut pre_is_variadic = false;
@@ -5343,34 +4994,10 @@ pub(crate) async fn typecheck_letrec_group(
                         if !is_type_decl {
                             fresh_vars_by_name.insert(name.clone(), Arc::clone(&fn_type));
                         }
-                        {
-                            let mut env_write = dict_env.write().unwrap();
-                            let slot = abs_slot
-                                .map(|s| s as usize)
-                                .unwrap_or_else(|| env_write.slots.len());
-                            env_write.insert_at_slot(
-                                slot,
-                                name.clone(),
-                                Arc::clone(&fn_type),
-                                Some(entry.span.clone()),
-                            );
-                        }
                     } else {
                         let fresh_var = state.fresh_type_var(&entry.span);
                         if !is_type_decl {
                             fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
-                        }
-                        {
-                            let mut env_write = dict_env.write().unwrap();
-                            let slot = abs_slot
-                                .map(|s| s as usize)
-                                .unwrap_or_else(|| env_write.slots.len());
-                            env_write.insert_at_slot(
-                                slot,
-                                name.clone(),
-                                Arc::clone(&fresh_var),
-                                Some(entry.span.clone()),
-                            );
                         }
                     }
                 }
@@ -5398,17 +5025,6 @@ pub(crate) async fn typecheck_letrec_group(
                                 let binding_name = method_name.clone();
                                 let fresh_var = state.fresh_type_var(&entry.span);
                                 fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
-                                {
-                                    let mut env_write = dict_env.write().unwrap();
-                                    // Use entry's assigned_slot if available, otherwise append.
-                                    let slot = env_write.slots.len();
-                                    env_write.insert_at_slot(
-                                        slot,
-                                        binding_name,
-                                        Arc::clone(&fresh_var),
-                                        None,
-                                    );
-                                }
                             }
                         }
                     }
@@ -5488,9 +5104,12 @@ pub(crate) async fn typecheck_letrec_group(
                     ..
                 } = &entry.node.value.expr
                 {
-                    let (ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
-                        typecheck_letrec_group(nested_entries, &dict_env, state, type_map, None),
-                    )
+                    let (ty, _schemes, mut nested_errs) = Box::pin(typecheck_letrec_group(
+                        nested_entries,
+                        state,
+                        type_map,
+                        None,
+                    ))
                     .await;
                     errors.append(&mut nested_errs);
                     let resolved = state.apply(&ty);
@@ -5501,7 +5120,6 @@ pub(crate) async fn typecheck_letrec_group(
                     let mut local_stack = Vec::new();
                     let ty = Box::pin(run_typecheck(
                         &entry.node.value,
-                        &dict_env,
                         state,
                         &mut local_errors,
                         type_map,
@@ -5622,7 +5240,6 @@ pub(crate) async fn typecheck_letrec_group(
                             class_params,
                             methods,
                             state,
-                            &dict_env,
                             enclosing_level,
                             &mut errors,
                         )
@@ -5637,9 +5254,12 @@ pub(crate) async fn typecheck_letrec_group(
                     ..
                 } = &entry.node.value.expr
                 {
-                    let (ty, _schemes, _nested_dict_env, mut nested_errs) = Box::pin(
-                        typecheck_letrec_group(nested_entries, &dict_env, state, type_map, None),
-                    )
+                    let (ty, _schemes, mut nested_errs) = Box::pin(typecheck_letrec_group(
+                        nested_entries,
+                        state,
+                        type_map,
+                        None,
+                    ))
                     .await;
                     errors.append(&mut nested_errs);
                     let resolved = state.apply(&ty);
@@ -5649,7 +5269,6 @@ pub(crate) async fn typecheck_letrec_group(
                     let mut local_stack = Vec::new();
                     let _ = Box::pin(run_typecheck(
                         &entry.node.value,
-                        &dict_env,
                         state,
                         &mut local_errors,
                         type_map,
@@ -5880,16 +5499,7 @@ pub(crate) async fn typecheck_letrec_group(
                     };
 
                     if state.failed_bindings.contains_key(name) {
-                        let scheme = generalize_tv(enclosing_level, ty, &state.ctx);
-                        {
-                            let mut env_write = dict_env.write().unwrap();
-                            let slot = env_write
-                                .slot_index
-                                .get(name.as_str())
-                                .copied()
-                                .unwrap_or_else(|| env_write.slots.len());
-                            env_write.insert_at_slot(slot, name.clone(), scheme, None);
-                        }
+                        let _scheme = generalize_tv(enclosing_level, ty, &state.ctx);
                         continue;
                     }
 
@@ -5910,80 +5520,28 @@ pub(crate) async fn typecheck_letrec_group(
                     );
 
                     state.constraints = saved_constraints;
-
-                    {
-                        let mut env_write = dict_env.write().unwrap();
-                        let slot = env_write
-                            .slot_index
-                            .get(name.as_str())
-                            .copied()
-                            .unwrap_or_else(|| env_write.slots.len());
-                        env_write.insert_at_slot(slot, name.clone(), scheme, None);
-                    }
+                    let _ = scheme; // schemes will be written to ScopeFrame in a future commit
                 }
             }
         }
     }
 
-    // Re-apply zero-arity TypeDecl schemes from state.tycon_env.
-    for (key_name, is_type_decl, _) in &key_entries {
-        if *is_type_decl {
-            if let Some(name) = key_name {
-                if let Some(def) = state
-                    .type_name_to_id
-                    .get(name.as_str())
-                    .and_then(|id| state.tycon_env.get(id))
-                {
-                    if def.params.is_empty() {
-                        let mut env_write = dict_env.write().unwrap();
-                        let slot = env_write
-                            .slot_index
-                            .get(name.as_str())
-                            .copied()
-                            .unwrap_or_else(|| env_write.slots.len());
-                        env_write.insert_at_slot(
-                            slot,
-                            name.clone(),
-                            adt_value_type(&def.body),
-                            None,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Build final schemes map from dict_env in SOURCE ORDER using slot-based lookup.
+    // Build final schemes map from field_types directly (Env is gone).
     let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
-    {
-        let dict_env_guard = dict_env.read().unwrap();
-        for (idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
-            if let Some(name) = key_name {
-                if let Some(slot) = entry_slots[idx] {
-                    if let Some(scheme) = dict_env_guard.get_scheme_at(0, slot) {
-                        schemes.insert(name.clone(), scheme);
-                    }
+    for (idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
+        if let Some(name) = key_name {
+            if let Some(_slot) = entry_slots[idx] {
+                if let Some(ty) = field_types.get(name) {
+                    schemes.insert(name.clone(), Arc::clone(ty));
                 }
             }
         }
     }
-    // Merge ADT constructor schemes into dict_env so the frame has all entries.
+    // Merge ADT constructor schemes.
     for (name, scheme) in ctor_schemes {
         schemes
             .entry(name.clone())
             .or_insert_with(|| scheme.clone());
-        if !dict_env
-            .read()
-            .unwrap()
-            .slot_index
-            .contains_key(name.as_str())
-        {
-            let slot = dict_env.read().unwrap().slots.len();
-            dict_env
-                .write()
-                .unwrap()
-                .insert_at_slot(slot, name, scheme, None);
-        }
     }
 
     // Restore enclosing level
@@ -6011,7 +5569,7 @@ pub(crate) async fn typecheck_letrec_group(
     };
     let record_type = make_typevalue_record(resolved_field_types.clone(), tail_value);
 
-    (record_type, schemes, dict_env, errors)
+    (record_type, schemes, errors)
 }
 
 #[cfg(test)]

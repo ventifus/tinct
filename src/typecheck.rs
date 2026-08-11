@@ -3,12 +3,11 @@
 //! unification for polymorphic function calls.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::type_tags::*;
 // Pattern import deleted (T-1750)
 use crate::ast::{Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode};
-use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
@@ -91,12 +90,14 @@ pub(crate) struct ClassDeclSurface<'a> {
 /// - `errors`: type errors encountered during inference (non-fatal — env always propagated)
 /// Extract fields from a TypeValue.Record as `Vec<(field_name, TypeValue)>`.
 /// Public alias for use by typecheck_narrow.rs.
+#[allow(dead_code)]
 pub(crate) fn extract_record_fields_pub(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
     extract_record_fields(tv)
 }
 ///
 /// Returns `Some(fields)` for TypeValue.Record variants where the payload can be read
 /// synchronously (settled thunks). Returns `None` for non-Record TypeValues or unsettled payloads.
+#[allow(dead_code)]
 fn extract_record_fields(tv: &Arc<Value>) -> Option<Vec<(String, Arc<Value>)>> {
     use crate::value::HashableValue;
     match tv.as_ref() {
@@ -192,7 +193,6 @@ fn make_typevalue_record(
     })
 }
 
-
 /// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
 ///
 /// Sets:
@@ -239,10 +239,9 @@ pub(crate) fn build_infer_state(
 
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
-    parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
-) -> (Arc<RwLock<Env>>, Arc<Value>, Vec<Diagnostic>) {
+) -> (Arc<Value>, Vec<Diagnostic>) {
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
     let empty_dict_ty = make_typevalue_record(indexmap::IndexMap::new(), None);
 
@@ -263,23 +262,11 @@ pub(crate) async fn process_document(
         .collect();
 
     if nodes.is_empty() {
-        // Empty document — return the parent env unchanged so the caller's env chain
-        // continues from where it left off. Creating a fresh Env::with_parent here
-        // would produce an env with 0 slots, breaking slot-based lookups in subsequent
-        // documents that expect to traverse back to the properly seeded root env.
-        return (Arc::clone(parent_env), empty_dict_ty, Vec::new());
+        return (empty_dict_ty, Vec::new());
     }
 
-    let enclosing_level = state.ctx.current_level;
+    let _enclosing_level = state.ctx.current_level;
     let last_span = nodes.last().unwrap().span.clone();
-
-    // Snapshot tycon_env keys before the run.
-    // ctor_schemes for ADT types declared in the last Dict expression are not propagated
-    // by the LetrecGroupPassZero handler (it discards the schemes return from typecheck_letrec_group).
-    // We reconstruct them by diffing tycon_env against this snapshot: new zero-arity TyCon
-    // entries represent types declared here.
-    let tycon_keys_before: std::collections::HashSet<u64> =
-        state.tycon_env.keys().cloned().collect();
 
     // Route all document nodes through the CEK machine's Sequential arm — the single
     // canonical path for sequential expression evaluation. For single-item documents,
@@ -292,28 +279,11 @@ pub(crate) async fn process_document(
     };
 
     let mut errors = Vec::new();
-    let result_ty = typecheck_cek::run_typecheck(
-        &doc_node,
-        parent_env,
-        state,
-        &mut errors,
-        type_map,
-        &mut Vec::new(),
-    )
-    .await;
+    let result_ty =
+        typecheck_cek::run_typecheck(&doc_node, state, &mut errors, type_map, &mut Vec::new())
+            .await;
 
     // Check that the last expression's type is a Dict subtype.
-    //
-    // A document's last expression must be a record (the exports dict). The runtime enforces
-    // the same constraint via builtin-eval, but catching it here produces a clearer error
-    // message and fails fast at compile time rather than at evaluation time.
-    //
-    // TypeValue.Record:   ok — any record type satisfies the constraint.
-    // TypeValue.Unknown:  ok — gradual escape hatch; cannot rule out a dict statically.
-    // TypeValue.Top:      ok — top type; cannot rule out a dict.
-    // TypeValue.Var:      ok — inference variable; deferred to the constraint solver.
-    // TypeValue.Op/App:   ok — named type constructor (may be a Dict alias).
-    // Everything else:    the type is known to be a non-dict → error.
     {
         let is_dict_ok = match result_ty.as_ref() {
             Value::Variant { ctor_index, .. } => {
@@ -341,59 +311,7 @@ pub(crate) async fn process_document(
         }
     }
 
-    // Build result_env with parent=parent_env (flat env chain invariant).
-    // process_document invariant: result_env is always parented to parent_env, not to the
-    // internal intermediate envs created by the CEK's Sequential arm.
-    let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
-
-    // Extract schemes from the last expression's result type.
-    // The last Dict goes through LetrecGroupPassZero → typecheck_letrec_group, which produces mono field
-    // types (not generalized at the call site). Generalize at enclosing_level here —
-    // typecheck_letrec_group restores state.ctx.current_level to enclosing_level before returning, so TypeVars
-    // at level > enclosing_level are the ones from this document's inference and are safe to
-    // generalize.
-    //
-    // Note: TyConDef entries (e.g., `Direction: [type North South]`) are excluded from
-    // the record's field_types in typecheck_letrec_group. They are NOT in result_ty.fields
-    // and are handled separately below via the tycon_env diff.
-    if let Some(fields) = extract_record_fields(&result_ty) {
-        for (name, field_tv) in fields {
-            let tv = generalize_tv(enclosing_level, &field_tv, &state.ctx);
-            // Append at end - slot ordering is not critical for top-level document entries.
-            let slot = result_env_inner.slots.len();
-            result_env_inner.insert_at_slot(slot, name, tv, None);
-        }
-    }
-
-    // Reconstruct schemes for zero-arity ADT types declared in this document.
-    // TypeAlias entries have is_type_decl=true in typecheck_letrec_group and are excluded from
-    // resolved_field_types, so they are not in result_ty.fields. The LetrecGroupPassZero handler
-    // also discards the schemes return from typecheck_letrec_group. We recover both by diffing
-    // state.tycon_env against the pre-run snapshot:
-    //   1. The type name itself (e.g., "Direction") → adt_value_type(body) — the constructor dict
-    //   2. Each constructor name (e.g., "North", "South") → the NominalVariant type
-    for (id, def) in &state.tycon_env {
-        if !tycon_keys_before.contains(id) && def.params.is_empty() {
-            let value_ty = typecheck_cek::adt_value_type(&def.body);
-            let name = state
-                .type_display_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| id.to_string());
-            // Append at end - slot ordering is not critical for top-level document entries.
-            let slot = result_env_inner.slots.len();
-            result_env_inner.insert_at_slot(slot, name, Arc::clone(&value_ty), None);
-            // Insert each constructor name with its variant TypeValue.
-            if let Some(ctor_fields) = extract_record_fields(&value_ty) {
-                for (ctor_name, ctor_tv) in ctor_fields {
-                    let ctor_slot = result_env_inner.slots.len();
-                    result_env_inner.insert_at_slot(ctor_slot, ctor_name, ctor_tv, None);
-                }
-            }
-        }
-    }
-
-    (Arc::new(RwLock::new(result_env_inner)), result_ty, errors)
+    (result_ty, errors)
 }
 
 /// Pre-register type aliases in `target_env` before letrec inference.
@@ -579,7 +497,6 @@ pub(crate) async fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
     span: Span,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Arc<Value>, Vec<Diagnostic>> {
@@ -617,7 +534,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
     let mut arm_data: Vec<SurfaceMatchArmData> = Vec::new();
 
     for (pattern_node, methods) in arms {
-        let pattern_types = extract_pattern_types(pattern_node, env, state).await?;
+        let pattern_types = extract_pattern_types(pattern_node, state).await?;
 
         if pattern_types.len() != param_count {
             return Err(vec![Diagnostic::error(
@@ -818,18 +735,17 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     .collect();
 
                 // Look up this method's polymorphic signature in the class.
-                let method_sig_opt =
-                    state
-                        .classes
-                        .iter()
-                        .find(|c| c.name == class_name)
-                        .cloned()
-                        .and_then(|cd| {
-                            cd.method_signatures
-                                .iter()
-                                .find(|(n, _)| n == &method_name)
-                                .map(|(_, tv)| Arc::clone(tv))
-                        });
+                let method_sig_opt = state
+                    .classes
+                    .iter()
+                    .find(|c| c.name == class_name)
+                    .cloned()
+                    .and_then(|cd| {
+                        cd.method_signatures
+                            .iter()
+                            .find(|(n, _)| n == &method_name)
+                            .map(|(_, tv)| Arc::clone(tv))
+                    });
 
                 if let Some(poly_sig) = method_sig_opt {
                     // Apply the substitution to the polymorphic method type to get the
@@ -854,7 +770,6 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let mut method_stack = Vec::new();
             let method_impl_type = Box::pin(typecheck_cek::run_typecheck(
                 &method.node.value,
-                env,
                 state,
                 &mut method_errors,
                 type_map,
@@ -1014,15 +929,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
             // can find the method type.
             let binding_name = method_name.clone();
 
-            let scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
+            let _scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
 
-            // Insert into the parent dict env at the resolver-assigned slot, or append.
-            {
-                let mut env_write = env.write().unwrap();
-                // Append at end - slot ordering is not critical for instance methods.
-                let slot = env_write.slots.len();
-                env_write.insert_at_slot(slot, binding_name, scheme, None);
-            }
+            // Type scheme write removed — scope_chain on InferState handles type scheme storage.
+            let _ = binding_name;
         }
 
         // Pop the type param scope frame pushed before method body checking.

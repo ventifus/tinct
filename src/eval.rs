@@ -435,13 +435,6 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
 /// builtin-fork-type-ctx). This struct is the stable field layout.
 #[derive(Debug, Clone)]
 pub struct TypeContextData {
-    /// Accumulated Hindley-Milner inference environment.
-    /// Initialized to the builtin_core TypeEnv at startup (via `init_type_context` callers).
-    /// Each `builtin-typecheck-doc` call seeds from this env and writes the resulting `final_env`
-    /// back, accumulating type knowledge across files (prelude → user code).
-    /// This makes prelude names (map, filter, raise, etc.) visible to the type checker
-    /// when checking user code, without re-typechecking prelude on every call.
-    pub inference_env: Arc<RwLock<crate::env::Env>>,
     /// Accumulated type constructor definitions (TyConDef).
     /// Each `builtin-typecheck-doc` call seeds InferState.tycon_env from this map and writes
     /// newly registered TyConDefs back. This propagates opaque types (DirCap, File,
@@ -2559,28 +2552,14 @@ mod tests {
     const TEST_ID_SHAPE: u64 = 2005;
     use crate::value::*;
 
-    fn empty_env() -> Arc<RwLock<crate::env::Env>> {
-        Arc::new(RwLock::new(crate::env::Env::new()))
-    }
-
     fn test_ctx() -> Arc<EvalContext> {
         EvalContext::new()
-    }
-
-    /// Test helper for tests that need dot-access to work.
-    /// `build_core_env()` seeds the resolver with all builtin names. Dot-access desugars
-    /// to `builtin-dict-get` (key-based lookup) and must be registered in the root env.
-    fn core_env_and_ctx() -> (Arc<RwLock<crate::env::Env>>, Arc<EvalContext>) {
-        let env = crate::builtins::build_core_env();
-        let ctx = EvalContext::new();
-        (env, ctx)
     }
 
     /// Test-only: evaluate a SurfaceNode via the lower→CoreExpr path.
     /// Uses lower::lower() to produce CoreExpr, then calls eval_core_expr.
     async fn eval_for_test(
         node: Arc<SurfaceNode>,
-        _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         let display_names = ctx.type_display_names_snapshot();
@@ -2612,14 +2591,11 @@ mod tests {
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
-            let _env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -2631,7 +2607,6 @@ mod tests {
     /// (e.g. `CoreExpr::TypeAssert` with a pre-resolved `Type`).
     async fn eval_core_for_test(
         expr: Spanned<CoreExpr>,
-        _env: Arc<RwLock<crate::env::Env>>,
         ctx: &Arc<EvalContext>,
     ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
         crate::eval_core::eval_core_expr(&expr, &crate::value::EvalFrame::empty(), ctx).await
@@ -2966,9 +2941,7 @@ mod tests {
             },
             test_span(1, 1, 1, 15),
         );
-        let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
-            .await
-            .unwrap();
+        let dict_thunk = eval_core_for_test(dict_core, &ctx).await.unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
@@ -3072,9 +3045,7 @@ mod tests {
             ],
             scope_frame: std::sync::OnceLock::new(),
         });
-        let err = eval_for_test(node, empty_env(), &test_ctx())
-            .await
-            .unwrap_err();
+        let err = eval_for_test(node, &test_ctx()).await.unwrap_err();
         assert!(err.to_string().contains("duplicate key: x"), "got: {}", err);
     }
 
@@ -3107,7 +3078,6 @@ mod tests {
         // Anonymous Placeholder (bare ...) lowers to CoreExpr::Placeholder → Err at eval
         let err = eval_for_test(
             surf(SurfaceExpression::Placeholder(None, None)),
-            empty_env(),
             &test_ctx(),
         )
         .await
@@ -3120,7 +3090,6 @@ mod tests {
         // eval_core_expr returns Err immediately for Rest (not deferred to materialize)
         let err = eval_for_test(
             surf(SurfaceExpression::Placeholder(Some("x".into()), None)),
-            empty_env(),
             &test_ctx(),
         )
         .await
@@ -3244,9 +3213,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
             err.kind, "type-assert-failed",
@@ -3279,9 +3246,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
             err.kind, "type-assert-failed",
@@ -3313,9 +3278,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
             err.kind, "type-assert-failed",
@@ -3376,9 +3339,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, string_val("hello"));
     }
@@ -3404,9 +3365,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
             err.kind, "type-assert-failed",
@@ -3459,7 +3418,7 @@ mod tests {
             span,
         );
         let ctx = test_ctx();
-        let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
+        let thunk = eval_core_for_test(expr, &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         assert_eq!(
             val,
@@ -3496,9 +3455,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
@@ -3537,7 +3494,7 @@ mod tests {
             span,
         );
         let ctx = test_ctx();
-        let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
+        let thunk = eval_core_for_test(expr, &ctx).await.unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &ctx).await.unwrap_err();
         assert_eq!(
@@ -3594,9 +3551,7 @@ mod tests {
             },
             test_span(1, 1, 1, 15),
         );
-        let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
-            .await
-            .unwrap();
+        let dict_thunk = eval_core_for_test(dict_core, &ctx).await.unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         // Extract x's thunk from the dict
@@ -3668,7 +3623,7 @@ mod tests {
             )],
             scope_frame: std::sync::OnceLock::new(),
         });
-        let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
+        let thunk = eval_for_test(node, &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
             Value::Dict { entries: map, .. } => {
@@ -3710,7 +3665,7 @@ mod tests {
             )],
             scope_frame: std::sync::OnceLock::new(),
         });
-        let thunk = eval_for_test(node, empty_env(), &ctx).await.unwrap();
+        let thunk = eval_for_test(node, &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
             Value::Dict { entries: map, .. } => {
@@ -3745,7 +3700,7 @@ mod tests {
     async fn test_dot_access_on_erroring_target_has_frame() {
         // Evaluating a Placeholder should produce an error.
         // CoreExpr::Placeholder evaluates immediately to Err (not a lazy thunk).
-        let (env, ctx) = core_env_and_ctx();
+        let ctx = test_ctx();
         let placeholder_span = test_span(1, 1, 1, 12);
         let err = eval_core_for_test(
             Spanned::new(
@@ -3754,7 +3709,6 @@ mod tests {
                 },
                 placeholder_span,
             ),
-            Arc::clone(&env),
             &ctx,
         )
         .await
@@ -3908,9 +3862,7 @@ mod tests {
             },
             test_span(1, 1, 1, 15),
         );
-        let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
-            .await
-            .unwrap();
+        let dict_thunk = eval_core_for_test(dict_core, &ctx).await.unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
@@ -4027,9 +3979,7 @@ mod tests {
             },
             test_span(1, 1, 1, 15),
         );
-        let dict_thunk = eval_core_for_test(dict_core, empty_env(), &ctx)
-            .await
-            .unwrap();
+        let dict_thunk = eval_core_for_test(dict_core, &ctx).await.unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
 
         let x_thunk = match &dict_val {
@@ -4085,9 +4035,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(
             val,
@@ -4121,9 +4069,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
             err.kind, "type-assert-failed",
@@ -4154,9 +4100,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, string_val("hello"));
     }
@@ -4181,9 +4125,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(val, string_val("anything"));
     }
@@ -4208,9 +4150,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         assert_eq!(
             val,
@@ -4306,9 +4246,7 @@ mod tests {
             span,
         );
 
-        let thunk = eval_core_for_test(inner_expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(inner_expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         // Should be a Dict with the expected fields
         match &val {
@@ -4370,9 +4308,7 @@ mod tests {
             span,
         );
 
-        let thunk = eval_core_for_test(inner_expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(inner_expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string().contains("record without field \"id\""),
@@ -4463,9 +4399,7 @@ mod tests {
         );
 
         // BAS: should PASS — extra fields accepted
-        let thunk = eval_core_for_test(inner_expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(inner_expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match &val {
             Value::Dict { entries: map, .. } => {
@@ -4528,9 +4462,7 @@ mod tests {
             span,
         );
 
-        let thunk = eval_core_for_test(inner_expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(inner_expr, &test_ctx()).await.unwrap();
         let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
         match &val {
             Value::Dict { entries: map, .. } => {
@@ -4568,9 +4500,7 @@ mod tests {
             span,
         );
 
-        let thunk = eval_core_for_test(inner_expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(inner_expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string().contains("type assertion failed"),
@@ -4754,9 +4684,7 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
+        let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
@@ -5196,7 +5124,6 @@ mod tests {
         tni.insert("Int".to_string(), crate::value::TYPE_ID_INT);
         tni.insert("String".to_string(), crate::value::TYPE_ID_STRING);
         ctx.init_type_context(TypeContextData {
-            inference_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
             tycon_env: std::collections::HashMap::new(),
             type_stage_scope: vec![],
             type_stage_fns: std::collections::HashMap::new(),
@@ -5914,10 +5841,8 @@ mod tests {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &surface_program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -5997,7 +5922,7 @@ mod tests {
         // $builtin-raise is in core_env and raises an error when forced; the "unused"
         // entry must remain unforced so the raise never fires.
         let input = r#"[used: 1  unused: [call $builtin-raise "should not materialize"]]"#;
-        let (_env, ctx) = core_env_and_ctx();
+        let ctx = test_ctx();
         let thunk = eval_str(input, &ctx).await.unwrap();
         let val = materialize(&thunk, None, &ctx).await.unwrap();
 
@@ -6307,10 +6232,8 @@ mod tests {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -6430,10 +6353,8 @@ mod tests {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -6486,10 +6407,8 @@ mod tests {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -6541,10 +6460,8 @@ mod tests {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 

@@ -7,17 +7,14 @@
 //! The bootstrap is a simple loop over documents.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
-use crate::env::Env;
 use crate::eval::EvalContext;
 use crate::type_infer::{InferState, TypeStageData, TypeValue};
 
 /// Accumulated state threaded through the per-document pipeline.
 pub struct PipelineState {
-    /// Runtime environment — bindings from all processed documents.
-    pub env: Arc<RwLock<Env>>,
     /// Type-stage scope — TypeValues from type-stage documents.
     pub type_stage_data: TypeStageData,
     /// Type constructor definitions accumulated across documents.
@@ -35,30 +32,11 @@ pub struct PipelineState {
 impl PipelineState {
     /// Create the initial pipeline state from the Rust-native builtins.
     pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
-        let env = crate::builtins::build_core_env();
         let root_frame = ctx.root_group_resolver_map();
         let mut infer_state = InferState::new();
         infer_state.eval_ctx = Some(Arc::clone(ctx));
 
-        // Seed the type checker's env with Unknown type schemes for all builtins.
-        // The type checker needs to resolve VarRefs to builtins during type-checking.
-        // Builtins don't have declared types yet (those come from builtin_core.llt),
-        // so they start as Unknown (gradual typing).
-        {
-            let mut env_guard = env.write().unwrap();
-            for (name, &slot) in &root_frame {
-                let idx = slot as usize;
-                env_guard.insert_at_slot(
-                    idx,
-                    name.clone(),
-                    crate::type_infer::make_typevalue_unknown(),
-                    None,
-                );
-            }
-        }
-
         Self {
-            env,
             type_stage_data: TypeStageData::new(),
             tycon_env: HashMap::new(),
             type_name_to_id: HashMap::new(),
@@ -117,12 +95,8 @@ pub async fn typecheck_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    // build_env_from_frames removed in S-1046 Phase 2.
-    // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
-    let doc_env = Arc::clone(&state.env);
-
-    let (new_env, _result_ty, tc_errors) =
-        crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;
+    let (_result_ty, tc_errors) =
+        crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
 
     // Append tc_errors to state diagnostics so state.diagnostics() is the
     // single source of truth — consistent with process_pipeline_document.
@@ -135,7 +109,6 @@ pub async fn typecheck_pipeline_document(
     state.tycon_env = state.infer_state.tycon_env.clone();
     state.type_name_to_id = state.infer_state.type_name_to_id.clone();
     state.type_display_names = state.infer_state.type_display_names.clone();
-    state.env = new_env;
 
     tc_errors
 }
@@ -144,7 +117,7 @@ pub async fn typecheck_pipeline_document(
 ///
 /// After evaluation, routes results based on the document's stage header:
 /// - `stage: "type"` → classify entries and update `state.type_stage_data`
-/// - Otherwise → update `state.env` with the document's bindings
+/// - Otherwise → no-op (bindings propagate via resolver_frames)
 pub async fn process_pipeline_document(
     doc_spanned: &Spanned<Arc<SurfaceDocument>>,
     state: &mut PipelineState,
@@ -153,12 +126,6 @@ pub async fn process_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current environment.
-    // env_names are exports from PREVIOUS documents (not builtins — those are in resolver_frames).
-    // For the first document, this is empty.
-    // env_names is empty: bootstrap documents share names via the root group (seed frames),
-    // not via cross-document exports. All builtin + builtin_core names are in resolver_frames.
-    // Document exports become part of the root group for subsequent documents via state.env,
-    // which is reflected in resolver_frames after each document is processed.
     let env_names: Vec<String> = Vec::new();
     let root_group_len = state
         .resolver_frames
@@ -192,12 +159,8 @@ pub async fn process_pipeline_document(
         state.type_display_names.clone(),
     );
 
-    // build_env_from_frames removed in S-1046 Phase 2.
-    // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
-    let doc_env = Arc::clone(&state.env);
-
-    let (new_env, _result_ty, tc_errors) =
-        crate::typecheck::process_document(doc, &doc_env, &mut state.infer_state, &mut None).await;
+    let (_result_ty, tc_errors) =
+        crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
 
     // Propagate type checker errors — they are already Diagnostics.
     for err in &tc_errors {
@@ -281,13 +244,6 @@ pub async fn process_pipeline_document(
             }
         }
     }
-
-    // Update environment for the next document.
-    state.env = new_env;
-
-    // Extend resolver frames with this document's scope entries.
-    // The new env has bindings from this document — extract them for the next resolve.
-    // (The resolver_frames were already updated by the resolve step's unified_frames output.)
 
     Ok(())
 }

@@ -4,13 +4,13 @@
 //! This file provides:
 //! - `builtin_module(name)` — dispatch to per-module aggregators (`core_builtins()`, etc.)
 //! - `type_env_module(name)` — dispatch to per-module type environments
-//! - `build_core_env()` — build a fresh `crate::env::Env` with all core Rust builtins (runtime values + type schemes)
+//! - `build_core_env()` — return the list of core Rust builtin names (for resolver bootstrapping)
 //! - Helper functions: `ok_val`, `string_val`, `reject_named`, `require_string`, etc.
 //! - Re-exports of split-file functions for test access via `use super::*`
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
@@ -546,22 +546,16 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// This is the single correct execution path for bootstrapping. There is no
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
-pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
-    // Env is type-metadata only. Runtime values are stored in FlatEnv/arena.
-    // Insert each builtin name into the slotted IndexMap so the resolver can assign
+pub fn build_core_env() -> Vec<String> {
+    // Return the list of core builtin names. The resolver uses these to assign
     // de Bruijn (level, slot) coordinates. The actual Value::Builtin thunks are placed
-    // in the root scope (slot 0, 1, 2, …) by EvalContext::new_scope_arena, in the SAME
+    // in the root scope (slot 0, 1, 2, ...) by EvalContext::new_scope_arena, in the SAME
     // iteration order as core_builtins(). The two orderings must stay in sync.
     use crate::builtins_core::core_builtins;
-    let env = crate::env::Env::new();
-    let env = Arc::new(RwLock::new(env));
-    {
-        let mut env_write = env.write().unwrap();
-        for def in core_builtins() {
-            env_write.insert_slot_name_only(def.name.to_string());
-        }
-    }
-    env
+    core_builtins()
+        .iter()
+        .map(|def| def.name.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -660,14 +654,11 @@ mod tests {
             crate::resolve::resolve_surface_program(&program, &[root_frame]);
 
         {
-            let _env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let parent_env = Arc::new(std::sync::RwLock::new(crate::env::Env::new()));
-                let (_new_env, _result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &parent_env, &mut infer_state, &mut None)
-                        .await;
+                let (_result_ty, _tc_errors) =
+                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
             }
         }
 
@@ -7071,16 +7062,15 @@ mod tests {
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a
     #[tokio::test]
     async fn build_core_env_has_builtins() {
-        let env = build_core_env();
-        let env_ref = env.read().unwrap();
-        // Check that builtin names are reachable via has_name (inserted via insert_slot_name_only).
+        let names = build_core_env();
+        // Check that builtin names are present.
         assert!(
-            env_ref.has_name(crate::lower::BUILTIN_RAISE_NAME),
+            names.contains(&crate::lower::BUILTIN_RAISE_NAME.to_string()),
             "missing builtin builtin-raise in core env"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
-            !env_ref.has_name("map"),
+            !names.contains(&"map".to_string()),
             "map should not be in core env (requires run_loader_pipeline)"
         );
     }
@@ -7987,10 +7977,9 @@ mod tests {
     /// expected here — they are loaded via `run_loader_pipeline`.
     #[tokio::test]
     async fn test_core_env_wholeness() {
-        let core_env = build_core_env();
-        let env = core_env.read().unwrap();
+        let names = build_core_env();
 
-        // Verify builtin names are reachable via has_name (inserted via insert_slot_name_only).
+        // Verify builtin names are present.
         let required_names: &[&str] = &[
             crate::lower::BUILTIN_RAISE_NAME,
             "builtin-type-of",
@@ -8005,14 +7994,20 @@ mod tests {
 
         for name in required_names {
             assert!(
-                env.has_name(name),
+                names.iter().any(|n| n == name),
                 "core env is missing expected builtin: {name}"
             );
         }
 
         // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
-        assert!(!env.has_name("map"), "map should not be in core env");
-        assert!(!env.has_name("filter"), "filter should not be in core env");
+        assert!(
+            !names.iter().any(|n| n == "map"),
+            "map should not be in core env"
+        );
+        assert!(
+            !names.iter().any(|n| n == "filter"),
+            "filter should not be in core env"
+        );
     }
 
     // ========== dict-nth/dict-key-nth/dict-kv-nth tests ==========

@@ -8,26 +8,22 @@
 //! function, which runs the full pipeline (parse → desugar → resolve →
 //! typecheck → eval) via `builtin-typecheck-doc`.
 
-use std::sync::{Arc, RwLock};
-
-use crate::env::Env;
+use std::sync::Arc;
 
 /// Parse and type-check `stdlib/builtin_core.llt`, returning the resulting
-/// `(Arc<RwLock<Env>>, TyConEnv)` pair so that callers receive both the type
-/// environment and the tycon definitions in one call.
+/// `(TyConEnv, type_name_to_id)` pair.
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
 pub async fn build_builtin_core_envs() -> Result<
     (
-        Arc<RwLock<Env>>,
         crate::type_def::TyConEnv,
         std::collections::HashMap<String, u64>,
     ),
     Box<crate::error::Diagnostic>,
 > {
-    let (env, tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner().await?;
-    Ok((env, tycon_env, type_name_to_id))
+    let (tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner().await?;
+    Ok((tycon_env, type_name_to_id))
 }
 
 /// Evaluate the type-stage section of `stdlib/builtin_core.llt` and return the resulting
@@ -38,27 +34,15 @@ pub async fn build_builtin_core_envs() -> Result<
 /// construct this mapping by hardcoding tinct-side type names.
 pub async fn get_builtin_core_type_stage_scope(
 ) -> Result<crate::type_infer::TypeStageData, Box<crate::error::Diagnostic>> {
-    let (_, _, data, _) = build_builtin_core_envs_inner().await?;
+    let (_, data, _) = build_builtin_core_envs_inner().await?;
     Ok(data)
-}
-
-/// Type-check `stdlib/builtin_core.llt` and return the resulting `TypeEnv` so that
-/// prelude-defined types, `Handle`, `builtin-raise`, etc. are visible to the prelude
-/// type-checker by their bare names.
-///
-/// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
-/// needed.
-pub async fn get_builtin_core_type_env() -> Result<Arc<RwLock<Env>>, Box<crate::error::Diagnostic>>
-{
-    let (env, _, _, _) = build_builtin_core_envs_inner().await?;
-    Ok(env)
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
 pub async fn get_builtin_core_tycon_env(
 ) -> Result<crate::type_def::TyConEnv, Box<crate::error::Diagnostic>> {
-    let (_, tycon_env, _, _) = build_builtin_core_envs_inner().await?;
+    let (tycon_env, _, _) = build_builtin_core_envs_inner().await?;
     Ok(tycon_env)
 }
 
@@ -137,12 +121,10 @@ pub(crate) async fn classify_type_stage_entry(
 ///
 /// Parses `stdlib/builtin_core.llt` (embedded at compile time via `include_str!`),
 /// runs the full pipeline (desugar → resolve → typecheck), and returns the
-/// resulting `Arc<RwLock<Env>>` with the new type declarations merged on top of
-/// `build_builtins_type_env_arc()` as the parent, along with the `TyConEnv` and the
-/// evaluated type-stage scope (used to seed `InferState::type_stage_scope`).
+/// resulting `TyConEnv` and the evaluated type-stage scope
+/// (used to seed `InferState::type_stage_scope`).
 async fn build_builtin_core_envs_inner() -> Result<
     (
-        Arc<RwLock<Env>>,
         crate::type_def::TyConEnv,
         crate::type_infer::TypeStageData,
         std::collections::HashMap<String, u64>,
@@ -172,7 +154,6 @@ async fn build_builtin_core_envs_inner() -> Result<
     }
 
     Ok((
-        state.env,
         state.tycon_env,
         state.type_stage_data,
         state.type_name_to_id,

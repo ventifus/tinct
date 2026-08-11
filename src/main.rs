@@ -7,9 +7,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tinct::type_tags::{PI_EXPR, PI_FILE};
 use tinct::{
-    build_core_env, format_diagnostic, literate, make_typevalue_nominal, parse, string_val,
-    EvalContext, HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP,
-    TYPE_ID_FILE, TYPE_ID_INT, TYPE_ID_NETCAP, TYPE_ID_PROGRAM_ITEM,
+    format_diagnostic, literate, make_typevalue_nominal, parse, string_val, EvalContext,
+    HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_FILE,
+    TYPE_ID_INT, TYPE_ID_NETCAP, TYPE_ID_PROGRAM_ITEM,
 };
 /// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
 /// Uses `internal-error` kind with a synthetic Rust source span.
@@ -519,7 +519,7 @@ extern "C" fn sigint_profile_handler(_sig: i32) {
 
 /// Install SIGALRM handler and start the alarm timer.
 #[cfg(unix)]
-fn install_timeout(duration_str: &str) -> tinct::EvalResult<()> {
+fn install_timeout(duration_str: &str) -> Result<(), Box<tinct::Diagnostic>> {
     let seconds = parse_duration(duration_str)?;
 
     unsafe {
@@ -548,7 +548,7 @@ fn install_timeout(duration_str: &str) -> tinct::EvalResult<()> {
 /// after the final flush. Without this handler, Ctrl-C kills the process before
 /// the background thread can write the profile file.
 #[cfg(unix)]
-fn install_sigint_profile_handler() -> tinct::EvalResult<()> {
+fn install_sigint_profile_handler() -> Result<(), Box<tinct::Diagnostic>> {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = sigint_profile_handler as *const () as libc::sighandler_t;
@@ -583,7 +583,7 @@ fn setup_rlimits(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
     max_fds: Option<u64>,
-) -> tinct::EvalResult<()> {
+) -> Result<(), Box<tinct::Diagnostic>> {
     // Helper: apply a single rlimit. Must be called within an unsafe block.
     // resource: the POSIX constant (RLIMIT_AS, RLIMIT_CPU, etc.)
     // limit_val: soft and hard limit value (same for both — we set a hard cap).
@@ -657,7 +657,7 @@ fn setup_rlimits(
 /// old or seccomp is disabled), the error is printed as a warning and evaluation
 /// continues. This matches the Landlock degradation model used above.
 #[cfg(target_os = "linux")]
-fn setup_seccomp(allow_network: bool) -> tinct::EvalResult<()> {
+fn setup_seccomp(allow_network: bool) -> Result<(), Box<tinct::Diagnostic>> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
     use std::collections::BTreeMap;
 
@@ -753,7 +753,10 @@ fn setup_seccomp(allow_network: bool) -> tinct::EvalResult<()> {
 /// `extra_readable` — additional directories that must be readable for the process to
 ///   function (e.g., the directories containing the main input files). These are NOT
 ///   part of the --cap-fs allowlist; they only let the OS read the primary files.
-fn setup_landlock(allowed_paths: &[PathBuf], extra_readable: &[PathBuf]) -> tinct::EvalResult<()> {
+fn setup_landlock(
+    allowed_paths: &[PathBuf],
+    extra_readable: &[PathBuf],
+) -> Result<(), Box<tinct::Diagnostic>> {
     use landlock::{
         Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
     };
@@ -1213,7 +1216,7 @@ fn spawn_profile_flush_thread(
 
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
-async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
+async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     #[cfg(target_os = "linux")]
     let no_landlock = args.no_landlock;
     let RunArgs {
@@ -1359,15 +1362,9 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
 
     // Resource limits are now applied globally in main() before subcommand dispatch.
 
-    // Build a fresh core env seeded with only the core Rust builtins.
-    // Loader.llt will be evaluated exactly once via run_loader_pipeline below,
-    // after all capability thunks have been injected into this env.
-    let env = build_core_env();
-
-    // Env is type-metadata only; runtime thunks go into the FlatEnv arena.
     // Collect (name, thunk) cap entries here; inject into arena after eval_ctx is created.
-    // Slot names are registered in env immediately (for the resolver's De Bruijn coordinates);
-    // the matching thunks are appended to FlatEnv[0] in the same order after construction.
+    // The matching thunks are appended to FlatEnv[0] (root_group) after construction.
+    // The resolver reads names from root_group_resolver_map() — no separate Env needed.
     let mut deferred_cap_thunks: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
 
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
@@ -1463,9 +1460,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
             type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
         };
         let cwd_thunk = Arc::new(tinct::Thunk::value(cwd_value, tinct::rust_span!()));
-        env.write()
-            .unwrap()
-            .insert_slot_name_only("%cwd".to_string());
         deferred_cap_thunks.push(("%cwd".to_string(), cwd_thunk));
     }
 
@@ -1493,9 +1487,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                 type_val: Some(make_typevalue_nominal(TYPE_ID_FILE)),
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
-            env.write()
-                .unwrap()
-                .insert_slot_name_only("%stdin".to_string());
             deferred_cap_thunks.push(("%stdin".to_string(), stdin_thunk));
         }
         #[cfg(not(unix))]
@@ -1509,9 +1500,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                 type_val: Some(make_typevalue_nominal(TYPE_ID_DICT)),
             };
             let stdin_thunk = Arc::new(tinct::Thunk::value(stdin_value, tinct::rust_span!()));
-            env.write()
-                .unwrap()
-                .insert_slot_name_only("%stdin".to_string());
             deferred_cap_thunks.push(("%stdin".to_string(), stdin_thunk));
         }
     }
@@ -1559,9 +1547,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                     type_val: Some(make_typevalue_nominal(TYPE_ID_DIRCAP)),
                 };
                 let libdir_thunk = Arc::new(tinct::Thunk::value(libdir_value, tinct::rust_span!()));
-                env.write()
-                    .unwrap()
-                    .insert_slot_name_only("%libdir".to_string());
                 deferred_cap_thunks.push(("%libdir".to_string(), libdir_thunk));
                 libdir_rc_for_ctx = Some(libdir_arc);
             }
@@ -1592,9 +1577,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
             } else {
                 format!("%{name}")
             };
-            env.write()
-                .unwrap()
-                .insert_slot_name_only(scoped_name.clone());
             deferred_cap_thunks.push((scoped_name, cap_thunk));
         }
     }
@@ -1642,7 +1624,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                 type_val: Some(make_typevalue_nominal(TYPE_ID_NETCAP)),
             };
             let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
-            env.write().unwrap().insert_slot_name_only(name.clone());
             deferred_cap_thunks.push((name, cap_thunk));
         }
     }
@@ -1681,9 +1662,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
         };
 
         let cap_thunk = Arc::new(tinct::Thunk::value(cap_value, tinct::rust_span!()));
-        env.write()
-            .unwrap()
-            .insert_slot_name_only("%clock".to_string());
         deferred_cap_thunks.push(("%clock".to_string(), cap_thunk));
     }
 
@@ -1833,9 +1811,6 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
             } else {
                 format!("%{name}")
             };
-            env.write()
-                .unwrap()
-                .insert_slot_name_only(scoped_name.clone());
             deferred_cap_thunks.push((scoped_name, cap_thunk));
         }
     }
@@ -2135,7 +2110,7 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.
-    let eval_result: tinct::EvalResult<()> = (async {
+    let eval_result: Result<(), Box<tinct::Diagnostic>> = (async {
         // ── Evaluate loader.llt (or --init override) ─────────────────────────
         //
         // loader.llt is the tinct "main function". It reads %programs, %args, %cwd,
@@ -2168,65 +2143,13 @@ async fn run_eval(args: RunArgs) -> tinct::EvalResult<()> {
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        // Build injected type env: declares the types of every value injected into the
-        // init program's scope by this CLI context. The type-checker for the init program
-        // uses this so injected names like %programs, %cwd, %args are typed rather than
-        // "undefined variable". Each injection site in main.rs is responsible for its type.
-        let injected_type_env = {
-            use tinct::Env;
-            let dircap = || tinct::make_typevalue_nominal(tinct::TYPE_ID_DIRCAP);
-            // Dict capabilities (%programs, %args) must use the structural open-record TypeValue,
-            // not make_typevalue_nominal(TYPE_ID_DICT). The annotation @Dict resolves to
-            // Record{fields:{}, tail:Uniform(Top)} via the type-stage scope; using Nominal(DICT)
-            // instead causes a cross-ctor mismatch in unify when annotated functions like
-            // `null?` (param x@Dict) are called with %programs as the argument.
-            let dict = || tinct::make_typevalue_open_dict();
-            let netcap = || tinct::make_typevalue_nominal(tinct::TYPE_ID_NETCAP);
-            let mut inj = Env::new();
-            // CLI-injected values: types match what is actually injected above.
-            // Each capability gets a consecutive slot (no resolver-assigned slots at this point).
-            macro_rules! inj_cap {
-                ($env:expr, $name:expr, $tv:expr) => {{
-                    let slot = $env.slots_len();
-                    $env.insert_at_slot(slot, $name, $tv, None);
-                }};
-            }
-            inj_cap!(inj, "%programs".to_string(), dict());
-            inj_cap!(inj, "%args".to_string(), dict());
-            inj_cap!(inj, "%cwd".to_string(), dircap());
-            inj_cap!(inj, "%libdir".to_string(), dircap());
-            // User --cap-fs entries: each becomes a %NAME: DirCap.
-            for (name, _cap_dir, _perms) in open_cap_fs_entries(&cap_fs, no_fs)? {
-                let scoped = if name.starts_with('%') {
-                    name.clone()
-                } else {
-                    format!("%{name}")
-                };
-                inj_cap!(inj, scoped, dircap());
-            }
-            // User --cap-net entries: each becomes a %NAME: NetCap.
-            for entry in &cap_net {
-                if let Some((name, _)) = entry.split_once('=') {
-                    let scoped = if name.starts_with('%') {
-                        name.to_string()
-                    } else {
-                        format!("%{name}")
-                    };
-                    inj_cap!(inj, scoped, netcap());
-                }
-            }
-            Some(std::sync::Arc::new(std::sync::RwLock::new(inj)))
-        };
+        // Capability type injection removed — Env deleted. Capability types will be
+        // injected via a different mechanism (scope_chain on InferState) in a future commit.
 
-        tinct::run_loader_pipeline(
-            &eval_ctx,
-            &libdir_for_loader,
-            init_source,
-            init_path,
-            injected_type_env,
-        )
-        .await
-        .map_err(|e| cli_error(e))
+        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, init_source, init_path, None)
+            .await
+            .take(&eval_ctx.runtime_diagnostics)
+            .map_err(|e| Box::new(e))
     })
     .await; // end of eval_result async block
 
@@ -2317,7 +2240,7 @@ async fn run_fmt(
     in_place: bool,
     output_name: &str,
     strict: bool,
-) -> tinct::EvalResult<()> {
+) -> Result<(), Box<tinct::Diagnostic>> {
     let (sf_path, source) = read_source(file_path)?;
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
@@ -2325,7 +2248,7 @@ async fn run_fmt(
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
         let output = parse(&source, Arc::clone(&sf_path))
-            .map_err(|e| cli_error(tinct::format_parse_error(&e, &source, file_path)))?;
+            .map_err(|e| cli_error(tinct::format_diagnostic(&e, &source, file_path)))?;
 
         // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
@@ -2454,7 +2377,7 @@ async fn run_fmt(
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.
 // AMBIENT-OK: CLI hash command on operator-specified file.
-fn run_hash(file_path: &str) -> tinct::EvalResult<()> {
+fn run_hash(file_path: &str) -> Result<(), Box<tinct::Diagnostic>> {
     let mut buf = Vec::new();
     std::fs::File::open(file_path)
         .map_err(|e| cli_error(format!("error reading file: {e}")))?
@@ -2506,7 +2429,7 @@ struct LiterateConfig<'a> {
 ///
 /// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
-async fn run_literate(config: &LiterateConfig<'_>) -> tinct::EvalResult<()> {
+async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), Box<tinct::Diagnostic>> {
     let file_path = config.file_path;
     let (_, markdown) = read_source(file_path)?;
     let blocks = literate::extract_code_blocks(&markdown);
@@ -2548,7 +2471,10 @@ async fn run_literate(config: &LiterateConfig<'_>) -> tinct::EvalResult<()> {
 /// The output is the JSON representation of the final pipeline value.
 ///
 /// AMBIENT-OK: CLI literate-eval opening markdown file directory for evaluation.
-async fn run_literate_eval(tangled: &str, config: &LiterateConfig<'_>) -> tinct::EvalResult<()> {
+async fn run_literate_eval(
+    tangled: &str,
+    config: &LiterateConfig<'_>,
+) -> Result<(), Box<tinct::Diagnostic>> {
     let markdown_path = config.file_path;
 
     // Evaluate via run_eval with the tangled source as a single -e expression.
@@ -2603,7 +2529,7 @@ async fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
     config: &LiterateConfig<'_>,
-) -> tinct::EvalResult<()> {
+) -> Result<(), Box<tinct::Diagnostic>> {
     // Extract blocks with byte offset information for reinsertion.
     let lit_blocks = literate::extract_blocks(markdown);
 
@@ -2724,7 +2650,7 @@ async fn run_literate_weave(
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").
 /// The code is matched case-insensitively after stripping leading/trailing whitespace.
-fn run_explain(code: &str) -> tinct::EvalResult<()> {
+fn run_explain(code: &str) -> Result<(), Box<tinct::Diagnostic>> {
     let code = code.trim().to_ascii_uppercase();
     let explanation = match code.as_str() {
         "E001" => {

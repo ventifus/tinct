@@ -2229,30 +2229,10 @@ pub(crate) fn builtin_resolve(
         // in the resolved document emit VarAddr::EffectPerform instead of plain Dispatch.
         // The class_methods map is built from the EvalContext's type_context when available.
         // An empty map is safe — it disables EffectPerform emission for methods not listed.
-        let class_methods: std::collections::HashMap<String, u64> = {
-            let tc = ctx
-                .type_context
-                .lock()
-                .expect("type_context mutex poisoned");
-            if let Some(tc_data) = tc.as_ref() {
-                let env = tc_data
-                    .inference_env
-                    .read()
-                    .expect("inference_env lock poisoned");
-                env.all_classes()
-                    .into_iter()
-                    .flat_map(|class_decl| {
-                        let class_id = class_decl.class_decl_id;
-                        class_decl
-                            .method_signatures
-                            .into_iter()
-                            .map(move |(method_name, _sig)| (method_name, class_id))
-                    })
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            }
-        };
+        // TODO: class_methods needs a new data source now that inference_env is removed.
+        // Classes/instances should be accumulated on TypeContextData directly.
+        let class_methods: std::collections::HashMap<String, u64> =
+            { std::collections::HashMap::new() };
         let (resolve_table, resolve_diagnostics, unreferenced_names, unified_frames) =
             crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
                 &doc_arc,
@@ -2574,7 +2554,7 @@ pub(crate) fn builtin_typecheck_doc(
         }
 
         // Extract TypeContext state
-        let (mut state, parent_env) = {
+        let (mut state,) = {
             let guard = tc_arc.lock().unwrap();
             let mut state = crate::types::InferState::new();
             state.eval_ctx = Some(Arc::clone(&ctx));
@@ -2613,32 +2593,20 @@ pub(crate) fn builtin_typecheck_doc(
                 std::collections::HashMap::new(), // type_display_names starts empty
             );
 
-            let parent_env = Arc::clone(&guard.inference_env);
-            (state, parent_env)
+            (state,)
         };
-
-        // build_env_from_frames removed in S-1046 Phase 2.
-        // Type checker now works with ScopeFrames on AST nodes, not parallel Env chains.
-        let doc_env = Arc::clone(&parent_env);
 
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
-        // process_document processes all items in source order, extends env with schemes from
-        // the last dict body, and returns (doc_env, result_type, errors).
-        let (doc_env, _, errors) =
-            crate::typecheck::process_document(&doc_arc, &doc_env, &mut state, &mut type_map_ref)
-                .await;
+        // process_document processes all items in source order and returns (result_type, errors).
+        let (_, errors) =
+            crate::typecheck::process_document(&doc_arc, &mut state, &mut type_map_ref).await;
 
         // Collect Diagnostics from state.diagnostics — now includes inline CEK emissions
         let mut type_diagnostics: Vec<crate::error::Diagnostic> =
             std::mem::take(&mut state.diagnostics);
 
-        // Write results back to TypeContext:
-        // - tycon_env: new type constructor definitions from this document
-        // - inference_env: merge doc_env chain into the single flat root so subsequent documents
-        //   see this document's type schemes. We merge rather than replace so that inference_env
-        //   stays as the single flat root (no parent chain growth). Inner frames win over outer
-        //   for same-named entries (merge_env_chain_into uses or_insert semantics).
+        // Write results back to TypeContext.
         {
             let mut guard = tc_arc.lock().unwrap();
             for (name, def) in &state.tycon_env {
@@ -2646,37 +2614,6 @@ pub(crate) fn builtin_typecheck_doc(
                     .tycon_env
                     .entry(name.clone())
                     .or_insert_with(|| Arc::clone(def));
-            }
-            crate::env::merge_env_chain_into(&doc_env, &guard.inference_env);
-            // guard.inference_env stays unchanged — it is the single flat root
-
-            // Classes and instances now live on InferState.classes/instances, not in env.
-            // Merge them into guard's flat registries.
-            for class in &state.classes {
-                // Skip if already present (or_insert semantics)
-                if !guard
-                    .inference_env
-                    .read()
-                    .unwrap()
-                    .all_classes()
-                    .iter()
-                    .any(|c| c.name == class.name)
-                {
-                    guard
-                        .inference_env
-                        .write()
-                        .unwrap()
-                        .insert_class(class.clone());
-                }
-            }
-            for (name, instance) in &state.instances {
-                guard
-                    .inference_env
-                    .write()
-                    .unwrap()
-                    .instances
-                    .entry(name.clone())
-                    .or_insert_with(|| instance.clone());
             }
 
             // Write back type_stage_scope: merge new declarations (ADTs, classes) from
@@ -2704,25 +2641,9 @@ pub(crate) fn builtin_typecheck_doc(
             }
         }
 
-        // Sync the Value::TypeContext (tc_arc) into the EvalContext's type_context.
-        // builtin-make-type-ctx clones the TypeContextData when creating the
-        // Value::TypeContext — the EvalContext and Value handle diverge after that.
-        // builtin-resolve reads from ctx.type_context (the EvalContext's copy), so
-        // class registrations (with populated method_signatures) must be synced back.
-        {
-            let tc_guard = tc_arc.lock().unwrap();
-            let mut ctx_tc = ctx.type_context.lock().unwrap();
-            if let Some(ref mut ctx_data) = *ctx_tc {
-                let src_env = tc_guard.inference_env.read().unwrap();
-                let mut dst_env = ctx_data.inference_env.write().unwrap();
-                for (name, class) in &src_env.classes {
-                    dst_env.classes.insert(name.clone(), class.clone());
-                }
-                for (mangled, inst) in &src_env.instances {
-                    dst_env.instances.insert(mangled.clone(), inst.clone());
-                }
-            }
-        }
+        // Env-based class/instance sync removed — classes and instances live on InferState,
+        // not in Env. Cross-document class/instance propagation will be handled by
+        // accumulating on TypeContextData directly.
 
         // Build unified diagnostics dict from all type diagnostics (errors + warnings + info)
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
@@ -2848,7 +2769,7 @@ pub(crate) fn builtin_get_type_context(
 /// `builtin-make-type-ctx`: Create a fresh TypeContext seeded with core type definitions.
 ///
 /// Creates a `TypeContextData` seeded with:
-/// - `inference_env`: the builtin_core type env (type schemes for core builtins)
+/// - `tycon_env`: type constructor definitions from builtin_core
 /// - `type_stage_scope`: the builtin_core type-stage scope (Integer, String, Dict, DirCap, etc.)
 ///
 /// The type-stage scope MUST be seeded with `builtin_core_ts_scope` (not `Vec::new()`)
@@ -2890,7 +2811,6 @@ pub(crate) fn builtin_make_type_ctx(
         // or_insert ordering contest.
         let type_stage_data = crate::imports::get_builtin_core_type_stage_scope().await?;
         let tc = TypeContextData {
-            inference_env: crate::imports::get_builtin_core_type_env().await?,
             tycon_env: std::collections::HashMap::new(),
             type_stage_scope: type_stage_data.scope,
             type_stage_fns: type_stage_data.fns,

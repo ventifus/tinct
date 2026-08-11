@@ -12,7 +12,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::{CoreExpr, Param, Spanned};
-use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
@@ -164,20 +163,8 @@ pub fn fmt_fn(
         .iter()
         .map(|def| def.name.to_string())
         .collect();
-    // Build a temporary Env with those names so collect_free_vars can check them.
-    let stdlib_env_inner = {
-        let mut e = crate::env::Env::new();
-        for name in &stdlib_name_set {
-            e.insert_slot_name_only(name.clone());
-        }
-        e
-    };
-    let stdlib_env = std::sync::RwLock::new(stdlib_env_inner);
-    let stdlib_env = stdlib_env
-        .read()
-        .map_err(|_| "failed to read stdlib_env lock")?;
     let mut free_vars: HashSet<String> = HashSet::new();
-    collect_free_vars(&body.node, &param_scope, &stdlib_env, &mut free_vars);
+    collect_free_vars(&body.node, &param_scope, &stdlib_name_set, &mut free_vars);
 
     // Step 2: Build substitution map: name → SCN string.
     // Value::Function no longer stores a closure environment (removed in T-1558), so no
@@ -303,13 +290,13 @@ fn extract_identifiers(text: &str) -> HashSet<&str> {
 // ────────────────────────────────────────────────────────────────────────────────
 
 /// Walk a `CoreExpr` and collect names that are free references to user-env bindings:
-/// not in `param_scope` and not in `stdlib_env`.
+/// not in `param_scope` and not in `stdlib_names`.
 ///
 /// `param_scope` grows as we descend into `Fn` bodies and `Match` arms.
 fn collect_free_vars(
     expr: &CoreExpr,
     param_scope: &HashSet<String>,
-    stdlib_env: &Env,
+    stdlib_names: &HashSet<String>,
     out: &mut HashSet<String>,
 ) {
     match expr {
@@ -325,22 +312,20 @@ fn collect_free_vars(
         // Variant: tag is a literal, payload may contain variable references.
         CoreExpr::Variant { payload, .. } => {
             if let Some(inner) = payload {
-                collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+                collect_free_vars(&inner.node, param_scope, stdlib_names, out);
             }
         }
 
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
-            if !param_scope.contains(name.as_str())
-                && stdlib_env.get_scheme(name.as_str()).is_none()
-            {
+            if !param_scope.contains(name.as_str()) && !stdlib_names.contains(name.as_str()) {
                 out.insert(name.clone());
             }
         }
 
         // Field access: recurse into target expression
         CoreExpr::Field { target, .. } => {
-            collect_free_vars(&target.node, param_scope, stdlib_env, out);
+            collect_free_vars(&target.node, param_scope, stdlib_names, out);
         }
 
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
@@ -350,7 +335,7 @@ fn collect_free_vars(
             // and add them to param_scope for subsequent expressions.
             let mut seq_scope = param_scope.clone();
             for (i, e) in exprs.iter().enumerate() {
-                collect_free_vars(&e.node, &seq_scope, stdlib_env, out);
+                collect_free_vars(&e.node, &seq_scope, stdlib_names, out);
                 // After all but the last expression, inject static dict keys into scope.
                 if i + 1 < exprs.len() {
                     if let CoreExpr::Dict { entries, .. } = &e.node {
@@ -404,9 +389,9 @@ fn collect_free_vars(
             // see sibling bindings). Values are evaluated in the letrec dict_scope.
             for entry in entries {
                 if let Some(key) = &entry.node.key {
-                    collect_free_vars(&key.node, param_scope, stdlib_env, out);
+                    collect_free_vars(&key.node, param_scope, stdlib_names, out);
                 }
-                collect_free_vars(&entry.node.value.node, &dict_scope, stdlib_env, out);
+                collect_free_vars(&entry.node.value.node, &dict_scope, stdlib_names, out);
             }
         }
 
@@ -416,12 +401,12 @@ fn collect_free_vars(
             named_args,
             ..
         } => {
-            collect_free_vars(&func.node, param_scope, stdlib_env, out);
+            collect_free_vars(&func.node, param_scope, stdlib_names, out);
             for arg in args {
-                collect_free_vars(&arg.node, param_scope, stdlib_env, out);
+                collect_free_vars(&arg.node, param_scope, stdlib_names, out);
             }
             for named_arg in named_args {
-                collect_free_vars(&named_arg.node.value.node, param_scope, stdlib_env, out);
+                collect_free_vars(&named_arg.node.value.node, param_scope, stdlib_names, out);
             }
         }
 
@@ -432,57 +417,57 @@ fn collect_free_vars(
                 for p in &clause.params {
                     inner_scope.insert(p.node.name.clone());
                 }
-                collect_free_vars(&clause.body.node, &inner_scope, stdlib_env, out);
+                collect_free_vars(&clause.body.node, &inner_scope, stdlib_names, out);
             }
         }
 
         CoreExpr::TypeAssert { expr, .. } => {
-            collect_free_vars(&expr.node, param_scope, stdlib_env, out);
+            collect_free_vars(&expr.node, param_scope, stdlib_names, out);
         }
 
         CoreExpr::Match {
             scrutinee, arms, ..
         } => {
-            collect_free_vars(&scrutinee.node, param_scope, stdlib_env, out);
+            collect_free_vars(&scrutinee.node, param_scope, stdlib_names, out);
             for arm in arms {
                 // T-1750: patterns are now SurfaceNode and introduce no bindings
                 // (only [case [let ...]] introduces bindings)
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars(&guard.node, param_scope, stdlib_env, out);
+                    collect_free_vars(&guard.node, param_scope, stdlib_names, out);
                 }
-                collect_free_vars(&arm.body.node, param_scope, stdlib_env, out);
+                collect_free_vars(&arm.body.node, param_scope, stdlib_names, out);
             }
         }
 
         // Quote is opaque AST data — do not substitute into it.
         // Only recurse into nested Unquote/UnquoteSplice sub-expressions.
         CoreExpr::Quote { expr: inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, 1, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&inner.node, 1, param_scope, stdlib_names, out);
         }
 
         CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
             // Unquote outside Quote is a no-op in the surface language; recurse normally.
-            collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
         }
 
         CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for binding in bindings {
-                collect_free_vars(&binding.node, param_scope, stdlib_env, out);
+                collect_free_vars(&binding.node, param_scope, stdlib_names, out);
             }
         }
 
         // ReprDecl: metadata wrapper — recurse into inner dict and optional is: predicate.
         CoreExpr::ReprDecl { is_pred, inner, .. } => {
-            collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
             if let Some(pred) = is_pred {
-                collect_free_vars(&pred.node, param_scope, stdlib_env, out);
+                collect_free_vars(&pred.node, param_scope, stdlib_names, out);
             }
         }
 
         // TypeDecl: type-identity wrapper — recurse into inner (Dict or ReprDecl).
         // The type_name is a literal string; no variable references.
         CoreExpr::TypeDecl { inner, .. } => {
-            collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
         }
     }
 }
@@ -493,19 +478,19 @@ fn collect_free_vars_in_quote(
     expr: &CoreExpr,
     depth: usize,
     param_scope: &HashSet<String>,
-    stdlib_env: &Env,
+    stdlib_names: &HashSet<String>,
     out: &mut HashSet<String>,
 ) {
     match expr {
         CoreExpr::Quote { expr: inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth + 1, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&inner.node, depth + 1, param_scope, stdlib_names, out);
         }
         CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
             if depth == 1 {
                 // Returning to evaluation context — recurse normally
-                collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+                collect_free_vars(&inner.node, param_scope, stdlib_names, out);
             } else {
-                collect_free_vars_in_quote(&inner.node, depth - 1, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&inner.node, depth - 1, param_scope, stdlib_names, out);
             }
         }
         // All other nodes inside Quote: don't substitute (opaque AST), but recurse
@@ -516,81 +501,81 @@ fn collect_free_vars_in_quote(
             named_args,
             ..
         } => {
-            collect_free_vars_in_quote(&func.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&func.node, depth, param_scope, stdlib_names, out);
             for arg in args {
-                collect_free_vars_in_quote(&arg.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&arg.node, depth, param_scope, stdlib_names, out);
             }
             for named_arg in named_args {
                 collect_free_vars_in_quote(
                     &named_arg.node.value.node,
                     depth,
                     param_scope,
-                    stdlib_env,
+                    stdlib_names,
                     out,
                 );
             }
         }
         CoreExpr::Fn { clauses, .. } => {
             for clause in clauses {
-                collect_free_vars_in_quote(&clause.body.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&clause.body.node, depth, param_scope, stdlib_names, out);
             }
         }
         CoreExpr::Dict { entries, .. } => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
-                    collect_free_vars_in_quote(&key.node, depth, param_scope, stdlib_env, out);
+                    collect_free_vars_in_quote(&key.node, depth, param_scope, stdlib_names, out);
                 }
                 collect_free_vars_in_quote(
                     &entry.node.value.node,
                     depth,
                     param_scope,
-                    stdlib_env,
+                    stdlib_names,
                     out,
                 );
             }
         }
         CoreExpr::Sequential { exprs, .. } => {
             for e in exprs {
-                collect_free_vars_in_quote(&e.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&e.node, depth, param_scope, stdlib_names, out);
             }
         }
         CoreExpr::Match { scrutinee, arms, .. } => {
-            collect_free_vars_in_quote(&scrutinee.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&scrutinee.node, depth, param_scope, stdlib_names, out);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars_in_quote(&guard.node, depth, param_scope, stdlib_env, out);
+                    collect_free_vars_in_quote(&guard.node, depth, param_scope, stdlib_names, out);
                 }
-                collect_free_vars_in_quote(&arm.body.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&arm.body.node, depth, param_scope, stdlib_names, out);
             }
         }
         CoreExpr::TypeAssert { expr, .. } => {
-            collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_names, out);
         }
         CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for b in bindings {
-                collect_free_vars_in_quote(&b.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&b.node, depth, param_scope, stdlib_names, out);
             }
         }
         // Variant: tag is a literal, payload may contain variable references.
         CoreExpr::Variant { payload, .. } => {
             if let Some(inner) = payload {
-                collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
             }
         }
         // Field access: recurse into target expression
         CoreExpr::Field { target, .. } => {
-            collect_free_vars_in_quote(&target.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&target.node, depth, param_scope, stdlib_names, out);
         }
         // ReprDecl: recurse into inner dict and optional is: predicate even inside quotes.
         CoreExpr::ReprDecl { is_pred, inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
             if let Some(pred) = is_pred {
-                collect_free_vars_in_quote(&pred.node, depth, param_scope, stdlib_env, out);
+                collect_free_vars_in_quote(&pred.node, depth, param_scope, stdlib_names, out);
             }
         }
         // TypeDecl: recurse into inner (Dict or ReprDecl) inside quotes.
         CoreExpr::TypeDecl { inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
         }
         // Leaves — nothing to do even inside quotes
         CoreExpr::Int { .. }

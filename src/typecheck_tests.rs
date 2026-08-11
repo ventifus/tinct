@@ -1414,7 +1414,6 @@ fn test_type_stage_type_vars_contains_kind_entries() {
 #[tokio::test]
 async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     use crate::ast::{Resolution, SurfaceExpression, SurfaceNode, VarAddr};
-    use crate::env::Env;
     use crate::type_class::ClassDecl;
     use crate::type_infer::{
         make_typevalue_fn, make_typevalue_nominal, make_typevalue_var, InferState,
@@ -1465,9 +1464,8 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
         method_signatures,
     };
 
-    // Build an environment with the class registered.
-    let env = Arc::new(RwLock::new(Env::new()));
-    env.write().unwrap().insert_class(class_decl);
+    // Register the class on InferState directly (Env removed).
+    // InferState.classes is populated during type checking; for this test we inject directly.
 
     // Create a VarRef node with EffectPerform resolution.
     let method_name = "print".to_string();
@@ -1487,13 +1485,13 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
 
     // Infer the VarRef's type.
     let mut state = InferState::new();
+    state.classes.push(class_decl);
     let mut errors = vec![];
     let mut type_map = None;
 
     let mut stack: Vec<(TypeCheckCont, std::sync::Arc<crate::ast::SurfaceNode>)> = vec![];
     let inferred_type = run_typecheck(
         &varref_node,
-        &env,
         &mut state,
         &mut errors,
         &mut type_map,
@@ -1576,7 +1574,6 @@ fn test_resolution_table_carried_in_value_document() {
 #[tokio::test]
 async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
     use crate::ast::{SurfaceExpression, SurfaceNode};
-    use crate::env::Env;
     use crate::type_infer::InferState;
     use crate::typecheck::typecheck_cek::{run_typecheck, TypeCheckCont};
 
@@ -1595,7 +1592,6 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
         do_infer_placeholder: false,
     });
 
-    let env = Arc::new(RwLock::new(Env::new()));
     let mut state = InferState::new();
     // resolution_table is empty — no entry for this VarRef
     let mut errors = vec![];
@@ -1604,7 +1600,6 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
 
     let _inferred = run_typecheck(
         &varref_node,
-        &env,
         &mut state,
         &mut errors,
         &mut type_map,

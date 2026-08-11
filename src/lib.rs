@@ -7,7 +7,7 @@
 //! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (requires prior `desugar` + `resolve` passes)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] -- force thunks (shallow)
-//! - [`build_core_env`] -- build a fresh env with only the core Rust builtins (starting point for `run_loader_pipeline`)
+//! - [`build_core_env`] -- build a list of core Rust builtin names (starting point for `run_loader_pipeline`)
 //! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `include` results (same file = same cached thunk)
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 
@@ -21,7 +21,6 @@ pub(crate) mod arena;
 pub mod ast;
 pub mod async_rt;
 pub(crate) mod coverage;
-pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;
@@ -115,8 +114,7 @@ pub use builtins::build_core_env;
 
 /// Bootstrap type environment from builtin_core.llt.
 pub use imports::{
-    build_builtin_core_envs, get_builtin_core_tycon_env, get_builtin_core_type_env,
-    get_builtin_core_type_stage_scope,
+    build_builtin_core_envs, get_builtin_core_tycon_env, get_builtin_core_type_stage_scope,
 };
 
 /// Error types with source spans and stack traces.
@@ -139,8 +137,6 @@ pub use value::{
 /// Formatter: canonical source reformatter.
 pub use formatter::format_source_tinct;
 
-/// Unified evaluation and type-checker environment.
-pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
     string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue, NetCapEntry,
@@ -152,10 +148,6 @@ pub use value::{
 /// This is the shared evaluation core used by the CLI path
 /// (`run_eval` in `src/main.rs`). Callers must:
 ///
-/// - Create the initial env via [`builtins::build_core_env`]
-/// - Build and inject all capability thunks into `env`:
-///   `%programs`, `%args`, `%cwd`, `%libdir`, `%clock`, `%cap-fs`, etc.
-///   Note: `%stdout` and `%stderr` are nominal type values defined by loader.llt Dict 2, not injected here.
 /// - Create `eval_ctx` via [`eval::EvalContext::new_with_options`] with the correct options
 ///   (`require_integrity`, `env_allowed`, `profiling`, `libdir_dir`, etc.)
 ///
@@ -174,29 +166,10 @@ pub async fn run_loader_pipeline(
     _libdir_dir: &cap_std::fs::Dir,
     init_source: &str,
     init_path: &str,
-    injected_type_env: Option<Arc<std::sync::RwLock<crate::env::Env>>>,
+    _injected_cap_types: Option<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
 ) -> crate::error::DiagnosticResult<()> {
     // Start from builtins — consistent slots, single context.
     let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
-
-    // Inject capability types so the type checker sees %cwd, %libdir, etc.
-    if let Some(ref inj) = injected_type_env {
-        let root_frame = eval_ctx.root_group_resolver_map();
-        let cap_types: std::collections::HashMap<String, crate::type_infer::TypeValue> = {
-            let r = inj.read().unwrap();
-            r.iter_slots()
-                .filter_map(|(name, slot_entry)| {
-                    slot_entry.scheme.clone().map(|tv| (name.to_string(), tv))
-                })
-                .collect()
-        };
-        let mut env_guard = state.env.write().unwrap();
-        for (name, &slot) in &root_frame {
-            if let Some(tv) = cap_types.get(name) {
-                env_guard.insert_at_slot(slot as usize, name.clone(), tv.clone(), None);
-            }
-        }
-    }
 
     let mut diagnostics: Vec<crate::error::Diagnostic> = Vec::new();
 
@@ -226,7 +199,6 @@ pub async fn run_loader_pipeline(
     // Initialize TypeContext from the pipeline state accumulated during builtin_core
     // processing. The loader calls builtin-get-type-context which needs this.
     eval_ctx.init_type_context(crate::eval::TypeContextData {
-        inference_env: Arc::clone(&state.env),
         tycon_env: state.tycon_env.clone(),
         type_stage_scope: state.type_stage_data.scope.clone(),
         type_stage_fns: state.type_stage_data.fns.clone(),

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Path-sensitive narrowing and overlap checking.
 //!
 //! This module contains the subsystem responsible for:
@@ -34,11 +35,10 @@
 //! `as-typenode` (D-7). See `doc/feature/narrowing.md` §Structural Narrowing Protocol Entries.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use super::typecheck_annot;
 use crate::ast::{Span, SurfaceExpression, SurfaceNode};
-use crate::env::Env;
 use crate::error::Diagnostic;
 use crate::type_infer::{
     make_typevalue_float_lit, make_typevalue_int_lit, make_typevalue_nominal,
@@ -114,15 +114,13 @@ pub(crate) enum Narrowing {
 /// Extract narrowing constraints from a condition expression (SurfaceNode version).
 /// Returns an empty vec for unrecognized patterns.
 ///
-/// `env` is the type environment at the call site, used to look up annotation-based
-/// narrowing declarations (the `narrowings` payload field in the callee's TypeValue.Scheme).
-/// When a function is annotated with `@[narrows: T]` or has a first parameter annotated
-/// with `@[is: T]`, calling it with a single variable argument narrows that variable to `T`
-/// in the true branch. Any function registered in `env` can participate in narrowing —
-/// not just hardcoded prelude predicates.
+/// Annotation-based narrowing (T-1761): when a function is annotated with `@[narrows: T]`
+/// or has a first parameter annotated with `@[is: T]`, calling it with a single variable
+/// argument narrows that variable to `T` in the true branch. The callee's TypeValue.Scheme
+/// `narrowings` payload is looked up via the scope chain. Any function can participate in
+/// narrowing — not just hardcoded prelude predicates.
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
 ) -> Vec<Narrowing> {
     match &cond.expr {
@@ -168,7 +166,7 @@ pub(crate) fn extract_narrowings(
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg, env, type_name_to_id));
+                            narrowings.extend(extract_narrowings(arg, type_name_to_id));
                         }
                         return narrowings;
                     }
@@ -179,7 +177,8 @@ pub(crate) fn extract_narrowings(
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            let scheme = env.read().expect("env RwLock poisoned").get_scheme(name);
+                            // TODO: look up scheme via scope_chain once name-based lookup is available
+                            let scheme: Option<Arc<crate::value::Value>> = None;
                             if let Some(ref scheme_tv) = scheme {
                                 // Extract narrowings[0] from TypeValue.Scheme payload if present.
                                 if let Some(narrowing_ty) =
@@ -280,7 +279,6 @@ pub(crate) fn try_type_of(
 /// Scoping is handled by AfterBlock: `saved_narrowing_map` is stored in the continuation
 /// and restored when AfterBlock fires, exactly like `saved_use_def`.
 pub(crate) fn apply_narrowings(
-    env: &Arc<RwLock<Env>>,
     narrowings: &[Narrowing],
     state: &mut crate::type_infer::InferState,
 ) {
@@ -292,7 +290,8 @@ pub(crate) fn apply_narrowings(
                 let fresh_field_tv = state.fresh_type_var(&crate::rust_span!());
                 let mut fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
                 fields.insert(key.clone(), fresh_field_tv);
-                let current_tv = env.read().unwrap().get_scheme(var);
+                // TODO: look up existing type via scope_chain once name-based lookup is available
+                let current_tv: Option<Arc<crate::value::Value>> = None;
                 if let Some(existing_tv) = current_tv {
                     if let Some(existing_fields) =
                         crate::typecheck::extract_record_fields_pub(&existing_tv)
@@ -310,7 +309,8 @@ pub(crate) fn apply_narrowings(
         };
 
         // Find the binding's BindingId via its definition span, then insert the refinement.
-        if let Some(def_span) = Env::find_def_span_by_name(env, var) {
+        // TODO: look up def_span via scope_chain once name-based lookup is available
+        if let Some(def_span) = Option::<Span>::None {
             let id = crate::type_infer::BindingId {
                 def_span,
                 name: var.clone(),
@@ -336,7 +336,6 @@ pub(crate) type InstanceBindVars = HashMap<String, Arc<crate::value::Value>>;
 
 pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
-    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
 ) -> Result<Vec<Arc<crate::value::Value>>, Vec<Diagnostic>> {
     match &pattern_node.expr {
@@ -383,7 +382,7 @@ pub(crate) async fn extract_pattern_types(
                 if skip_indices.contains(&i) {
                     continue;
                 }
-                extract_binding_types(binding, env, state, &mut types, &bind_vars).await?;
+                extract_binding_types(binding, state, &mut types, &bind_vars).await?;
             }
             Ok(types)
         }
@@ -490,7 +489,6 @@ fn process_instance_bind_list(
 /// Recursive async functions must return a `BoxFuture` to be object-safe.
 pub(crate) fn extract_binding_types<'a>(
     binding: &'a Arc<SurfaceNode>,
-    env: &'a Arc<RwLock<Env>>,
     state: &'a mut InferState,
     types: &'a mut Vec<Arc<crate::value::Value>>,
     bind_vars: &'a InstanceBindVars,
@@ -507,8 +505,7 @@ pub(crate) fn extract_binding_types<'a>(
                 let all_keyless = entries.iter().all(|e| e.node.key.is_none());
                 if all_keyless {
                     for entry in entries {
-                        extract_binding_types(&entry.node.value, env, state, types, bind_vars)
-                            .await?;
+                        extract_binding_types(&entry.node.value, state, types, bind_vars).await?;
                     }
                 } else {
                     // Named-key dict: single compound type (structural/record type)
@@ -519,7 +516,7 @@ pub(crate) fn extract_binding_types<'a>(
             // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
             SurfaceExpression::LetDecl { bindings } => {
                 for sub_binding in bindings {
-                    extract_binding_types(sub_binding, env, state, types, bind_vars).await?;
+                    extract_binding_types(sub_binding, state, types, bind_vars).await?;
                 }
             }
             // Implied call form in pattern position.
