@@ -88,32 +88,22 @@ pub async fn process_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current scope.
-    let _resolve_diags = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
+    let resolve_result = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
 
-    // Step 1b: Wire Rust builtins — for each scope entry matching a registered
-    // builtin name, pre-write Value::Builtin. OnceLock is write-once, so eval's
-    // Placeholder write becomes a no-op.
+    // Step 1b: Wire Rust builtins into the resolver's scope frames.
     let builtin_defs = crate::builtins_core::core_builtins();
-    for doc_item in &doc.items {
-        if let crate::ast::SurfaceItem::Expr(node) = doc_item {
-            if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
-                if let Some(dict_scope) = scope.get() {
-                    for def in &builtin_defs {
-                        if let Some(entry) = dict_scope.entries().get(def.name) {
-                            let thunk = std::sync::Arc::new(crate::value::Thunk::value(
-                                crate::value::Value::Builtin {
-                                    def: def.clone(),
-                                    type_val: None,
-                                },
-                                crate::rust_span!(),
-                            ));
-                            entry
-                                .value
-                                .set(thunk)
-                                .expect("builtin wiring: scope entry must be empty before eval");
-                        }
-                    }
-                }
+    for frame in &resolve_result.scope_frames {
+        for def in &builtin_defs {
+            if let Some(entry) = frame.entries().get(def.name) {
+                let thunk = std::sync::Arc::new(crate::value::Thunk::value(
+                    crate::value::Value::Builtin {
+                        def: def.clone(),
+                        type_val: None,
+                    },
+                    crate::rust_span!(),
+                ));
+                // First-write-wins: builtins wired before eval writes Placeholder.
+                let _ = entry.value.set(thunk);
             }
         }
     }
@@ -128,9 +118,8 @@ pub async fn process_pipeline_document(
         })
         .collect();
 
-    // Prepend the document's outermost Dict scope to the chain BEFORE eval.
-    // The resolver already created the scope (entries with names/slots).
-    // Values are written lazily by eval_dict (via OnceLocks).
+    // Prepend the resolver's scope frames to the chain BEFORE eval.
+    // Entries have names/slots; values are written lazily by eval_dict.
     let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
         matches!(
             &stage_node.expr,
@@ -138,19 +127,14 @@ pub async fn process_pipeline_document(
             if content == "type"
         )
     });
-    for node in expr_nodes.iter().rev() {
-        if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
-            if let Some(dict_scope) = scope.get() {
-                if is_type_stage {
-                    state
-                        .infer_state
-                        .type_stage_scope
-                        .insert(0, Arc::clone(dict_scope));
-                } else {
-                    state.current_scope.insert(0, Arc::clone(dict_scope));
-                }
-                break;
-            }
+    for frame in resolve_result.scope_frames.iter().rev() {
+        if is_type_stage {
+            state
+                .infer_state
+                .type_stage_scope
+                .insert(0, Arc::clone(frame));
+        } else {
+            state.current_scope.insert(0, Arc::clone(frame));
         }
     }
 

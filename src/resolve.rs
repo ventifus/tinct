@@ -32,6 +32,10 @@ pub struct ResolveResult {
     pub table: ResolutionTable,
     pub diagnostics: Vec<Diagnostic>,
     pub unreferenced: Vec<String>,
+    /// The scope chain created during resolution. Each frame is a dict's
+    /// SymbolTable (entries with names/slots, values written lazily by eval).
+    /// The pipeline prepends these frames to current_scope.
+    pub scope_frames: Vec<Arc<crate::symbol_table::SymbolTable>>,
 }
 
 /// Extract binding variable names from a `[let name1 name2 ...]` node.
@@ -791,6 +795,7 @@ impl SurfaceResolver {
             table: self.table,
             diagnostics: self.diagnostics,
             unreferenced,
+            scope_frames: self.scope_stack,
         }
     }
 }
