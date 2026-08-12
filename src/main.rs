@@ -2098,13 +2098,13 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         capabilities.push(("%args".to_string(), args_thunk));
     }
 
-    // Build the initial SymbolTable scope with all capabilities.
+    // Build the initial ScopeChain with all capabilities.
     // The scope extends the eval context's builtin scope with capability entries
     // (%cwd, %libdir, %clock, --cap-fs / --cap-net, %programs, %args).
     let initial_scope = {
         let cap_entries: indexmap::IndexMap<String, Arc<tinct::Thunk>> =
             capabilities.into_iter().collect();
-        tinct::SymbolTable::empty().extend(cap_entries)
+        tinct::SymbolTable::extend_chain(&tinct::SymbolTable::empty_chain(), cap_entries)
     };
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally

@@ -86,9 +86,8 @@ pub(crate) async fn call_strict_resolver(
             Arc::new(crate::value::Thunk::value(Value::clone(tv.as_ref()), span))
         })
         .collect();
-    let call_frame = {
-        let mut table =
-            crate::symbol_table::SymbolTable::new_call_frame(definition_scope, None, None);
+    let call_chain = {
+        let mut table = crate::symbol_table::SymbolTable::new();
         for (i, _thunk) in param_thunks.iter().enumerate() {
             let name = clause
                 .params
@@ -100,13 +99,16 @@ pub(crate) async fn call_strict_resolver(
         for (i, thunk) in param_thunks.into_iter().enumerate() {
             table.set_value(i as u32, thunk);
         }
-        std::sync::Arc::new(table)
+        let new_frame = std::sync::Arc::new(table);
+        let mut chain = definition_scope.clone();
+        chain.insert(0, new_frame);
+        chain
     };
 
     // Evaluate the function body in the call frame and force the result.
     let body_thunk = Arc::new(crate::value::Thunk::core_expr(
         Arc::clone(&clause.body),
-        call_frame,
+        call_chain,
         Arc::clone(eval_ctx),
         crate::rust_span!(),
     ));

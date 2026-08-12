@@ -194,7 +194,7 @@ fn make_typevalue_record(
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     state: &mut InferState,
-    _scope: &Arc<crate::symbol_table::SymbolTable>,
+    _scope: &crate::symbol_table::ScopeChain,
     type_map: &mut Option<&mut TypeMap>,
 ) -> (Arc<Value>, Vec<Diagnostic>) {
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }

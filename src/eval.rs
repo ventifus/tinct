@@ -26,7 +26,7 @@ use crate::type_tags::*;
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 // ============================================================================
@@ -74,8 +74,8 @@ thread_local! {
 pub async fn eval_document(
     entries: &[Arc<Spanned<crate::ast::CoreExpr>>],
     ctx: &Arc<EvalContext>,
-    scope: Arc<SymbolTable>,
-) -> (Arc<SymbolTable>, Vec<Diagnostic>) {
+    scope: ScopeChain,
+) -> (ScopeChain, Vec<Diagnostic>) {
     let current_scope = scope;
     let mut diagnostics = Vec::new();
 
@@ -115,7 +115,7 @@ pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    eval_surface_file_with_scope(program, ctx, Arc::clone(&ctx.current_scope)).await
+    eval_surface_file_with_scope(program, ctx, ctx.current_scope.clone()).await
 }
 
 /// Evaluate a SurfaceProgram with an optional initial value injected into the environment.
@@ -129,9 +129,9 @@ pub async fn eval_surface_file_with_input(
     ctx: &Arc<EvalContext>,
     extra_scope: indexmap::IndexMap<String, Arc<Thunk>>,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let mut scope = Arc::clone(&ctx.current_scope);
+    let mut scope = ctx.current_scope.clone();
     if !extra_scope.is_empty() {
-        scope = scope.extend(extra_scope);
+        scope = SymbolTable::extend_chain(&scope, extra_scope);
     }
     eval_surface_file_with_scope(program, ctx, scope).await
 }
@@ -141,7 +141,7 @@ pub async fn eval_surface_file_with_input(
 async fn eval_surface_file_with_scope(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
-    scope: Arc<SymbolTable>,
+    scope: ScopeChain,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let current_scope = scope;
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
@@ -174,7 +174,7 @@ pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 
 type GuardDefault = (
     Arc<Spanned<crate::ast::CoreExpr>>,
-    Arc<crate::symbol_table::SymbolTable>,
+    crate::symbol_table::ScopeChain,
 );
 
 // ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
@@ -371,22 +371,22 @@ pub struct EvalContext {
     pub type_context: Arc<Mutex<Option<TypeContextData>>>,
     /// The current scope, containing all bindings in scope at this point.
     ///
-    /// Starts as `SymbolTable::empty()` and is extended as documents are evaluated.
-    /// Shared via `Arc::clone` across child contexts.
-    pub current_scope: Arc<SymbolTable>,
+    /// Starts as `SymbolTable::empty_chain()` and is extended as documents are evaluated.
+    /// Cloned across child contexts.
+    pub current_scope: ScopeChain,
     /// Snapshot of the accumulated scope after the init program (loader + prelude) finishes
     /// evaluating all its intermediate dicts.
     ///
     /// Set exactly once via `set_init_accumulated_group`. The OnceLock guarantees at-most-once
     /// write; the `Arc` allows sharing across all child contexts.
     ///
-    /// Contains the full SymbolTable with all prelude bindings.
+    /// Contains the full ScopeChain with all prelude bindings.
     /// Builtins use `call_to_match_resolved` to retrieve the `to-match` instance
     /// binding thunk for Matchable dispatch (T-1846/T-1847).
     ///
     /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
     /// has not run. All callers must gracefully fall back when `get()` returns `None`.
-    pub init_accumulated_group: Arc<std::sync::OnceLock<Arc<SymbolTable>>>,
+    pub init_accumulated_group: Arc<std::sync::OnceLock<ScopeChain>>,
     /// Bootstrap TypeValue metatype. Represents the "type of all types." Initialized as an empty
     /// Dict since the self-referential fixed-point requires `Weak<Value>` semantics: constructing
     /// `Type.type_val == Type` needs a back-pointer into an already-constructed `Arc<Value>`, which
@@ -485,7 +485,7 @@ impl EvalContext {
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
-            current_scope: SymbolTable::empty(),
+            current_scope: SymbolTable::empty_chain(),
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
@@ -529,7 +529,7 @@ impl EvalContext {
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
-            current_scope: SymbolTable::empty(),
+            current_scope: SymbolTable::empty_chain(),
             init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
@@ -575,7 +575,7 @@ impl EvalContext {
                 child_lock
             },
             type_context: Arc::clone(&self.type_context),
-            current_scope: Arc::clone(&self.current_scope),
+            current_scope: self.current_scope.clone(),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
@@ -619,7 +619,7 @@ impl EvalContext {
                 child_lock
             },
             type_context: Arc::clone(&self.type_context),
-            current_scope: Arc::clone(&self.current_scope),
+            current_scope: self.current_scope.clone(),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
@@ -666,7 +666,7 @@ impl EvalContext {
                 child_lock
             },
             type_context: Arc::clone(&self.type_context),
-            current_scope: Arc::clone(&self.current_scope),
+            current_scope: self.current_scope.clone(),
             init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
@@ -686,7 +686,7 @@ impl EvalContext {
     /// The `group` parameter is the full `accumulated_group` at the point just before the last
     /// expression node is evaluated — it contains every thunk for every intermediate dict the
     /// loader has evaluated so far, at their canonical LGM slots.
-    pub fn set_init_accumulated_group(&self, group: Arc<SymbolTable>) {
+    pub fn set_init_accumulated_group(&self, group: ScopeChain) {
         // get_or_init: first write wins; subsequent calls are no-ops (the existing value is
         // returned, and the supplied closure is not called). This is the correct at-most-once
         // initialization pattern — no Result to discard.
@@ -697,7 +697,7 @@ impl EvalContext {
     ///
     /// Returns `None` in bootstrap/test contexts where the full loader pipeline has not run.
     /// Callers must gracefully fall back (e.g., return `false`) when this is `None`.
-    pub fn get_init_accumulated_group(&self) -> Option<&Arc<SymbolTable>> {
+    pub fn get_init_accumulated_group(&self) -> Option<&ScopeChain> {
         self.init_accumulated_group.get()
     }
 
@@ -1815,14 +1815,14 @@ async fn call_to_match_by_name(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    _scope: Arc<SymbolTable>,
+    _scope: ScopeChain,
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
     // Step 1: get the init accumulated group snapshot.
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
         return Ok(false);
     };
     // Step 2: find `name` in the accumulated scope.
-    let Some(fn_thunk) = acc_group.get(name) else {
+    let Some(fn_thunk) = SymbolTable::get_in_chain(acc_group, name) else {
         return Ok(false);
     };
     // Step 3: materialize the thunk to get the to-match function value.
@@ -1850,7 +1850,7 @@ async fn call_to_match_by_name(
     let call_ctx = CallContext {
         clauses: &clauses,
         definition_scope,
-        caller_scope: Arc::clone(&ctx.current_scope),
+        caller_scope: ctx.current_scope.clone(),
         positional: std::slice::from_ref(&val_thunk),
         named: None,
         call_span: span.clone(),
@@ -1902,7 +1902,7 @@ pub async fn call_to_match(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    scope: Arc<SymbolTable>,
+    scope: ScopeChain,
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
     call_to_match_by_name("to-match", val, ctx, span, scope).await
 }
@@ -1925,7 +1925,7 @@ pub async fn call_to_match_resolved(
     binding_name: &str,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    scope: Arc<SymbolTable>,
+    scope: ScopeChain,
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
     call_to_match_by_name(binding_name, val, ctx, span, scope).await
 }
@@ -1954,14 +1954,14 @@ pub async fn call_to_match_resolved(
 /// The thunk is not forced — the caller decides when (or whether) to materialize.
 pub fn eval_expr(
     node: &Arc<crate::ast::SurfaceNode>,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
 ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     let display_names = ctx.type_display_names_snapshot();
     crate::lower::lower(node, &display_names).map(|core_spanned| {
         Arc::new(Thunk::core_expr(
             Arc::new(core_spanned),
-            Arc::clone(scope),
+            scope.clone(),
             Arc::clone(ctx),
             node.span.clone(),
         ))
@@ -2144,9 +2144,9 @@ mod tests {
         EvalContext::new()
     }
 
-    fn build_test_scope_with_builtins() -> Arc<crate::symbol_table::SymbolTable> {
+    fn build_test_scope_with_builtins() -> ScopeChain {
         let builtin_defs = crate::builtins_core::core_builtins();
-        let mut scope = crate::symbol_table::SymbolTable::new(None);
+        let mut scope = crate::symbol_table::SymbolTable::new();
         for (i, def) in builtin_defs.iter().enumerate() {
             scope.insert(def.name.to_string(), i as u32, None);
         }
@@ -2161,7 +2161,7 @@ mod tests {
             ));
             scope.set_value(i as u32, thunk);
         }
-        scope
+        vec![scope]
     }
 
     /// Test-only: evaluate a SurfaceNode via the lower→CoreExpr path.
@@ -2174,7 +2174,7 @@ mod tests {
         let core_spanned = crate::lower::lower(&node, &display_names)
             .take(&ctx.runtime_diagnostics)
             .expect("lowering always succeeds");
-        crate::eval_core::eval_core_expr(&core_spanned, &SymbolTable::empty(), ctx).await
+        crate::eval_core::eval_core_expr(&core_spanned, &SymbolTable::empty_chain(), ctx).await
     }
 
     /// Test-only: evaluate a SurfaceNode after running the resolver against the root env.
@@ -2202,7 +2202,7 @@ mod tests {
                 let (_result_ty, _tc_errors) = crate::typecheck::process_document(
                     doc,
                     &mut infer_state,
-                    &crate::symbol_table::SymbolTable::empty(),
+                    &crate::symbol_table::SymbolTable::empty_chain(),
                     &mut None,
                 )
                 .await;
@@ -2219,7 +2219,7 @@ mod tests {
         expr: Spanned<CoreExpr>,
         ctx: &Arc<EvalContext>,
     ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-        crate::eval_core::eval_core_expr(&expr, &SymbolTable::empty(), ctx).await
+        crate::eval_core::eval_core_expr(&expr, &SymbolTable::empty_chain(), ctx).await
     }
 
     /// Parse a surface expression from text and evaluate it.
@@ -3392,7 +3392,7 @@ mod tests {
         let ctx_inner = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
             Arc::new(inner_expr),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx_inner),
             test_span(1, 1, 1, 8),
         ));
@@ -3530,7 +3530,7 @@ mod tests {
                 },
                 error_span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             error_span,
         ));
@@ -5396,7 +5396,7 @@ mod tests {
         let ctx = test_ctx();
         let inner_thunk = Arc::new(Thunk::core_expr(
             inner_expr,
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span,
         ));
@@ -5465,7 +5465,7 @@ mod tests {
                 let (_result_ty, _tc_errors) = crate::typecheck::process_document(
                     doc,
                     &mut infer_state,
-                    &crate::symbol_table::SymbolTable::empty(),
+                    &crate::symbol_table::SymbolTable::empty_chain(),
                     &mut None,
                 )
                 .await;
@@ -5625,7 +5625,7 @@ mod tests {
         }));
         let unevaluated_arg = Arc::new(Thunk::core_expr(
             dict_expr,
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -5652,7 +5652,7 @@ mod tests {
             None,
             span,
             Arc::clone(&ctx),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             crate::type_infer::make_typevalue_unknown(),
         ));
 
@@ -5845,7 +5845,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
 
         // Seed resolver with % in scope for tests.
-        let mut seed_scope = crate::symbol_table::SymbolTable::new(None);
+        let mut seed_scope = crate::symbol_table::SymbolTable::new();
         seed_scope.insert("%".to_string(), 0, None);
         let seed_scope = Arc::new(seed_scope);
         let _result = crate::resolve::resolve_program(&program, &seed_scope);
@@ -5859,7 +5859,7 @@ mod tests {
                 let (_result_ty, _tc_errors) = crate::typecheck::process_document(
                     doc,
                     &mut infer_state,
-                    &crate::symbol_table::SymbolTable::empty(),
+                    &crate::symbol_table::SymbolTable::empty_chain(),
                     &mut None,
                 )
                 .await;
@@ -5879,7 +5879,7 @@ mod tests {
 
         // Write % value into the resolver's scope so the eval scope matches.
         seed_scope.set_value(0, Arc::clone(&input_thunk));
-        let result_thunk = super::eval_surface_file_with_scope(&program, &ctx, seed_scope)
+        let result_thunk = super::eval_surface_file_with_scope(&program, &ctx, vec![seed_scope])
             .await
             .expect("eval_surface_file must succeed");
         let val = super::materialize(&result_thunk, None, &ctx)
@@ -5986,7 +5986,7 @@ mod tests {
                 let (_result_ty, _tc_errors) = crate::typecheck::process_document(
                     doc,
                     &mut infer_state,
-                    &crate::symbol_table::SymbolTable::empty(),
+                    &crate::symbol_table::SymbolTable::empty_chain(),
                     &mut None,
                 )
                 .await;
@@ -6034,7 +6034,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver with builtins in scope (test expression uses builtin-int-add).
         let seed_scope = build_test_scope_with_builtins();
-        let _result = crate::resolve::resolve_program(&program, &seed_scope);
+        let _result = crate::resolve::resolve_program(&program, seed_scope.first().expect("scope chain must not be empty"));
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6101,7 +6101,7 @@ mod tests {
                 let (_result_ty, _tc_errors) = crate::typecheck::process_document(
                     doc,
                     &mut infer_state,
-                    &crate::symbol_table::SymbolTable::empty(),
+                    &crate::symbol_table::SymbolTable::empty_chain(),
                     &mut None,
                 )
                 .await;

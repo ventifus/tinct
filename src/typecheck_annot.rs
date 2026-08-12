@@ -1547,28 +1547,37 @@ async fn resolve_type_head(
 ) -> Result<TypeValue, Diagnostic> {
     // Step 0: look up name in the SymbolTable scope (unified scope for all phases).
     // Materialize on demand and convert TypeNode → TypeValue.
+    let mut scope_lookup_info: Option<String> = None;
+    let _ = &scope_lookup_info;
     if let Some(ref current_scope) = state.current_scope {
-        if let Some(thunk) = current_scope.get(name) {
+        if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(current_scope, name) {
             if let Some(eval_ctx) = &state.eval_ctx {
-                if let Ok(val) = crate::eval::materialize(&thunk, None, eval_ctx).await {
-                    if let Ok(Some(tv)) = typenode_value_to_type(
-                        &val,
-                        eval_ctx,
-                        &state.type_stage_data.scope,
-                        &state.type_name_to_id,
-                    )
+                let val = crate::eval::materialize(&thunk, None, eval_ctx)
                     .await
-                    {
-                        if args.is_empty() {
-                            return Ok(tv);
-                        }
-                        let mut result = tv;
-                        for arg in args {
-                            result = make_typevalue_app(result, Arc::clone(arg));
-                        }
-                        return Ok(result);
+                    .map_err(|e| *e)?;
+                let convert_result = typenode_value_to_type(
+                    &val,
+                    eval_ctx,
+                    &state.type_stage_data.scope,
+                    &state.type_name_to_id,
+                )
+                .await
+                .map_err(|e| *e)?;
+                if let Some(tv) = convert_result {
+                    if args.is_empty() {
+                        return Ok(tv);
                     }
+                    let mut result = tv;
+                    for arg in args {
+                        result = make_typevalue_app(result, Arc::clone(arg));
+                    }
+                    return Ok(result);
                 }
+                scope_lookup_info = Some(format!(
+                    "found in scope, materialized, but not a TypeNode value"
+                ));
+            } else {
+                scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
             }
         }
     }
@@ -1729,6 +1738,9 @@ async fn resolve_type_head(
         span,
         message: format!("type `{name}` not found in scope"),
     }];
+    if let Some(info) = scope_lookup_info {
+        diag = diag.with_note(format!("scope lookup: {info}"));
+    }
     Err(diag)
 }
 
@@ -3923,8 +3935,8 @@ pub(crate) async fn as_type_dispatch(
             }
             let call_ctx = crate::eval_call::CallContext {
                 clauses,
-                definition_scope: Arc::clone(definition_scope),
-                caller_scope: Arc::clone(&eval_ctx.current_scope),
+                definition_scope: definition_scope.clone(),
+                caller_scope: eval_ctx.current_scope.clone(),
                 positional: &[arg_thunk],
                 named: None,
                 call_span: origin_span.clone(),
@@ -3989,10 +4001,11 @@ pub(crate) async fn eval_expr(
         crate::eval::EvalContext::new_empty()
     };
 
-    let scope = state
+    let scope: crate::symbol_table::ScopeChain = state
         .eval_scope
         .as_ref()
-        .map_or_else(|| Arc::clone(&ctx.current_scope), |s| Arc::clone(s));
+        .cloned()
+        .unwrap_or_else(|| ctx.current_scope.clone());
 
     let thunk = crate::eval::eval_expr(node, &scope, &ctx)
         .take(&ctx.runtime_diagnostics)

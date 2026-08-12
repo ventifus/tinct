@@ -137,7 +137,7 @@ fn varref_addr(node: &SurfaceNode) -> Option<crate::ast::VarAddr> {
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-    current_scope: &std::sync::Arc<crate::symbol_table::SymbolTable>,
+    current_scope: &[std::sync::Arc<crate::symbol_table::SymbolTable>],
 ) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
@@ -199,8 +199,12 @@ pub(crate) fn extract_narrowings(
                             // If the func has a @[narrows: T] annotation, calling it narrows the arg to T.
                             if let Some(func_addr) = varref_addr(func) {
                                 if let crate::ast::VarAddr::Dispatch(depth, slot) = &func_addr {
-                                    let func_scheme = current_scope
-                                        .lookup(*depth, *slot)
+                                    let func_scheme =
+                                        crate::symbol_table::SymbolTable::lookup_in_chain(
+                                            current_scope,
+                                            *depth,
+                                            *slot,
+                                        )
                                         .and_then(|e| e.type_scheme.get().cloned());
                                     if let Some(ref scheme_tv) = func_scheme {
                                         if let Some(narrowing_ty) =
@@ -316,7 +320,11 @@ pub(crate) fn apply_narrowings(
                         state
                             .current_scope
                             .as_ref()
-                            .and_then(|s| s.lookup(*depth, *slot))
+                            .and_then(|chain| {
+                                crate::symbol_table::SymbolTable::lookup_in_chain(
+                                    chain, *depth, *slot,
+                                )
+                            })
                             .and_then(|e| e.type_scheme.get().cloned())
                     } else {
                         None

@@ -14,10 +14,7 @@ use crate::error::Diagnostic;
 
 /// Type alias for the optional default expression + scope pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-type GuardDefault = (
-    Arc<Spanned<CoreExpr>>,
-    Arc<crate::symbol_table::SymbolTable>,
-);
+type GuardDefault = (Arc<Spanned<CoreExpr>>, crate::symbol_table::ScopeChain);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
@@ -48,7 +45,7 @@ pub struct BuiltinArgs {
     pub named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    pub scope: Arc<crate::symbol_table::SymbolTable>,
+    pub scope: crate::symbol_table::ScopeChain,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -746,8 +743,8 @@ pub enum Value {
     /// For single-clause functions (the common case) `clauses.len() == 1`; multi-clause
     /// functions (from multi-arm instance methods) have `clauses.len() > 1`.
     ///
-    /// `definition_scope` is the definition-site SymbolTable captured at fn-definition time.
-    /// All outer-scope names resolve through the SymbolTable's parent chain — no closure
+    /// `definition_scope` is the definition-site ScopeChain captured at fn-definition time.
+    /// All outer-scope names resolve through the ScopeChain — no closure
     /// conversion or outer-frame pointer needed at call time.
     ///
     /// T-2133 will implement full multi-clause dispatch via `invoke_function`. Until then,
@@ -755,7 +752,7 @@ pub enum Value {
     /// helpers defined for the single-clause common case.
     Function {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
-        definition_scope: Arc<crate::symbol_table::SymbolTable>,
+        definition_scope: crate::symbol_table::ScopeChain,
         annotation: Option<Box<FnAnnotation>>,
         type_val: Option<std::sync::Arc<Value>>,
     },
@@ -1037,7 +1034,7 @@ impl Clone for Value {
                 type_val,
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
-                definition_scope: Arc::clone(definition_scope),
+                definition_scope: definition_scope.clone(),
                 annotation: annotation.clone(),
                 type_val: type_val.clone(),
             },
@@ -1782,7 +1779,7 @@ pub enum UnevaluatedState {
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        scope: Arc<crate::symbol_table::SymbolTable>,
+        scope: crate::symbol_table::ScopeChain,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
@@ -1792,7 +1789,7 @@ pub enum UnevaluatedState {
         named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         call_span: Span,
         ctx: Arc<crate::eval::EvalContext>,
-        scope: Arc<crate::symbol_table::SymbolTable>,
+        scope: crate::symbol_table::ScopeChain,
     },
     /// Deferred function call (was PendingCall).
     FnCall {
@@ -1803,7 +1800,7 @@ pub enum UnevaluatedState {
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
         original_call: Arc<Spanned<CoreExpr>>,
-        scope: Arc<crate::symbol_table::SymbolTable>,
+        scope: crate::symbol_table::ScopeChain,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
@@ -1839,7 +1836,7 @@ pub struct FnCallSpec {
     pub ctx: Arc<crate::eval::EvalContext>,
     /// The original call expression (for error messages).
     pub original_call: Arc<Spanned<CoreExpr>>,
-    pub scope: Arc<crate::symbol_table::SymbolTable>,
+    pub scope: crate::symbol_table::ScopeChain,
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
@@ -1912,7 +1909,7 @@ impl Thunk {
     /// Panics if the CoreExpr has no inferred_type — every expression must be type-checked.
     pub fn core_expr(
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        scope: Arc<crate::symbol_table::SymbolTable>,
+        scope: crate::symbol_table::ScopeChain,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
@@ -2014,7 +2011,7 @@ impl Thunk {
         named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         span: Span,
         ctx: Arc<crate::eval::EvalContext>,
-        scope: Arc<crate::symbol_table::SymbolTable>,
+        scope: crate::symbol_table::ScopeChain,
         inferred_type: std::sync::Arc<Value>,
     ) -> Self {
         Self {
@@ -2456,7 +2453,12 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr, crate::symbol_table::SymbolTable::empty(), ctx, span);
+        let thunk = Thunk::core_expr(
+            expr,
+            crate::symbol_table::SymbolTable::empty_chain(),
+            ctx,
+            span,
+        );
 
         assert!(!thunk.is_settled(), "Expected unevaluated (not settled)");
         assert!(
@@ -2637,7 +2639,7 @@ mod tests {
         ));
         let thunk = Thunk::core_expr(
             expr.clone(),
-            crate::symbol_table::SymbolTable::empty(),
+            crate::symbol_table::SymbolTable::empty_chain(),
             ctx.clone(),
             span,
         );
@@ -2672,7 +2674,12 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr, crate::symbol_table::SymbolTable::empty(), ctx, span);
+        let thunk = Thunk::core_expr(
+            expr,
+            crate::symbol_table::SymbolTable::empty_chain(),
+            ctx,
+            span,
+        );
 
         let first_claim = thunk.try_claim();
         assert!(first_claim.is_some(), "First claim should succeed");
@@ -2694,7 +2701,7 @@ mod tests {
         ));
         let thunk = Thunk::core_expr(
             expr,
-            crate::symbol_table::SymbolTable::empty(),
+            crate::symbol_table::SymbolTable::empty_chain(),
             ctx.clone(),
             span,
         );

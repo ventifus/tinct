@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::Diagnostic;
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 use super::{materialize, EvalContext};
@@ -217,7 +217,7 @@ async fn eval_annotation_property_dict(
                         entry.node.value.span.clone(),
                     )));
                 }
-                match eval_core_expr(&core_expr, &SymbolTable::empty(), ctx).await {
+                match eval_core_expr(&core_expr, &SymbolTable::empty_chain(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
                     Err(e) if e.kind == "unimplemented" => {
                         // Placeholder from nested type expressions → skip this key.
@@ -319,7 +319,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// is handled by `eval_core_expr` before the dict is returned, not inside `eval_dict_core`.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
-    outer_scope: &Arc<SymbolTable>,
+    outer_scope: &ScopeChain,
     resolver_scope: Option<&Arc<SymbolTable>>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
@@ -342,7 +342,7 @@ pub(crate) async fn eval_dict_core(
     let mut letrec_scope_owned = if use_resolver_scope {
         None
     } else {
-        Some(SymbolTable::new(Some(Arc::clone(outer_scope))))
+        Some(SymbolTable::new())
     };
     // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),
     // so we can patch its scope after the SymbolTable is assembled.
@@ -435,7 +435,7 @@ pub(crate) async fn eval_dict_core(
                 _ => {
                     let t = Arc::new(Thunk::core_expr(
                         Arc::clone(&entry.node.value),
-                        SymbolTable::empty(),
+                        SymbolTable::empty_chain(),
                         Arc::clone(ctx),
                         entry_span,
                     ));
@@ -575,7 +575,11 @@ pub(crate) async fn eval_dict_core(
         }
     }
 
-    // Patch non-literal CoreExpr thunks with the real letrec scope.
+    // Build the letrec ScopeChain: prepend the letrec frame to the outer scope chain.
+    let mut letrec_chain = outer_scope.clone();
+    letrec_chain.insert(0, Arc::clone(&letrec_scope));
+
+    // Patch non-literal CoreExpr thunks with the real letrec scope chain.
     if has_non_literal {
         for maybe_core_thunk in &core_expr_thunks {
             let Some(core_thunk) = maybe_core_thunk else {
@@ -589,7 +593,7 @@ pub(crate) async fn eval_dict_core(
                     } => {
                         core_thunk.reset(crate::value::UnevaluatedState::CoreExpr {
                             expr,
-                            scope: Arc::clone(&letrec_scope),
+                            scope: letrec_chain.clone(),
                             ctx: t_ctx,
                         });
                     }
@@ -621,7 +625,7 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
 ) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization

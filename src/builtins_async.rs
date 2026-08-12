@@ -181,16 +181,9 @@ pub(crate) fn builtin_task(
                         )
                         .into());
                     }
-                    let thunk = eval_core_expr(
-                        &clause.body,
-                        &Arc::new(crate::symbol_table::SymbolTable::new_call_frame(
-                            Arc::clone(&definition_scope),
-                            None,
-                            None,
-                        )),
-                        &ctx_clone,
-                    )
-                    .await?;
+                    let mut call_chain = definition_scope.clone();
+                    call_chain.insert(0, Arc::new(crate::symbol_table::SymbolTable::new()));
+                    let thunk = eval_core_expr(&clause.body, &call_chain, &ctx_clone).await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
                 Value::Builtin { def, .. } => {
@@ -199,7 +192,7 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
-                        scope: crate::symbol_table::SymbolTable::empty(),
+                        scope: crate::symbol_table::SymbolTable::empty_chain(),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;

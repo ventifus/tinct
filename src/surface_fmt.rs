@@ -15,24 +15,26 @@ use crate::ast::{CoreExpr, Param, Spanned};
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{HashableValue, Thunk, Value};
 
-/// Create a child SymbolTable scope with additional names.
+/// Create a child scope chain with additional names prepended as a new frame.
 fn scope_with_names(
-    parent: &Arc<SymbolTable>,
+    parent_chain: &ScopeChain,
     names: impl IntoIterator<Item = String>,
-) -> Arc<SymbolTable> {
-    let mut table = SymbolTable::new(Some(Arc::clone(parent)));
+) -> ScopeChain {
+    let mut table = SymbolTable::new();
     for (i, name) in names.into_iter().enumerate() {
         table.insert(name, i as u32, None);
     }
-    Arc::new(table)
+    let mut chain = parent_chain.clone();
+    chain.insert(0, Arc::new(table));
+    chain
 }
 
 /// Check if a name is in scope (known binding — param, stdlib, or enclosing dict).
-fn name_in_scope(scope: &Arc<SymbolTable>, name: &str) -> bool {
-    scope.lookup_by_name(name).is_some()
+fn name_in_scope(scope: &ScopeChain, name: &str) -> bool {
+    SymbolTable::lookup_by_name_in_chain(scope, name).is_some()
 }
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
@@ -176,7 +178,7 @@ pub fn fmt_fn(
     let base_scope = {
         let builtins = crate::builtins_core::core_builtins();
         let builtin_names = builtins.iter().map(|def| def.name.to_string());
-        scope_with_names(&SymbolTable::empty(), builtin_names)
+        scope_with_names(&SymbolTable::empty_chain(), builtin_names)
     };
     let scope = scope_with_names(&base_scope, params.iter().map(|p| p.name.clone()));
 
@@ -310,7 +312,7 @@ fn extract_identifiers(text: &str) -> HashSet<&str> {
 /// Walk a `CoreExpr` and collect names that are free references — not found in `scope`.
 ///
 /// The scope grows as we descend into `Fn` bodies, `Dict` entries, and `Sequential` expressions.
-fn collect_free_vars(expr: &CoreExpr, scope: &Arc<SymbolTable>, out: &mut HashSet<String>) {
+fn collect_free_vars(expr: &CoreExpr, scope: &ScopeChain, out: &mut HashSet<String>) {
     match expr {
         // Leaves — no variable references
         CoreExpr::Int { .. }
@@ -345,7 +347,7 @@ fn collect_free_vars(expr: &CoreExpr, scope: &Arc<SymbolTable>, out: &mut HashSe
             // Mirror the resolver's sequential scope injection:
             // after each intermediate expression, collect any static dict keys it introduces
             // and extend the scope for subsequent expressions.
-            let mut seq_scope = Arc::clone(scope);
+            let mut seq_scope = scope.clone();
             for (i, e) in exprs.iter().enumerate() {
                 collect_free_vars(&e.node, &seq_scope, out);
                 // After all but the last expression, inject static dict keys into scope.
@@ -410,7 +412,7 @@ fn collect_free_vars(expr: &CoreExpr, scope: &Arc<SymbolTable>, out: &mut HashSe
                 })
                 .collect();
             let dict_scope = if dict_key_names.is_empty() {
-                Arc::clone(scope)
+                scope.clone()
             } else {
                 scope_with_names(scope, dict_key_names)
             };
@@ -498,7 +500,7 @@ fn collect_free_vars(expr: &CoreExpr, scope: &Arc<SymbolTable>, out: &mut HashSe
 fn collect_free_vars_in_quote(
     expr: &CoreExpr,
     depth: usize,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     out: &mut HashSet<String>,
 ) {
     match expr {
@@ -611,7 +613,7 @@ fn collect_free_vars_in_quote(
 /// - `ctx`: evaluation context (for nested function serialization)
 fn core_expr_to_tinct(
     expr: &CoreExpr,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,
@@ -666,7 +668,7 @@ fn core_expr_to_tinct(
         // earlier dict expressions without treating them as free variables that need
         // substitution. Mirrors the resolver's sequential scope injection (resolve.rs:118-134).
         CoreExpr::Sequential { exprs, .. } => {
-            let mut seq_scope = Arc::clone(scope);
+            let mut seq_scope = scope.clone();
             let mut parts = Vec::with_capacity(exprs.len());
             for (i, e) in exprs.iter().enumerate() {
                 parts.push(core_expr_to_tinct(
@@ -744,7 +746,7 @@ fn core_expr_to_tinct(
                 })
                 .collect();
             let dict_scope = if dict_key_names.is_empty() {
-                Arc::clone(scope)
+                scope.clone()
             } else {
                 scope_with_names(scope, dict_key_names)
             };
@@ -1012,7 +1014,7 @@ fn core_expr_to_tinct(
 fn core_expr_to_tinct_in_quote(
     expr: &CoreExpr,
     depth: usize,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,
@@ -1071,7 +1073,7 @@ fn core_expr_to_tinct_in_quote(
 fn core_expr_to_tinct_raw(
     expr: &CoreExpr,
     depth: usize,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,

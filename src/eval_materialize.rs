@@ -21,7 +21,7 @@ use crate::eval::{
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
 use crate::value::{
     string_val, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
@@ -110,10 +110,7 @@ impl Drop for ProfilingSpanGuard {
 /// Type alias for the optional default expression + scope pair carried by
 /// guarded thunks. Matches value.rs GuardDefault, enabling lossless round-trip
 /// through UnevaluatedState::Guarded.
-type GuardDefault = (
-    Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-    Arc<SymbolTable>,
-);
+type GuardDefault = (Arc<crate::ast::Spanned<crate::ast::CoreExpr>>, ScopeChain);
 
 /// Attach materialization span and origin frame to an error.
 /// This function is called at every error site in the CEK machine to ensure
@@ -173,7 +170,7 @@ pub(crate) struct PendingCallDispatchData {
     /// Span of the function thunk — where the callee value was defined.
     /// Used as the primary span in not-a-function errors ("defined at").
     pub(crate) func_span: Span,
-    pub(crate) scope: Arc<SymbolTable>,
+    pub(crate) scope: ScopeChain,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -204,8 +201,8 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) check: crate::ast::TypeAssertCheck,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
-    /// SymbolTable scope for evaluating default: fallback expressions.
-    pub(crate) scope: Arc<SymbolTable>,
+    /// ScopeChain for evaluating default: fallback expressions.
+    pub(crate) scope: ScopeChain,
     pub(crate) ctx: Arc<EvalContext>,
     /// Pipeline blame for `--- expects: @Type` contract assertions.
     /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set during expects annotation resolution).
@@ -225,7 +222,7 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) arg_idx: usize,
-    pub(crate) scope: Arc<SymbolTable>,
+    pub(crate) scope: ScopeChain,
 }
 
 /// Payload for Cont::LetrecChainStep. Boxed to keep the Cont enum ≤96 bytes.
@@ -236,8 +233,8 @@ pub(crate) struct LetrecChainStepData {
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
-    /// SymbolTable scope for variable lookup in subsequent expressions.
-    pub(crate) scope: Arc<SymbolTable>,
+    /// ScopeChain for variable lookup in subsequent expressions.
+    pub(crate) scope: ScopeChain,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
 }
@@ -254,8 +251,8 @@ pub(crate) struct VariantUnpackForLetrecChainData {
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
-    /// SymbolTable scope for variable lookup in subsequent expressions.
-    pub(crate) scope: Arc<SymbolTable>,
+    /// ScopeChain for variable lookup in subsequent expressions.
+    pub(crate) scope: ScopeChain,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
     /// Span of the current expression (for error reporting)
@@ -269,8 +266,8 @@ pub(crate) struct MatchDispatchData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// SymbolTable scope for arm body evaluation.
-    pub(crate) scope: Arc<SymbolTable>,
+    /// ScopeChain for arm body evaluation.
+    pub(crate) scope: ScopeChain,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
 }
@@ -282,13 +279,13 @@ pub(crate) struct MatchGuardCheckData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// SymbolTable scope for arm body and guard evaluation (the case arm's scope).
-    pub(crate) scope: Arc<SymbolTable>,
+    /// ScopeChain for arm body and guard evaluation (the case arm's scope).
+    pub(crate) scope: ScopeChain,
     /// Original parent scope from MatchDispatch — used when the guard fails to continue
     /// to the next arm in the correct scope. Distinct from `scope` (the arm scope) because
     /// the arm scope contains the arm's bound variables and must not be propagated to
     /// sibling arms on guard failure (B-724/B-732).
-    pub(crate) parent_scope: Arc<SymbolTable>,
+    pub(crate) parent_scope: ScopeChain,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
     /// The scrutinee value (needed for predicate invocation and fallback)
@@ -458,8 +455,8 @@ pub(crate) enum Action {
     /// default-fallback (apply_cont).
     EvalCore {
         expr: Arc<Spanned<CoreExpr>>,
-        /// SymbolTable scope for variable lookup.
-        scope: Arc<SymbolTable>,
+        /// ScopeChain for variable lookup.
+        scope: ScopeChain,
         ctx: Arc<EvalContext>,
     },
 }
@@ -565,7 +562,7 @@ pub(crate) fn apply_predicate_to_subject(
     pred_span: Span,
     subj_span: Span,
     ctx: &Arc<EvalContext>,
-    scope: Arc<SymbolTable>,
+    scope: ScopeChain,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
@@ -748,7 +745,7 @@ async fn dispatch_state(
                         thunk_span: thunk_span.clone(),
                         mat_span: None,
                         arg_idx,
-                        scope: Arc::clone(&builtin_scope),
+                        scope: builtin_scope.clone(),
                     })));
                     // BuiltinForceArg continuation inherits eval_stack pop responsibility
                     eval_stack_guard.disarm();
@@ -1011,7 +1008,7 @@ async fn dispatch_state(
                     check: check.clone(),
                     expr_span: core_expr.span.clone(),
                     thunk_span: inner_span,
-                    scope: Arc::clone(&scope),
+                    scope: scope.clone(),
                     ctx: Arc::clone(&thunk_ctx),
                     pipeline_blame: pipeline_blame.clone(),
                 })));
@@ -1052,7 +1049,7 @@ async fn dispatch_state(
                     crate::eval_materialize::LetrecChainStepData {
                         idx: 0,
                         letrec_chain_expr: Arc::clone(&core_expr),
-                        scope: Arc::clone(&scope),
+                        scope: scope.clone(),
                         ctx: Arc::clone(&thunk_ctx),
                         seq_span: core_expr.span.clone(),
                     },
@@ -1101,7 +1098,7 @@ async fn dispatch_state(
                     crate::eval_materialize::MatchDispatchData {
                         arm_idx: 0,
                         match_expr: Arc::clone(&core_expr),
-                        scope: Arc::clone(&scope),
+                        scope: scope.clone(),
                         ctx: Arc::clone(&thunk_ctx),
                         match_span: core_expr.span.clone(),
                     },
@@ -1368,7 +1365,7 @@ pub(crate) async fn apply_cont(
                                         MACRO_CALL_ENV_NAME.to_string(),
                                         Arc::new(Thunk::value(
                                             Value::SymbolTable {
-                                                table: Arc::clone(&call_scope),
+                                                table: call_scope[0].clone(),
                                                 type_val: None,
                                             },
                                             call_span.clone(),
@@ -1434,8 +1431,8 @@ pub(crate) async fn apply_cont(
                                 let invoke_result = {
                                     let call_ctx = CallContext {
                                         clauses: &clauses,
-                                        definition_scope: Arc::clone(&definition_scope),
-                                        caller_scope: Arc::clone(&call_scope),
+                                        definition_scope: definition_scope.clone(),
+                                        caller_scope: call_scope.clone(),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
@@ -1473,8 +1470,8 @@ pub(crate) async fn apply_cont(
                                 let invoke_result = {
                                     let call_ctx = CallContext {
                                         clauses: &clauses,
-                                        definition_scope: Arc::clone(&definition_scope),
-                                        caller_scope: Arc::clone(&call_scope),
+                                        definition_scope: definition_scope.clone(),
+                                        caller_scope: call_scope.clone(),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
@@ -1565,7 +1562,7 @@ pub(crate) async fn apply_cont(
                                     named: named.take().expect("named set above").map(|b| *b),
                                     call_span: call_span.clone(),
                                     ctx: thunk_ctx,
-                                    scope: Arc::clone(&call_scope),
+                                    scope: call_scope.clone(),
                                 });
                                 return Action::Materialize { thunk, mat_span };
                             }
@@ -1581,7 +1578,7 @@ pub(crate) async fn apply_cont(
                                         .cloned(),
                                     call_span: call_span.clone(),
                                     ctx: Arc::clone(&thunk_ctx),
-                                    scope: Arc::clone(&call_scope),
+                                    scope: call_scope.clone(),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
                                     e.set_arity_callee(Some(def.name.into()));
@@ -1772,7 +1769,7 @@ pub(crate) async fn apply_cont(
                                         guard_eval_stack.disarm();
                                         return Action::EvalCore {
                                             expr: Arc::clone(&default_expr),
-                                            scope: SymbolTable::empty(),
+                                            scope: SymbolTable::empty_chain(),
                                             ctx: guard_ctx,
                                         };
                                     }
@@ -1797,7 +1794,7 @@ pub(crate) async fn apply_cont(
                                 guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
-                                    scope: SymbolTable::empty(),
+                                    scope: SymbolTable::empty_chain(),
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1853,7 +1850,7 @@ pub(crate) async fn apply_cont(
                                 guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
-                                    scope: SymbolTable::empty(),
+                                    scope: SymbolTable::empty_chain(),
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1958,7 +1955,7 @@ pub(crate) async fn apply_cont(
                                 thunk_span: thunk_span.clone(),
                                 mat_span: mat_span.clone(),
                                 arg_idx: next_idx,
-                                scope: Arc::clone(&builtin_scope),
+                                scope: builtin_scope.clone(),
                             })));
                             // Next BuiltinForceArg inherits eval_stack pop responsibility
                             eval_stack_guard.disarm();
@@ -1994,7 +1991,7 @@ pub(crate) async fn apply_cont(
                             thunk_span: thunk_span.clone(),
                             mat_span: mat_span.clone(),
                             arg_idx: next_idx,
-                            scope: Arc::clone(&builtin_scope),
+                            scope: builtin_scope.clone(),
                         })));
                         // Next BuiltinForceArg inherits eval_stack pop responsibility
                         eval_stack_guard.disarm();
@@ -2178,7 +2175,7 @@ pub(crate) async fn apply_cont(
                             .expect("lowering always succeeds");
                         Action::EvalCore {
                             expr: Arc::new(core_spanned),
-                            scope: Arc::clone(&scope),
+                            scope: scope.clone(),
                             ctx: Arc::clone(&ctx),
                         }
                     } else {
@@ -2221,7 +2218,7 @@ pub(crate) async fn apply_cont(
                                                 .expect("lowering always succeeds");
                                         return Action::EvalCore {
                                             expr: Arc::new(core_spanned),
-                                            scope: Arc::clone(&scope),
+                                            scope: scope.clone(),
                                             ctx: Arc::clone(&ctx),
                                         };
                                     }
@@ -2249,7 +2246,7 @@ pub(crate) async fn apply_cont(
                                 .expect("lowering always succeeds");
                             Action::EvalCore {
                                 expr: Arc::new(core_spanned),
-                                scope: Arc::clone(&scope),
+                                scope: scope.clone(),
                                 ctx: Arc::clone(&ctx),
                             }
                         } else {
@@ -2374,7 +2371,7 @@ pub(crate) async fn apply_cont(
                                         static_key_set: key_set,
                                         next_idx,
                                         letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                                        scope: Arc::clone(&scope),
+                                        scope: scope.clone(),
                                         ctx: Arc::clone(&ctx),
                                         seq_span: seq_span.clone(),
                                         current_expr_span: current_expr.span.clone(),
@@ -2412,12 +2409,12 @@ pub(crate) async fn apply_cont(
                                 }
                             })
                             .collect();
-                        let updated_scope = scope.extend(named_entries);
+                        let updated_scope = SymbolTable::extend_chain(&scope, named_entries);
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: Arc::clone(&updated_scope),
+                            scope: updated_scope.clone(),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
@@ -2432,7 +2429,7 @@ pub(crate) async fn apply_cont(
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: Arc::clone(&scope),
+                            scope: scope.clone(),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
@@ -2498,11 +2495,11 @@ pub(crate) async fn apply_cont(
                                 }
                             })
                             .collect();
-                        let updated_scope = scope.extend(named_entries);
+                        let updated_scope = SymbolTable::extend_chain(&scope, named_entries);
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: Arc::clone(&updated_scope),
+                            scope: updated_scope.clone(),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
@@ -2515,7 +2512,7 @@ pub(crate) async fn apply_cont(
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: Arc::clone(&scope),
+                            scope: scope.clone(),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
@@ -2560,7 +2557,7 @@ pub(crate) async fn apply_cont(
                         // pre_arm_scope: enclosing scope used for structural pattern matching
                         // so that pin variables (external names resolved to Dispatch slots
                         // in the pattern) can be looked up.
-                        let pre_arm_scope = Arc::clone(&scope);
+                        let pre_arm_scope = scope.clone();
 
                         let lowered_pattern = arm
                             .lowered_pattern
@@ -2634,9 +2631,9 @@ pub(crate) async fn apply_cont(
                         };
 
                         // Build the arm SymbolTable scope with pattern bindings.
-                        // The arm scope has the enclosing scope as parent so outer names
-                        // resolve through parent chain traversal.
-                        let mut arm_scope_inner = SymbolTable::new(Some(Arc::clone(&scope)));
+                        // The arm scope prepends a new frame to the enclosing chain so outer
+                        // names resolve through chain traversal.
+                        let mut arm_scope_inner = SymbolTable::new();
                         let mut sorted = arm_bindings;
                         sorted.sort_unstable_by_key(|(slot, _)| *slot);
                         for (slot, thunk) in &sorted {
@@ -2650,7 +2647,8 @@ pub(crate) async fn apply_cont(
                             arm_scope_inner.insert(name, *slot, None);
                             arm_scope_inner.set_value(*slot, Arc::clone(thunk));
                         }
-                        let arm_scope = Arc::new(arm_scope_inner);
+                        let mut arm_scope = scope.clone();
+                        arm_scope.insert(0, Arc::new(arm_scope_inner));
 
                         // If guard expression pattern, evaluate it to check if truthy.
                         // EXCEPT: when the pattern is a simple VarRef to a binding variable
@@ -2682,8 +2680,8 @@ pub(crate) async fn apply_cont(
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx: i,
                                 match_expr: Arc::clone(&match_expr),
-                                scope: Arc::clone(&arm_scope),
-                                parent_scope: Arc::clone(&scope),
+                                scope: arm_scope.clone(),
+                                parent_scope: scope.clone(),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                                 scrutinee_value: scrutinee_value.clone(),
@@ -2709,8 +2707,8 @@ pub(crate) async fn apply_cont(
                                 stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                     arm_idx: i,
                                     match_expr: Arc::clone(&match_expr),
-                                    scope: Arc::clone(&arm_scope),
-                                    parent_scope: Arc::clone(&scope),
+                                    scope: arm_scope.clone(),
+                                    parent_scope: scope.clone(),
                                     ctx: Arc::clone(&ctx),
                                     match_span: match_span.clone(),
                                     scrutinee_value: scrutinee_value.clone(),
@@ -2721,7 +2719,7 @@ pub(crate) async fn apply_cont(
 
                                 return Action::EvalCore {
                                     expr: Arc::clone(guard_expr),
-                                    scope: Arc::clone(&arm_scope),
+                                    scope: arm_scope.clone(),
                                     ctx,
                                 };
                             }
@@ -2788,15 +2786,15 @@ pub(crate) async fn apply_cont(
                                         },
                                         span: match_span.clone(),
                                     }),
-                                    scope: Arc::clone(&parent_scope),
+                                    scope: parent_scope.clone(),
                                 },
                             ));
                             // Push MatchGuardCheck again with callable_invoked=true.
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx,
                                 match_expr: Arc::clone(&match_expr),
-                                scope: Arc::clone(&scope),
-                                parent_scope: Arc::clone(&parent_scope),
+                                scope: scope.clone(),
+                                parent_scope: parent_scope.clone(),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                                 scrutinee_value,
@@ -2811,7 +2809,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let guard_scope = Arc::clone(&scope);
+                    let guard_scope = scope.clone();
                     let guard_passed_result =
                         if let Some(ref binding_name) = guard_matchable_binding {
                             crate::eval::call_to_match_resolved(
@@ -2926,7 +2924,7 @@ pub(crate) async fn eval_case_arm_structural_pattern(
     binding_map: &IndexMap<String, u32>,
     scrutinee_value: &Value,
     match_span: Span,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
 ) -> Result<Option<Vec<(u32, Arc<Thunk>)>>, Box<crate::error::Diagnostic>> {
     let mut bindings: Vec<(u32, Arc<Thunk>)> = Vec::with_capacity(binding_map.len());
@@ -2950,7 +2948,7 @@ pub(crate) async fn eval_case_arm_structural_pattern(
 /// struct so that the function signature stays below Clippy's argument-count limit.
 struct StructuralPatternCtx<'a> {
     binding_map: &'a IndexMap<String, u32>,
-    scope: &'a Arc<SymbolTable>,
+    scope: &'a ScopeChain,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
 }
@@ -2962,7 +2960,7 @@ struct StructuralPatternCtx<'a> {
 /// constructor tag cannot be determined, etc.).
 ///
 /// `bindings` accumulates `(slot, thunk)` pairs for each bound variable encountered.
-/// `pctx.scope` is the parent SymbolTable, used for pin variable lookup.
+/// `pctx.scope` is the parent ScopeChain, used for pin variable lookup.
 ///
 /// Uses `Box::pin` for recursive async calls (the codebase does not depend on
 /// `async_recursion`).
@@ -3044,7 +3042,7 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_thunk = Arc::new(Thunk::core_expr(
                         pred_expr_core,
-                        SymbolTable::empty(),
+                        SymbolTable::empty_chain(),
                         Arc::clone(ctx),
                         match_span.clone(),
                     ));
@@ -3059,12 +3057,12 @@ fn eval_structural_pattern_inner<'a>(
                         match_span.clone(),
                         match_span.clone(),
                         ctx,
-                        Arc::clone(pctx.scope),
+                        pctx.scope.to_vec(),
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;
 
-                    if !crate::eval::call_to_match(&pred_result, ctx, match_span, Arc::clone(scope))
+                    if !crate::eval::call_to_match(&pred_result, ctx, match_span, scope.to_vec())
                         .await?
                     {
                         return Ok(false);
@@ -3098,7 +3096,7 @@ fn eval_structural_pattern_inner<'a>(
                 // The pattern may reference outer-scope names (e.g. `Color` in `Color.Red`).
                 let target_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(target),
-                    Arc::clone(scope),
+                    scope.to_vec(),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3237,7 +3235,7 @@ fn eval_structural_pattern_inner<'a>(
                 // field-access constructor patterns like [Option.Some p].
                 let func_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(func),
-                    Arc::clone(scope),
+                    scope.to_vec(),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3428,7 +3426,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let call_thunk = Arc::new(Thunk::core_expr(
                                 call_expr_spanned,
-                                Arc::clone(scope),
+                                scope.to_vec(),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
@@ -3509,7 +3507,7 @@ fn eval_structural_pattern_inner<'a>(
                                     &call_result,
                                     ctx,
                                     match_span,
-                                    Arc::clone(scope),
+                                    scope.to_vec(),
                                 )
                                 .await
                             }
@@ -3532,7 +3530,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_thunk = Arc::new(Thunk::core_expr(
                                 guard_expr_spanned,
-                                Arc::clone(scope),
+                                scope.to_vec(),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
@@ -3542,7 +3540,7 @@ fn eval_structural_pattern_inner<'a>(
                                 &guard_result,
                                 ctx,
                                 match_span,
-                                Arc::clone(scope),
+                                scope.to_vec(),
                             )
                             .await
                         }
@@ -3609,7 +3607,7 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let pat_expr_thunk = Arc::new(Thunk::core_expr(
                     spanned,
-                    Arc::clone(scope),
+                    scope.to_vec(),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3637,7 +3635,7 @@ async fn bind_or_pin_name(
     scrutinee_value: &Value,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
-    scope: &Arc<SymbolTable>,
+    scope: &ScopeChain,
     addr: &VarAddr,
     bindings: &mut Vec<(u32, Arc<Thunk>)>,
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
@@ -3652,13 +3650,15 @@ async fn bind_or_pin_name(
         // Pin: look up the name's value in the parent scope via its resolver-assigned addr.
         // `addr` is the VarAddr the resolver assigned to this name in the enclosing scope.
         let pinned_thunk = match addr {
-            VarAddr::Dispatch(depth, slot) => match scope.lookup(*depth, *slot) {
-                Some(entry) => match entry.value.get() {
-                    Some(thunk) => Arc::clone(thunk),
+            VarAddr::Dispatch(depth, slot) => {
+                match SymbolTable::lookup_in_chain(scope, *depth, *slot) {
+                    Some(entry) => match entry.value.get() {
+                        Some(thunk) => Arc::clone(thunk),
+                        None => return Ok(false),
+                    },
                     None => return Ok(false),
-                },
-                None => return Ok(false),
-            },
+                }
+            }
             VarAddr::EffectPerform { .. } => {
                 return Err(Diagnostic::internal(
                     format!("pattern pin '{name}': EffectPerform not supported in pattern pins (T-2126)"),
@@ -3863,7 +3863,7 @@ mod tests {
                 },
                 value_span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx_for_test),
             value_span.clone(),
         );
@@ -3923,7 +3923,7 @@ mod tests {
                 },
                 same_span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx_same),
             same_span.clone(),
         );
@@ -3973,7 +3973,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span,
         ));
@@ -4056,7 +4056,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span,
         ));
@@ -4138,7 +4138,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4258,7 +4258,7 @@ mod tests {
             vec![],
             span,
             None,
-            Some((default_expr, SymbolTable::empty())),
+            Some((default_expr, SymbolTable::empty_chain())),
         ));
 
         // Should succeed, returning the default value (99) evaluated in caller's env.
@@ -4390,7 +4390,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4416,7 +4416,7 @@ mod tests {
             None,
             span,
             Arc::clone(&ctx),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             crate::type_infer::make_typevalue_unknown(),
         ));
 
@@ -4479,7 +4479,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4499,7 +4499,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4546,7 +4546,7 @@ mod tests {
             None,
             span,
             Arc::clone(&ctx),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             crate::type_infer::make_typevalue_unknown(),
         ));
 
@@ -4770,7 +4770,7 @@ mod cek_lifecycle_tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4835,7 +4835,7 @@ mod cek_lifecycle_tests {
                 },
                 span.clone(),
             )),
-            SymbolTable::empty(),
+            SymbolTable::empty_chain(),
             Arc::clone(&ctx),
             span.clone(),
         ));

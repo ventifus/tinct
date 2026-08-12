@@ -6,7 +6,7 @@ use crate::ast::{
     CoreClause, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
 };
 use crate::error::{ArityBound, Diagnostic};
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::type_tags::*;
 use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 use indexmap::IndexMap;
@@ -66,7 +66,7 @@ pub(crate) async fn eval_call_core(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
-    caller_scope: &Arc<SymbolTable>,
+    caller_scope: &ScopeChain,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     let func_thunk = eval_core_expr(func_expr, caller_scope, ctx).await?;
 
@@ -78,7 +78,7 @@ pub(crate) async fn eval_call_core(
         .map(|arg| {
             Arc::new(Thunk::core_expr(
                 Arc::clone(arg),
-                Arc::clone(caller_scope),
+                caller_scope.clone(),
                 Arc::clone(ctx),
                 arg.span.clone(),
             ))
@@ -93,7 +93,7 @@ pub(crate) async fn eval_call_core(
         for na in named_args {
             let t = Arc::new(Thunk::core_expr(
                 Arc::clone(&na.node.value),
-                Arc::clone(caller_scope),
+                caller_scope.clone(),
                 Arc::clone(ctx),
                 na.node.value.span.clone(),
             ));
@@ -118,7 +118,7 @@ pub(crate) async fn eval_call_core(
             call_span: call_span.clone(),
             ctx: Arc::clone(ctx),
             original_call,
-            scope: Arc::clone(caller_scope),
+            scope: caller_scope.clone(),
         },
     )))
 }
@@ -130,10 +130,10 @@ pub(crate) async fn eval_call_core(
 /// `definition_scope` is the definition-site SymbolTable captured at function-definition time.
 pub struct CallContext<'a> {
     pub clauses: &'a Arc<Vec<CoreClause>>,
-    /// Definition-site scope: the SymbolTable captured at the point the function was defined.
-    pub definition_scope: Arc<SymbolTable>,
+    /// Definition-site scope: the ScopeChain captured at the point the function was defined.
+    pub definition_scope: ScopeChain,
     /// Caller-site scope: used for evidence collection (typeclass instance dispatch).
-    pub caller_scope: Arc<SymbolTable>,
+    pub caller_scope: ScopeChain,
     pub positional: &'a [Arc<Thunk>],
     pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
     /// Call site span — `name` field carries the function label for blame tracking.
@@ -166,12 +166,12 @@ pub(crate) async fn try_clause(
     clause: &CoreClause,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    definition_scope: Arc<SymbolTable>,
-    caller_scope: &Arc<SymbolTable>,
+    definition_scope: ScopeChain,
+    caller_scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<Option<Arc<SymbolTable>>, Box<crate::error::Diagnostic>> {
+) -> Result<Option<ScopeChain>, Box<crate::error::Diagnostic>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
     let params: Vec<Param> = clause
@@ -276,12 +276,10 @@ pub(crate) async fn try_clause(
     // (fn clauses have lowered_pattern = None; only match arm clauses set it). If a fn clause
     // ever carries a lowered_pattern, evaluate it as a structural pattern against args[0].
     if let Some(lowered_pattern) = &clause.lowered_pattern {
-        // Build a pre-arm scope with the definition_scope as parent so pin addresses resolve.
-        let pre_frame = Arc::new(SymbolTable::new_call_frame(
-            Arc::clone(&definition_scope),
-            None,
-            None,
-        ));
+        // Build a pre-arm scope prepended to the definition chain so pin addresses resolve.
+        let pre_frame = Arc::new(SymbolTable::new());
+        let mut pre_chain = definition_scope.clone();
+        pre_chain.insert(0, Arc::clone(&pre_frame));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
             .params
@@ -303,7 +301,7 @@ pub(crate) async fn try_clause(
                 &binding_map,
                 &scrutinee,
                 call_span.clone(),
-                &pre_frame,
+                &pre_chain,
                 ctx,
             )
             .await?
@@ -348,8 +346,7 @@ pub(crate) async fn try_clause(
                 })
                 .collect();
             // Build SymbolTable for the pattern-bound call frame.
-            let mut bound_st =
-                SymbolTable::new_call_frame(Arc::clone(&definition_scope), None, None);
+            let mut bound_st = SymbolTable::new();
             for p in params.iter() {
                 bound_st.insert(p.name.clone(), p.slot, None);
             }
@@ -357,23 +354,25 @@ pub(crate) async fn try_clause(
             for (i, thunk) in params_final.iter().enumerate() {
                 bound_frame.set_value(i as u32, Arc::clone(thunk));
             }
+            let mut bound_chain = definition_scope.clone();
+            bound_chain.insert(0, Arc::clone(&bound_frame));
 
             // Step 4 (guard) with pattern-bound frame.
             if let Some(guard_expr) = &clause.guard {
-                let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
+                let guard_thunk = eval_core_expr(guard_expr, &bound_chain, ctx).await?;
                 let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
                 if !Box::pin(call_to_match(
                     &guard_value,
                     ctx,
                     call_span,
-                    Arc::clone(&bound_frame),
+                    bound_chain.clone(),
                 ))
                 .await?
                 {
                     return Ok(None);
                 }
             }
-            return Ok(Some(bound_frame));
+            return Ok(Some(bound_chain));
         }
     }
 
@@ -381,11 +380,11 @@ pub(crate) async fn try_clause(
     // Bind args first so the guard can reference bound parameter names.
     // If the guard is falsy, this clause does not match.
     if let Some(guard_expr) = &clause.guard {
-        let bound_frame = bind_args_thunks(
+        let bound_chain = bind_args_thunks(
             &params,
             args,
             named,
-            Arc::clone(&definition_scope),
+            definition_scope.clone(),
             caller_scope,
             ctx,
             call_span,
@@ -396,20 +395,20 @@ pub(crate) async fn try_clause(
             e.set_arity_callee(call_span.name.clone());
             e
         })?;
-        let guard_thunk = eval_core_expr(guard_expr, &bound_frame, ctx).await?;
+        let guard_thunk = eval_core_expr(guard_expr, &bound_chain, ctx).await?;
         let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
         if !Box::pin(call_to_match(
             &guard_value,
             ctx,
             call_span,
-            Arc::clone(&bound_frame),
+            bound_chain.clone(),
         ))
         .await?
         {
             return Ok(None);
         }
-        // Guard passed — return the already-bound frame.
-        return Ok(Some(bound_frame));
+        // Guard passed — return the already-bound chain.
+        return Ok(Some(bound_chain));
     }
 
     // Step 5 — All checks pass: bind args and return the call frame.
@@ -454,20 +453,20 @@ pub async fn invoke_function(
     )))
 }
 
-/// TCO variant of `invoke_function` that returns the body expression and call SymbolTable
+/// TCO variant of `invoke_function` that returns the body expression and call ScopeChain
 /// directly instead of creating a thunk. This allows the caller to reuse the current
 /// continuation frame instead of pushing a new Memoize continuation.
 ///
 /// Returns `(body_expr, call_scope)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> Result<(Arc<Spanned<CoreExpr>>, Arc<SymbolTable>), Box<crate::error::Diagnostic>> {
+) -> Result<(Arc<Spanned<CoreExpr>>, ScopeChain), Box<crate::error::Diagnostic>> {
     for clause in ctx.clauses.iter() {
         let result = try_clause(
             clause,
             ctx.positional,
             ctx.named,
-            Arc::clone(&ctx.definition_scope),
+            ctx.definition_scope.clone(),
             &ctx.caller_scope,
             ctx.ctx,
             &ctx.call_span,
@@ -497,7 +496,7 @@ pub(crate) async fn invoke_function_tco(
             &params,
             ctx.positional,
             ctx.named,
-            Arc::clone(&ctx.definition_scope),
+            ctx.definition_scope.clone(),
             &ctx.caller_scope,
             ctx.ctx,
             &ctx.call_span,
@@ -594,21 +593,21 @@ pub(crate) async fn invoke_function_tco(
     Err(err.into())
 }
 
-/// Validate function arguments, build a call-frame SymbolTable, and return it.
+/// Validate function arguments, build a call-frame ScopeChain, and return it.
 ///
 /// Handles arity validation, default params, variadic params, and system-injected
-/// named args. The returned SymbolTable carries the bound params
-/// for use with `Thunk::core_expr` and SymbolTable-based variable lookup.
+/// named args. The returned ScopeChain carries the bound params
+/// for use with `Thunk::core_expr` and ScopeChain-based variable lookup.
 pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    definition_scope: Arc<SymbolTable>,
-    caller_scope: &Arc<SymbolTable>,
+    definition_scope: ScopeChain,
+    caller_scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<Arc<SymbolTable>, Box<crate::error::Diagnostic>> {
+) -> Result<ScopeChain, Box<crate::error::Diagnostic>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
     // Untyped rest has variadic=true and resolved_type=None (or Unknown).
@@ -738,7 +737,7 @@ pub(crate) async fn bind_args_thunks(
                     .expect("lowering always succeeds");
                 let default_thunk = Arc::new(Thunk::core_expr(
                     Arc::new(core_spanned),
-                    SymbolTable::empty(),
+                    SymbolTable::empty_chain(),
                     Arc::clone(ctx),
                     call_span.clone(),
                 ));
@@ -753,7 +752,7 @@ pub(crate) async fn bind_args_thunks(
                 .expect("lowering always succeeds");
             let default_thunk = Arc::new(Thunk::core_expr(
                 Arc::new(core_spanned),
-                SymbolTable::empty(),
+                SymbolTable::empty_chain(),
                 Arc::clone(ctx),
                 call_span.clone(),
             ));
@@ -904,22 +903,27 @@ pub(crate) async fn bind_args_thunks(
         .map(|opt| opt.expect("param slot invariant violated: unfilled slot after arity check"))
         .collect();
 
-    // Build the call-frame SymbolTable: parent = definition_scope, params as entries.
+    // Build the call-frame SymbolTable and prepend to definition_scope chain.
     let type_inst_opt = if type_inst.is_empty() {
         None
     } else {
         Some(type_inst)
     };
-    let caller_evidence = caller_scope.collect_caller_evidence();
-    let mut st = SymbolTable::new_call_frame(definition_scope, caller_evidence, type_inst_opt);
+    let caller_evidence = SymbolTable::collect_caller_evidence_from_chain(caller_scope);
+    let mut st = SymbolTable::new_with_type_inst(type_inst_opt);
+    if let Some(ev) = caller_evidence {
+        st.set_evidence(ev);
+    }
     for p in params {
         st.insert(p.name.clone(), p.slot, None);
     }
-    let st = Arc::new(st);
+    let frame = Arc::new(st);
     for (i, thunk) in params_vec.into_iter().enumerate() {
-        st.set_value(i as u32, thunk);
+        frame.set_value(i as u32, thunk);
     }
-    Ok(st)
+    let mut callee_chain = definition_scope;
+    callee_chain.insert(0, frame);
+    Ok(callee_chain)
 }
 
 /// Extract the default value node from a param's annotation, if present.

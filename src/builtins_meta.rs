@@ -2559,7 +2559,7 @@ pub(crate) fn builtin_typecheck_doc(
 
         // Build outermost SymbolTable scope with type-stage entries.
         if state.current_scope.is_none() {
-            let mut outermost = crate::symbol_table::SymbolTable::new(None);
+            let mut outermost = crate::symbol_table::SymbolTable::new();
             for (slot, (name, tv)) in state
                 .type_stage_data
                 .scope
@@ -2570,13 +2570,13 @@ pub(crate) fn builtin_typecheck_doc(
                 outermost.insert(name.clone(), slot as u32, None);
                 outermost.set_type_scheme(slot as u32, Arc::clone(tv));
             }
-            state.current_scope = Some(std::sync::Arc::new(outermost));
+            state.current_scope = Some(vec![std::sync::Arc::new(outermost)]);
         }
 
         let scope = state
             .current_scope
             .clone()
-            .unwrap_or_else(|| std::sync::Arc::new(crate::symbol_table::SymbolTable::new(None)));
+            .unwrap_or_else(|| vec![std::sync::Arc::new(crate::symbol_table::SymbolTable::new())]);
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
         let (_, errors) =
@@ -3422,10 +3422,10 @@ pub(crate) fn builtin_doc_meta(
             let (table, _diags) = crate::eval::eval_document(
                 &core_entries[..],
                 &ctx,
-                crate::symbol_table::SymbolTable::empty(),
+                crate::symbol_table::SymbolTable::empty_chain(),
             )
             .await;
-            if let Some(thunk) = table.get("%") {
+            if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(&table, "%") {
                 result.insert(HashableValue::Str(key.clone().into()), thunk);
             }
         }
@@ -3597,7 +3597,24 @@ pub(crate) fn builtin_symbol_table_extend(
             }
         }
 
-        let new_table = table.extend(str_additions);
+        // Build a merged SymbolTable: copy existing entries, then overlay additions.
+        let mut merged = crate::symbol_table::SymbolTable::new();
+        for (slot, (name, entry)) in table.entries().iter().enumerate() {
+            merged.insert(name.clone(), slot as u32, entry.definition_span.clone());
+            if let Some(ts) = entry.type_scheme.get() {
+                let _ = merged.set_type_scheme(slot as u32, Arc::clone(ts));
+            }
+            if let Some(v) = entry.value.get() {
+                let _ = merged.set_value(slot as u32, Arc::clone(v));
+            }
+        }
+        let base_slot = table.len() as u32;
+        for (i, (name, thunk)) in str_additions.into_iter().enumerate() {
+            let slot = base_slot + i as u32;
+            merged.insert(name, slot, None);
+            let _ = merged.set_value(slot, thunk);
+        }
+        let new_table = Arc::new(merged);
 
         Ok(Arc::new(Thunk::value(
             Value::SymbolTable {
@@ -3662,7 +3679,7 @@ pub(crate) fn builtin_symbol_table_get(
             }
         };
 
-        match table.get(&name) {
+        match crate::symbol_table::SymbolTable::get_in_chain(&[table], &name) {
             Some(thunk) => Ok(thunk),
             None => ok_val(
                 Value::Dict {
@@ -3751,7 +3768,7 @@ pub(crate) fn builtin_eval(
                 .map(|(_, expr)| Arc::clone(expr))
                 .collect();
         let (result_table, diagnostics) =
-            crate::eval::eval_document(&core_exprs[..], &ctx, table).await;
+            crate::eval::eval_document(&core_exprs[..], &ctx, vec![table]).await;
 
         // Build result: {table: SymbolTable, diagnostics: Dict}
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
@@ -3775,7 +3792,10 @@ pub(crate) fn builtin_eval(
         result_dict.insert(
             HashableValue::Str("table".into()),
             mk(Value::SymbolTable {
-                table: result_table,
+                table: result_table
+                    .into_iter()
+                    .next()
+                    .expect("eval_document must return a non-empty scope chain"),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_SCOPE,
                 )),
@@ -3942,12 +3962,12 @@ pub(crate) fn builtin_eval_macro_ast(
         let (result_table, _diagnostics) = crate::eval::eval_document(
             &core_entries[..],
             &ctx,
-            crate::symbol_table::SymbolTable::empty(),
+            crate::symbol_table::SymbolTable::empty_chain(),
         )
         .await;
 
         // Get the result from the table
-        match result_table.get("%") {
+        match crate::symbol_table::SymbolTable::get_in_chain(&result_table, "%") {
             Some(thunk) => Ok(thunk),
             None => Err(Diagnostic::internal(
                 "eval-macro-ast: no result in evaluated document".to_string(),
@@ -5201,7 +5221,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5240,7 +5260,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5287,7 +5307,7 @@ mod tests {
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5322,7 +5342,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }))
         .await;
         assert!(

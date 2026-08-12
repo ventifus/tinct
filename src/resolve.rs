@@ -4,7 +4,7 @@
 //! before evaluation begins:
 //!
 //! - `Dispatch(depth, slot)` — per-frame relative slot lookup.
-//!   `depth` is the number of SymbolTable parent links to walk (0 = current frame).
+//!   `depth` is the distance from the top of the scope stack (0 = innermost frame).
 //!   `slot` is the entry index within that frame (0-based per frame).
 //! - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
 //!   resolved at runtime via the evidence map on the caller's SymbolTable.
@@ -57,8 +57,8 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
 }
 
 struct SurfaceResolver {
-    /// Current scope in the SymbolTable parent chain.
-    current_scope: Option<Arc<SymbolTable>>,
+    /// Scope stack: index 0 is the outermost scope, last element is the innermost.
+    scope_stack: Vec<Arc<SymbolTable>>,
     table: ResolutionTable,
     diagnostics: Vec<Diagnostic>,
     /// Maps method_name -> EffectPerform VarAddr for typeclass method calls.
@@ -74,7 +74,7 @@ struct SurfaceResolver {
 impl SurfaceResolver {
     fn new(initial_scope: &Arc<SymbolTable>) -> Self {
         Self {
-            current_scope: Some(Arc::clone(initial_scope)),
+            scope_stack: vec![Arc::clone(initial_scope)],
             table: ResolutionTable::new(),
             diagnostics: Vec::new(),
             effect_perform_addrs: std::collections::HashMap::new(),
@@ -86,69 +86,58 @@ impl SurfaceResolver {
     /// Enter a scope with contiguous 0-based slots for the given names.
     /// Returns the Arc<SymbolTable> for setting on AST nodes.
     fn enter_scope(&mut self, names: &[String]) -> Arc<SymbolTable> {
-        let parent = self.current_scope.take();
-        let mut st = SymbolTable::new(parent);
+        let mut st = SymbolTable::new();
         for (i, name) in names.iter().enumerate() {
             st.insert(name.clone(), i as u32, None);
         }
         let arc = Arc::new(st);
-        self.current_scope = Some(Arc::clone(&arc));
+        self.scope_stack.push(Arc::clone(&arc));
         arc
     }
 
     /// Enter a scope with pre-computed (name, slot) pairs.
     /// Slots must be contiguous 0-based to match IndexMap insertion order.
     fn enter_scope_with_slots(&mut self, pairs: &[(String, u32)]) -> Arc<SymbolTable> {
-        let parent = self.current_scope.take();
-        let mut st = SymbolTable::new(parent);
+        let mut st = SymbolTable::new();
         for (name, slot) in pairs {
             st.insert(name.clone(), *slot, None);
         }
         let arc = Arc::new(st);
-        self.current_scope = Some(Arc::clone(&arc));
+        self.scope_stack.push(Arc::clone(&arc));
         arc
     }
 
     fn exit_scope(&mut self) {
-        let scope = self.current_scope.take().expect("scope stack underflow");
-        self.current_scope = scope.parent().cloned();
+        self.scope_stack.pop().expect("scope stack underflow");
     }
 
-    /// Resolve `name` in the current scope chain, returning its `VarAddr`.
+    /// Resolve `name` in the scope stack, returning its `VarAddr`.
     ///
     /// All variable addressing uses exactly two variants:
     /// - `Dispatch(depth, slot)` — per-frame relative slot lookup.
-    ///   `depth` is the number of SymbolTable parent links to walk.
+    ///   `depth` is the distance from the top of the scope stack (0 = innermost).
     ///   `slot` is the entry index within that frame.
     /// - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
     ///   resolved at runtime via the evidence map.
     fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
-        let scope = self.current_scope.as_ref()?;
+        if self.scope_stack.is_empty() {
+            return None;
+        }
         let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
-
-        let mut depth = 0u32;
-        let mut current: &SymbolTable = scope.as_ref();
         let mut result: Option<(u32, u32, bool, bool)> = None; // depth, slot, is_effect, is_initial
 
-        loop {
-            if let Some(entry) = current.entries().get(name) {
+        for (depth, frame) in self.scope_stack.iter().rev().enumerate() {
+            if let Some(entry) = frame.entries().get(name) {
                 let is_initial =
-                    initial_ptr.map_or(false, |ip| std::ptr::eq(current as *const SymbolTable, ip));
+                    initial_ptr.map_or(false, |ip| std::ptr::eq(Arc::as_ptr(frame), ip));
                 let is_effect = entry.slot == EFFECT_SENTINEL;
                 if !is_effect {
                     entry
                         .referenced
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                result = Some((depth, entry.slot, is_effect, is_initial));
+                result = Some((depth as u32, entry.slot, is_effect, is_initial));
                 break;
-            }
-            match current.parent() {
-                Some(p) => {
-                    current = p.as_ref();
-                    depth += 1;
-                }
-                None => break,
             }
         }
 
@@ -163,47 +152,39 @@ impl SurfaceResolver {
     }
 
     /// Resolve `name` using leading-dot semantics: find the **second** occurrence of `name`
-    /// in the scope chain, skipping the innermost (first) binding.
+    /// in the scope stack, skipping the innermost (first) binding.
     ///
     /// `.name` means "the next `name` beyond the nearest one." This is relative to where
     /// `name` is actually bound, not to the structure of Dict scope boundaries:
     ///
-    /// - Find the first binding of `name` anywhere in the scope chain (innermost wins).
+    /// - Find the first binding of `name` anywhere in the scope stack (innermost wins).
     /// - Skip it and search outward for the next binding of `name`.
     /// - Return `None` if there is no second binding — caller emits "undefined variable".
     fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
-        let scope = self.current_scope.as_ref()?;
+        if self.scope_stack.is_empty() {
+            return None;
+        }
         let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
-
-        let mut depth = 0u32;
-        let mut current: &SymbolTable = scope.as_ref();
         let mut found_first = false;
         let mut result: Option<(u32, u32, bool, bool)> = None;
 
-        loop {
-            if current.entries().contains_key(name) {
+        for (depth, frame) in self.scope_stack.iter().rev().enumerate() {
+            if frame.entries().contains_key(name) {
                 if !found_first {
                     found_first = true;
                 } else {
-                    let entry = current.entries().get(name).unwrap();
-                    let is_initial = initial_ptr
-                        .map_or(false, |ip| std::ptr::eq(current as *const SymbolTable, ip));
+                    let entry = frame.entries().get(name).unwrap();
+                    let is_initial =
+                        initial_ptr.map_or(false, |ip| std::ptr::eq(Arc::as_ptr(frame), ip));
                     let is_effect = entry.slot == EFFECT_SENTINEL;
                     if !is_effect {
                         entry
                             .referenced
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    result = Some((depth, entry.slot, is_effect, is_initial));
+                    result = Some((depth as u32, entry.slot, is_effect, is_initial));
                     break;
                 }
-            }
-            match current.parent() {
-                Some(p) => {
-                    current = p.as_ref();
-                    depth += 1;
-                }
-                None => break,
             }
         }
 
@@ -287,8 +268,7 @@ impl SurfaceResolver {
 
                 // Build the SymbolTable for this dict's letrec scope.
                 // Slots are per-frame relative (0-based). Only named entries get scope slots.
-                let parent = self.current_scope.take();
-                let mut st = SymbolTable::new(parent);
+                let mut st = SymbolTable::new();
                 let mut scope_slot = 0u32;
                 let mut overall_slot = 0u32;
                 for entry in entries.iter() {
@@ -375,12 +355,12 @@ impl SurfaceResolver {
                     }
                 }
 
-                // Arc the SymbolTable and set on AST node + current_scope.
+                // Arc the SymbolTable and push onto scope stack + set on AST node.
                 let st_arc = Arc::new(st);
                 if let SurfaceExpression::Dict { scope, .. } = &arc.expr {
                     let _ = scope.set(Arc::clone(&st_arc));
                 }
-                self.current_scope = Some(st_arc);
+                self.scope_stack.push(st_arc);
 
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
@@ -746,7 +726,7 @@ impl SurfaceResolver {
         }
     }
 
-    /// Walk a document, creating per-frame 0-based scopes for each dict.
+    /// Walk a document, pushing per-frame 0-based scopes onto the scope stack for each dict.
     ///
     /// Each intermediate dict expression's named entries become scope bindings
     /// for subsequent expressions within the same document (sequential scope injection).
@@ -1525,7 +1505,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         let doc = &program.documents[0].node;
         // Build scope from env_names with 0-based contiguous slots.
-        let mut st = SymbolTable::new(None);
+        let mut st = SymbolTable::new();
         for (i, name) in env_names.iter().enumerate() {
             st.insert(name.clone(), i as u32, None);
         }
@@ -1736,7 +1716,7 @@ mod tests {
         let doc = &program.documents[0].node;
 
         // Build root scope with one entry.
-        let mut root_st = SymbolTable::new(None);
+        let mut root_st = SymbolTable::new();
         root_st.insert("builtin-dict-get".to_string(), 0, None);
         let scope = Arc::new(root_st);
         let result = resolve_document(doc, &scope);

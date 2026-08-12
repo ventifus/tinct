@@ -2232,11 +2232,11 @@ pub struct InferState {
     /// Generated when overloaded builtins are called with type variables.
     /// During generalization, constraints on generalized variables are included in the TypeValue.Scheme.
     pub constraints: Vec<Arc<crate::value::Value>>,
-    /// Current scope: reference to the innermost SymbolTable from the AST node being type-checked.
+    /// Current scope chain: the full stack of SymbolTables from root to the innermost scope.
     /// Set when entering a scope (Dict/Fn/MatchArm), restored to parent when leaving.
-    /// Type schemes are read via current_scope.lookup(depth, slot).
-    /// Type schemes are written via current_scope.set_type_scheme(slot, scheme).
-    pub current_scope: Option<std::sync::Arc<crate::symbol_table::SymbolTable>>,
+    /// Type schemes are read via VarAddr(depth, slot) lookup on the chain.
+    /// Type schemes are written via set_type_scheme on the appropriate frame.
+    pub current_scope: Option<crate::symbol_table::ScopeChain>,
     /// Type class declarations.
     /// Moved from Env to InferState. Populated during type-stage processing.
     pub classes: Vec<crate::type_class::ClassDecl>,
@@ -2358,7 +2358,7 @@ pub struct InferState {
     /// Current accumulated scope at type-check time. Populated by the pipeline before
     /// type-checking each document. Used by eval_expr to evaluate expressions (e.g.,
     /// constructor patterns in coverage checking) in the same scope they appear in.
-    pub eval_scope: Option<std::sync::Arc<crate::symbol_table::SymbolTable>>,
+    pub eval_scope: Option<crate::symbol_table::ScopeChain>,
     /// Temporary: renaming from the most recent scheme instantiation at a call site.
     /// Maps original type parameter names to fresh TypeVar names (e.g. "a" → "a⦀42").
     /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
 use crate::eval::EvalContext;
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::type_infer::InferState;
 
 /// Accumulated state threaded through the per-document pipeline.
@@ -19,12 +19,12 @@ pub struct PipelineState {
     /// tycon_env, type_name_to_id, type_display_names, etc.
     pub(crate) infer_state: InferState,
     /// Current scope — grows as documents are processed.
-    pub current_scope: Arc<SymbolTable>,
+    pub current_scope: ScopeChain,
 }
 
 impl PipelineState {
     /// Create the initial pipeline state from a scope (builtins + capabilities).
-    pub fn from_scope(scope: Arc<SymbolTable>, ctx: &Arc<EvalContext>) -> Self {
+    pub fn from_scope(scope: ScopeChain, ctx: &Arc<EvalContext>) -> Self {
         let mut infer_state = InferState::new();
         infer_state.eval_ctx = Some(Arc::clone(ctx));
         Self {
@@ -35,7 +35,7 @@ impl PipelineState {
 
     /// Create the initial pipeline state from the Rust-native builtins.
     pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
-        Self::from_scope(SymbolTable::empty(), ctx)
+        Self::from_scope(SymbolTable::empty_chain(), ctx)
     }
 
     /// Access type checker diagnostics collected during pipeline processing.
@@ -55,7 +55,7 @@ pub async fn typecheck_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current scope.
-    let _resolve_diags = crate::resolve::resolve_document(doc, &state.current_scope);
+    let _resolve_diags = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
 
     // Sync type-stage data into InferState before typecheck.
     // Step 2: Typecheck this document.
@@ -88,7 +88,7 @@ pub async fn process_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current scope.
-    let _resolve_diags = crate::resolve::resolve_document(doc, &state.current_scope);
+    let _resolve_diags = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
 
     // Step 1b: Wire Rust builtins — for each scope entry matching a registered
     // builtin name, pre-write Value::Builtin. OnceLock is write-once, so eval's
@@ -142,7 +142,7 @@ pub async fn process_pipeline_document(
         .collect();
 
     let (_eval_scope, eval_diags) =
-        crate::eval::eval_document(&entries, ctx, Arc::clone(&state.current_scope)).await;
+        crate::eval::eval_document(&entries, ctx, state.current_scope.clone()).await;
 
     // Propagate eval diagnostics.
     for diag in &eval_diags {
@@ -156,7 +156,7 @@ pub async fn process_pipeline_document(
     for node in expr_nodes.iter().rev() {
         if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
             if let Some(dict_scope) = scope.get() {
-                state.current_scope = Arc::clone(dict_scope);
+                state.current_scope = vec![Arc::clone(dict_scope)];
                 break;
             }
         }

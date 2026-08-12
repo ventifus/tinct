@@ -23,6 +23,7 @@ use crate::ast::{
 };
 use crate::coverage;
 use crate::error::Diagnostic;
+use crate::symbol_table::SymbolTable;
 use crate::type_tags::*;
 // Constraint is Vec<Arc<Value>> in the TypeValue migration — no Constraint type import needed.
 use crate::type_def::TyConDef;
@@ -1501,31 +1502,34 @@ async fn apply_cont(
             saved_narrowing_map,
         } => {
             // Pop current_scope (restore to parent) and check for lost bindings.
-            if let Some(ref popped_scope) = state.current_scope {
-                for slot_idx in 0..popped_scope.len() {
-                    let slot = slot_idx as u32;
-                    if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
-                        if entry.1.type_scheme.get().is_some()
-                            && !entry
-                                .1
-                                .referenced
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            if let Some(def_span) = &entry.1.definition_span {
-                                errors.push(Diagnostic::warn(
-                                    "lost-binding",
-                                    "binding is never used",
-                                    def_span.clone(),
-                                ));
+            if let Some(ref chain) = state.current_scope {
+                if let Some(popped_scope) = chain.first() {
+                    for slot_idx in 0..popped_scope.len() {
+                        let slot = slot_idx as u32;
+                        if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
+                            if entry.1.type_scheme.get().is_some()
+                                && !entry
+                                    .1
+                                    .referenced
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                if let Some(def_span) = &entry.1.definition_span {
+                                    errors.push(Diagnostic::warn(
+                                        "lost-binding",
+                                        "binding is never used",
+                                        def_span.clone(),
+                                    ));
+                                }
                             }
                         }
                     }
                 }
             }
-            state.current_scope = state
-                .current_scope
-                .as_ref()
-                .and_then(|s| s.parent().cloned());
+            if let Some(ref mut chain) = state.current_scope {
+                if !chain.is_empty() {
+                    chain.remove(0);
+                }
+            }
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -1668,25 +1672,21 @@ async fn infer_var_ref(
                         unreachable!()
                     };
                     let (resolver_level, slot) = (*resolver_level, *slot);
-                    // Slot lookup via current_scope.
-                    let entry_exists = state
-                        .current_scope
-                        .as_ref()
-                        .and_then(|s| s.lookup(resolver_level, slot))
-                        .is_some();
-                    let slot_scheme = state
-                        .current_scope
-                        .as_ref()
-                        .and_then(|s| s.lookup(resolver_level, slot))
-                        .and_then(|e| e.type_scheme.get().cloned());
+                    // Slot lookup via current_scope chain.
+                    let chain_slice = state.current_scope.as_deref().unwrap_or(&[]);
+                    let entry_exists =
+                        SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot).is_some();
+                    let slot_scheme =
+                        SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
+                            .and_then(|e| e.type_scheme.get().cloned());
                     if entry_exists {
-                        let dep_def_span = state
-                            .current_scope
-                            .as_ref()
-                            .and_then(|s| s.lookup(resolver_level, slot))
-                            .and_then(|e| e.definition_span.clone());
-                        if let Some(ref s) = state.current_scope {
-                            if let Some(entry) = s.lookup(resolver_level, slot) {
+                        let dep_def_span =
+                            SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
+                                .and_then(|e| e.definition_span.clone());
+                        if let Some(ref chain) = state.current_scope {
+                            if let Some(entry) =
+                                SymbolTable::lookup_in_chain(chain, resolver_level, slot)
+                            {
                                 entry
                                     .referenced
                                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1721,15 +1721,13 @@ async fn infer_var_ref(
                         ),
                         node.span.clone(),
                     );
-                        // Walk the scope chain via parent pointers for diagnostics.
-                        let mut depth = 0u32;
-                        let mut walk = state.current_scope.clone();
-                        while let Some(ref scope) = walk {
-                            let slot_count = scope.len();
-                            diag = diag
-                                .with_note(format!("scope depth {}: {} slots", depth, slot_count));
-                            walk = scope.parent().cloned();
-                            depth += 1;
+                        // Walk the scope chain for diagnostics.
+                        if let Some(ref chain) = state.current_scope {
+                            for (d, frame) in chain.iter().enumerate() {
+                                let slot_count = frame.len();
+                                diag = diag
+                                    .with_note(format!("scope depth {}: {} slots", d, slot_count));
+                            }
                         }
                         errors.push(diag);
                         None
@@ -3032,7 +3030,11 @@ async fn infer_fn_push_cont(
             ..
         } => {
             if let Some(sf) = scope.get() {
-                state.current_scope = Some(Arc::clone(sf));
+                if let Some(ref mut chain) = state.current_scope {
+                    chain.insert(0, Arc::clone(sf));
+                } else {
+                    state.current_scope = Some(vec![Arc::clone(sf)]);
+                }
             }
             (return_ann, params.as_slice(), body)
         }
@@ -3271,8 +3273,10 @@ async fn infer_fn_push_cont(
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
         // Write param type scheme into the Fn's SymbolTable at the resolver-assigned slot.
-        if let Some(ref sf) = state.current_scope {
-            sf.set_type_scheme(slot as u32, Arc::clone(&param_ty));
+        if let Some(ref chain) = state.current_scope {
+            if let Some(frame) = chain.first() {
+                frame.set_type_scheme(slot as u32, Arc::clone(&param_ty));
+            }
         }
         param_slot_idx += 1;
         if p.node.variadic {
@@ -3503,7 +3507,11 @@ async fn setup_match_arm_env(
 ) -> Option<(TypeValue, Vec<typecheck_narrow::Narrowing>)> {
     // Push match arm SymbolTable if present (case arms with bindings).
     if let Some(sf) = arm.scope.get() {
-        state.current_scope = Some(Arc::clone(sf));
+        if let Some(ref mut chain) = state.current_scope {
+            chain.insert(0, Arc::clone(sf));
+        } else {
+            state.current_scope = Some(vec![Arc::clone(sf)]);
+        }
     }
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
@@ -3521,7 +3529,7 @@ async fn setup_match_arm_env(
         typecheck_narrow::extract_narrowings(
             guard,
             &state.type_name_to_id,
-            state.current_scope.as_ref().unwrap(),
+            state.current_scope.as_deref().unwrap_or(&[]),
         )
     } else {
         Vec::new()
@@ -4826,7 +4834,11 @@ async fn process_dict_in_scope(
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
     if let Some(sf) = scope.get() {
-        state.current_scope = Some(Arc::clone(sf));
+        if let Some(ref mut chain) = state.current_scope {
+            chain.insert(0, Arc::clone(sf));
+        } else {
+            state.current_scope = Some(vec![Arc::clone(sf)]);
+        }
     }
     let body_slot_base_pre: Option<u32> = entries
         .first()
@@ -4834,10 +4846,11 @@ async fn process_dict_in_scope(
     let (record_type, _, mut dict_errs) =
         typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
     errors.append(&mut dict_errs);
-    state.current_scope = state
-        .current_scope
-        .as_ref()
-        .and_then(|s| s.parent().cloned());
+    if let Some(ref mut chain) = state.current_scope {
+        if !chain.is_empty() {
+            chain.remove(0);
+        }
+    }
     record_type
 }
 
@@ -5566,8 +5579,10 @@ pub(crate) async fn typecheck_letrec_group(
                 if let Some(ty) = field_types.get(name) {
                     schemes.insert(name.clone(), Arc::clone(ty));
                     // Write type scheme into the current SymbolTable at the resolver-assigned slot.
-                    if let Some(ref sf) = state.current_scope {
-                        sf.set_type_scheme(slot, Arc::clone(ty));
+                    if let Some(ref chain) = state.current_scope {
+                        if let Some(frame) = chain.first() {
+                            frame.set_type_scheme(slot, Arc::clone(ty));
+                        }
                     }
                 }
             }

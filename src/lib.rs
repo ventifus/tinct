@@ -144,7 +144,7 @@ pub use value::{
 };
 
 /// Unified scope / symbol table.
-pub use symbol_table::SymbolTable;
+pub use symbol_table::{ScopeChain, SymbolTable};
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
 ///
@@ -169,7 +169,7 @@ pub async fn run_loader_pipeline(
     _libdir_dir: &cap_std::fs::Dir,
     init_source: &str,
     init_path: &str,
-    initial_scope: Arc<symbol_table::SymbolTable>,
+    initial_scope: ScopeChain,
 ) -> crate::error::DiagnosticResult<()> {
     // Start with the caller's scope (capabilities only — empty for most paths).
     let mut state = crate::pipeline::PipelineState::from_scope(initial_scope, eval_ctx);

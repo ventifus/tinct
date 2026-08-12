@@ -1991,7 +1991,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
@@ -2018,7 +2018,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }));
         assert!(
             result.is_err(),
@@ -2057,7 +2057,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(
@@ -2100,7 +2100,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(
@@ -2125,7 +2125,7 @@ mod tests {
             call_span: call_span(),
             ctx,
 
-            scope: crate::symbol_table::SymbolTable::empty(),
+            scope: crate::symbol_table::SymbolTable::empty_chain(),
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

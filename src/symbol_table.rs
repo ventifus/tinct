@@ -22,40 +22,35 @@ pub struct SymbolEntry {
 
 pub struct SymbolTable {
     entries: IndexMap<String, SymbolEntry>,
-    parent: Option<Arc<SymbolTable>>,
     evidence: OnceLock<HashMap<u64, EvidenceEntry>>,
     type_instantiation: Option<HashMap<String, Arc<Value>>>,
 }
 
+pub type ScopeChain = Vec<Arc<SymbolTable>>;
+
 impl SymbolTable {
-    pub fn new(parent: Option<Arc<SymbolTable>>) -> Self {
+    pub fn new() -> Self {
         Self {
             entries: IndexMap::new(),
-            parent,
             evidence: OnceLock::new(),
             type_instantiation: None,
         }
     }
 
-    pub fn new_call_frame(
-        parent: Arc<SymbolTable>,
-        evidence: Option<HashMap<u64, EvidenceEntry>>,
-        type_inst: Option<HashMap<String, Arc<Value>>>,
-    ) -> Self {
-        let ev = OnceLock::new();
-        if let Some(e) = evidence {
-            ev.set(e).expect("fresh OnceLock must accept first write");
-        }
+    pub fn new_with_type_inst(type_inst: Option<HashMap<String, Arc<Value>>>) -> Self {
         Self {
             entries: IndexMap::new(),
-            parent: Some(parent),
-            evidence: ev,
+            evidence: OnceLock::new(),
             type_instantiation: type_inst,
         }
     }
 
     pub fn empty() -> Arc<Self> {
-        Arc::new(Self::new(None))
+        Arc::new(Self::new())
+    }
+
+    pub fn empty_chain() -> ScopeChain {
+        vec![Self::empty()]
     }
 
     pub fn insert(&mut self, name: String, slot: u32, def_span: Option<Span>) {
@@ -71,65 +66,58 @@ impl SymbolTable {
         );
     }
 
-    pub fn lookup(&self, depth: u32, slot: u32) -> Option<&SymbolEntry> {
-        let mut current = self;
-        for _ in 0..depth {
-            current = current.parent.as_ref()?;
-        }
-        current.entries.get_index(slot as usize).map(|(_, e)| e)
+    pub fn lookup_in_chain(
+        chain: &[Arc<SymbolTable>],
+        depth: u32,
+        slot: u32,
+    ) -> Option<&SymbolEntry> {
+        chain
+            .get(depth as usize)
+            .and_then(|frame| frame.entries.get_index(slot as usize).map(|(_, e)| e))
     }
 
-    pub fn lookup_by_name(&self, name: &str) -> Option<(u32, &SymbolEntry)> {
-        let mut depth = 0u32;
-        let mut current = self;
-        loop {
-            if let Some(entry) = current.entries.get(name) {
-                return Some((depth, entry));
-            }
-            match &current.parent {
-                Some(p) => {
-                    current = p;
-                    depth += 1;
-                }
-                None => return None,
+    pub fn lookup_by_name_in_chain<'a>(
+        chain: &'a [Arc<SymbolTable>],
+        name: &str,
+    ) -> Option<(u32, &'a SymbolEntry)> {
+        for (depth, frame) in chain.iter().enumerate() {
+            if let Some(entry) = frame.entries.get(name) {
+                return Some((depth as u32, entry));
             }
         }
+        None
     }
 
-    pub fn lookup_evidence(&self, class_decl_id: u64) -> Option<&EvidenceEntry> {
-        let mut current = self;
-        loop {
-            if let Some(evidence) = current.evidence.get() {
+    pub fn lookup_evidence_in_chain(
+        chain: &[Arc<SymbolTable>],
+        class_decl_id: u64,
+    ) -> Option<&EvidenceEntry> {
+        for frame in chain {
+            if let Some(evidence) = frame.evidence.get() {
                 if let Some(entry) = evidence.get(&class_decl_id) {
                     return Some(entry);
                 }
             }
-            match &current.parent {
-                Some(p) => current = p,
-                None => return None,
-            }
         }
+        None
     }
 
     pub fn set_evidence(&self, evidence: HashMap<u64, EvidenceEntry>) -> bool {
         self.evidence.set(evidence).is_ok()
     }
 
-    pub fn collect_caller_evidence(&self) -> Option<HashMap<u64, EvidenceEntry>> {
+    pub fn collect_caller_evidence_from_chain(
+        chain: &[Arc<SymbolTable>],
+    ) -> Option<HashMap<u64, EvidenceEntry>> {
         let mut collected = HashMap::new();
-        let mut current = self;
-        loop {
-            if let Some(evidence) = current.evidence.get() {
+        for frame in chain {
+            if let Some(evidence) = frame.evidence.get() {
                 for (&k, v) in evidence {
                     collected.entry(k).or_insert_with(|| EvidenceEntry {
                         handler_frame: Arc::clone(&v.handler_frame),
                         method_slots: v.method_slots.clone(),
                     });
                 }
-            }
-            match &current.parent {
-                Some(p) => current = p,
-                None => break,
             }
         }
         if collected.is_empty() {
@@ -163,10 +151,6 @@ impl SymbolTable {
             .map_or(false, |(_, e)| e.referenced.load(Ordering::Relaxed))
     }
 
-    pub fn parent(&self) -> Option<&Arc<SymbolTable>> {
-        self.parent.as_ref()
-    }
-
     pub fn entries(&self) -> &IndexMap<String, SymbolEntry> {
         &self.entries
     }
@@ -195,7 +179,10 @@ impl SymbolTable {
         self.evidence.get()
     }
 
-    pub fn extend(self: &Arc<Self>, named_entries: IndexMap<String, Arc<Thunk>>) -> Arc<Self> {
+    pub fn extend_chain(
+        chain: &ScopeChain,
+        named_entries: IndexMap<String, Arc<Thunk>>,
+    ) -> ScopeChain {
         let mut entries = IndexMap::new();
         for (slot, (name, thunk)) in named_entries.into_iter().enumerate() {
             let entry = SymbolEntry {
@@ -211,25 +198,23 @@ impl SymbolTable {
                 .expect("fresh OnceLock must accept first write");
             entries.insert(name, entry);
         }
-        Arc::new(Self {
+        let new_frame = Arc::new(Self {
             entries,
-            parent: Some(Arc::clone(self)),
             evidence: OnceLock::new(),
             type_instantiation: None,
-        })
+        });
+        let mut new_chain = chain.clone();
+        new_chain.insert(0, new_frame);
+        new_chain
     }
 
-    pub fn get(&self, name: &str) -> Option<Arc<Thunk>> {
-        let mut current = self;
-        loop {
-            if let Some(entry) = current.entries.get(name) {
+    pub fn get_in_chain(chain: &[Arc<SymbolTable>], name: &str) -> Option<Arc<Thunk>> {
+        for frame in chain {
+            if let Some(entry) = frame.entries.get(name) {
                 return entry.value.get().cloned();
             }
-            match &current.parent {
-                Some(p) => current = p,
-                None => return None,
-            }
         }
+        None
     }
 }
 
@@ -241,12 +226,7 @@ impl PartialEq for SymbolTable {
 
 impl std::fmt::Debug for SymbolTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "SymbolTable({} entries, parent: {})",
-            self.entries.len(),
-            self.parent.is_some()
-        )
+        write!(f, "SymbolTable({} entries)", self.entries.len(),)
     }
 }
 
