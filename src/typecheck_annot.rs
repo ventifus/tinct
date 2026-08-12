@@ -1545,10 +1545,37 @@ async fn resolve_type_head(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
 ) -> Result<TypeValue, Diagnostic> {
-    // Step 1: check type_stage_scope for a resolved TypeValue.
+    // Step 0: look up name in the SymbolTable scope (unified scope for all phases).
+    // Materialize on demand and convert TypeNode → TypeValue.
+    if let Some(ref current_scope) = state.current_scope {
+        if let Some(thunk) = current_scope.get(name) {
+            if let Some(eval_ctx) = &state.eval_ctx {
+                if let Ok(val) = crate::eval::materialize(&thunk, None, eval_ctx).await {
+                    if let Ok(Some(tv)) = typenode_value_to_type(
+                        &val,
+                        eval_ctx,
+                        &state.type_stage_data.scope,
+                        &state.type_name_to_id,
+                    )
+                    .await
+                    {
+                        if args.is_empty() {
+                            return Ok(tv);
+                        }
+                        let mut result = tv;
+                        for arg in args {
+                            result = make_typevalue_app(result, Arc::clone(arg));
+                        }
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 1: check type_stage_scope for a resolved TypeValue (legacy fallback).
     for scope in &state.type_stage_data.scope {
         if let Some(tv) = scope.get(name) {
-            // Fully materialized TypeValue (e.g., TypeNode.Int → TypeValue.Repr) — return directly.
             if args.is_empty() {
                 return Ok(Arc::clone(tv));
             }

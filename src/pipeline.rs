@@ -6,13 +6,12 @@
 //!
 //! The bootstrap is a simple loop over documents.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
 use crate::eval::EvalContext;
 use crate::symbol_table::SymbolTable;
-use crate::type_infer::{InferState, TypeValue};
+use crate::type_infer::InferState;
 
 /// Accumulated state threaded through the per-document pipeline.
 pub struct PipelineState {
@@ -163,73 +162,8 @@ pub async fn process_pipeline_document(
         }
     }
 
-    // Step 4: Route results based on stage header.
-    let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
-        matches!(
-            &stage_node.expr,
-            crate::ast::SurfaceExpression::StringLiteral { content, .. }
-            if content == "type"
-        )
-    });
-
-    if is_type_stage {
-        let scope_entries = state.current_scope.entries();
-        let mut scope_map: HashMap<String, TypeValue> = HashMap::new();
-        for (name, entry) in scope_entries {
-            if let Some(thunk) = entry.value.get() {
-                let val = crate::eval::materialize(thunk, None, ctx).await?;
-                if let Some((tv, opt_fn_thunk, opt_kind)) =
-                    crate::imports::classify_type_stage_entry(
-                        name,
-                        thunk,
-                        &val,
-                        ctx,
-                        &state.infer_state.type_stage_data.scope,
-                        &state.infer_state.type_name_to_id,
-                    )
-                    .await?
-                {
-                    scope_map.insert(name.to_string(), tv);
-                    if let Some(fn_thunk) = opt_fn_thunk {
-                        state
-                            .infer_state
-                            .type_stage_data
-                            .fns
-                            .insert(name.to_string(), fn_thunk);
-                    }
-                    if let Some(kind) = opt_kind {
-                        state
-                            .infer_state
-                            .type_stage_data
-                            .type_vars
-                            .insert(name.to_string(), kind);
-                    }
-                    if let Some(id) = crate::type_infer::typevalue_nominal_id(
-                        scope_map.get(name.as_str()).unwrap(),
-                    ) {
-                        if id > 0 {
-                            state
-                                .infer_state
-                                .type_name_to_id
-                                .insert(name.to_string(), id);
-                            state
-                                .infer_state
-                                .type_display_names
-                                .entry(id)
-                                .or_insert_with(|| name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        if !scope_map.is_empty() {
-            state.infer_state.type_stage_data.scope.push(scope_map);
-        }
-    }
-
-    // Step 4: Typecheck. Runs AFTER eval so that the scope has values
-    // and type-stage entries are classified. The type checker resolves
-    // annotations by looking up values in the scope.
+    // Step 4: Typecheck. The type annotation resolver looks up values in the
+    // SymbolTable scope on demand — no pre-classification needed.
     let (_result_ty, tc_errors) = crate::typecheck::process_document(
         doc,
         &mut state.infer_state,
