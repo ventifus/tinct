@@ -224,14 +224,10 @@ pub(crate) async fn process_document(
     let last_span = nodes.last().unwrap().span.clone();
 
     // Route all document nodes through the CEK machine's Sequential arm — the single
-    // canonical path for sequential expression evaluation. For single-item documents,
-    // use the node directly (no Sequential wrapper needed).
-    let doc_node = if nodes.len() == 1 {
-        Arc::clone(&nodes[0])
-    } else {
-        let span = nodes[0].span.clone();
-        Arc::new(SurfaceNode::new(SurfaceExpression::Sequential(nodes), span))
-    };
+    // canonical path for all expression evaluation. Every document is a Sequential,
+    // including single-expression documents (degenerate case).
+    let span = nodes[0].span.clone();
+    let doc_node = Arc::new(SurfaceNode::new(SurfaceExpression::Sequential(nodes), span));
 
     let mut errors = Vec::new();
     let result_ty =

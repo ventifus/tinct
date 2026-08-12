@@ -1551,6 +1551,7 @@ async fn resolve_type_head(
     let _ = &scope_lookup_info;
     if let Some(ref current_scope) = state.current_scope {
         if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(current_scope, name) {
+            // Found in scope — proceed with materialization below.
             if let Some(eval_ctx) = &state.eval_ctx {
                 let val = crate::eval::materialize(&thunk, None, eval_ctx)
                     .await
@@ -1579,7 +1580,20 @@ async fn resolve_type_head(
             } else {
                 scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
             }
+        } else {
+            let chain_info: Vec<String> = current_scope
+                .iter()
+                .enumerate()
+                .map(|(i, frame)| format!("frame {}: {} entries", i, frame.len()))
+                .collect();
+            scope_lookup_info = Some(format!(
+                "not found in scope chain ({} frames: {})",
+                current_scope.len(),
+                chain_info.join(", ")
+            ));
         }
+    } else {
+        scope_lookup_info = Some("no current_scope set".to_string());
     }
 
     // Step 1: check type_stage_scope for a resolved TypeValue (legacy fallback).
@@ -1739,7 +1753,24 @@ async fn resolve_type_head(
         message: format!("type `{name}` not found in scope"),
     }];
     if let Some(info) = scope_lookup_info {
-        diag = diag.with_note(format!("scope lookup: {info}"));
+        diag = diag.with_note(info);
+    }
+    if let Some(ref chain) = state.current_scope {
+        for (i, frame) in chain.iter().enumerate() {
+            let entry_names: Vec<&str> =
+                frame.entries().keys().map(|s| s.as_str()).take(8).collect();
+            let suffix = if frame.len() > 8 {
+                format!(" ... ({} total)", frame.len())
+            } else {
+                String::new()
+            };
+            diag = diag.with_note(format!(
+                "scope chain[{}]: [{}{}]",
+                i,
+                entry_names.join(", "),
+                suffix,
+            ));
+        }
     }
     Err(diag)
 }

@@ -6034,7 +6034,10 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver with builtins in scope (test expression uses builtin-int-add).
         let seed_scope = build_test_scope_with_builtins();
-        let _result = crate::resolve::resolve_program(&program, seed_scope.first().expect("scope chain must not be empty"));
+        let _result = crate::resolve::resolve_program(
+            &program,
+            seed_scope.first().expect("scope chain must not be empty"),
+        );
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {

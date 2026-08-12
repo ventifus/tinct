@@ -552,7 +552,7 @@ async fn infer_step(
 
             for (_i, intermediate) in intermediates.iter().enumerate() {
                 if let SurfaceExpression::Dict { entries, ref scope } = &intermediate.expr {
-                    let _ = process_dict_in_scope(entries, scope, state, type_map, errors).await;
+                    let _ = enter_dict_scope(entries, scope, state, type_map, errors).await;
                 } else {
                     // Every tinct expression is a dict. A non-Dict in intermediate position
                     // means the program is malformed (e.g. a corpus test with a syntax error).
@@ -632,10 +632,14 @@ async fn infer_step(
 
         // ===== Dict — same processing as Sequential children =====
         SurfaceExpression::Dict { entries, ref scope } => {
-            let record_type = Box::pin(process_dict_in_scope(
-                entries, scope, state, type_map, errors,
-            ))
-            .await;
+            let record_type =
+                Box::pin(enter_dict_scope(entries, scope, state, type_map, errors)).await;
+            // Pop the scope that enter_dict_scope pushed.
+            if let Some(ref mut chain) = state.current_scope {
+                if !chain.is_empty() {
+                    chain.remove(0);
+                }
+            }
             TypeCheckAction::Done(record_type)
         }
 
@@ -4822,11 +4826,14 @@ async fn build_tycon_def_for_entry(
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
-/// - `process_dict_in_scope` (terminal and intermediate dict expressions)
+/// - `enter_dict_scope` (terminal and intermediate dict expressions)
 /// Process a Dict expression with scope management: enter the Dict's SymbolTable scope,
 /// run letrec group inference, then exit (pop to parent). This is the single code path
 /// for all dict processing — both standalone dicts and intermediate dicts in Sequential bodies.
-async fn process_dict_in_scope(
+/// Enter a dict's scope and run letrec inference. Pushes the frame but does NOT pop —
+/// the caller controls pop timing (standalone dicts pop immediately, Sequential
+/// intermediates accumulate until AfterBlock).
+async fn enter_dict_scope(
     entries: &[Spanned<SurfaceEntry>],
     scope: &std::sync::OnceLock<Arc<crate::symbol_table::SymbolTable>>,
     state: &mut InferState,
@@ -4846,18 +4853,13 @@ async fn process_dict_in_scope(
     let (record_type, _, mut dict_errs) =
         typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
     errors.append(&mut dict_errs);
-    if let Some(ref mut chain) = state.current_scope {
-        if !chain.is_empty() {
-            chain.remove(0);
-        }
-    }
     record_type
 }
 
 /// HM letrec inference for a dict's entries.
 ///
 /// Called by:
-/// - `process_dict_in_scope` (the single code path for all dict scope management)
+/// - `enter_dict_scope` (the single code path for all dict scope management)
 /// - `process_document` (top-level dict expressions in a document)
 /// - Recursively for nested Dict values within the SCC per-entry loop
 pub(crate) async fn typecheck_letrec_group(
