@@ -48,6 +48,7 @@ pub(crate) mod type_def;
 pub(crate) mod type_infer;
 pub(crate) mod type_normalize;
 // Type system façade (re-exports from all type modules)
+pub(crate) mod symbol_table;
 pub(crate) mod types;
 pub(crate) mod value;
 // Per-document bootstrap pipeline: resolve → typecheck → eval.
@@ -139,9 +140,11 @@ pub use formatter::format_source_tinct;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, ChannelInner, ClockCapInner, DirPerms, EvalFrame, HashableValue, NetCapEntry,
-    Thunk, Value,
+    string_val, ChannelInner, ClockCapInner, DirPerms, HashableValue, NetCapEntry, Thunk, Value,
 };
+
+/// Unified scope / symbol table.
+pub use symbol_table::SymbolTable;
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
 ///
@@ -166,13 +169,15 @@ pub async fn run_loader_pipeline(
     _libdir_dir: &cap_std::fs::Dir,
     init_source: &str,
     init_path: &str,
+    initial_scope: Arc<symbol_table::SymbolTable>,
 ) -> crate::error::DiagnosticResult<()> {
-    // Start from builtins — consistent slots, single context.
-    let mut state = crate::pipeline::PipelineState::from_builtins(eval_ctx);
+    // Start with the caller's scope (capabilities only — empty for most paths).
+    let mut state = crate::pipeline::PipelineState::from_scope(initial_scope, eval_ctx);
 
     let mut diagnostics: Vec<crate::error::Diagnostic> = Vec::new();
 
-    // Process builtin_core.llt inline — same pipeline, same context.
+    // Step 1: Process builtin_core.llt — resolve creates scope entries, then we wire
+    // Rust builtin implementations into those entries before eval runs.
     let core_source = include_str!("../stdlib/builtin_core.llt");
     let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
     let core_parsed = match parse(core_source, core_sf) {
@@ -198,15 +203,15 @@ pub async fn run_loader_pipeline(
     // Initialize TypeContext from the pipeline state accumulated during builtin_core
     // processing. The loader calls builtin-get-type-context which needs this.
     eval_ctx.init_type_context(crate::eval::TypeContextData {
-        tycon_env: state.tycon_env.clone(),
-        type_stage_scope: state.type_stage_data.scope.clone(),
-        type_stage_fns: state.type_stage_data.fns.clone(),
-        type_stage_type_vars: state.type_stage_data.type_vars.clone(),
+        tycon_env: state.infer_state.tycon_env.clone(),
+        type_stage_scope: state.infer_state.type_stage_data.scope.clone(),
+        type_stage_fns: state.infer_state.type_stage_data.fns.clone(),
+        type_stage_type_vars: state.infer_state.type_stage_data.type_vars.clone(),
         classes: state.infer_state.classes.clone(),
         instances: state.infer_state.instances.clone(),
         type_diagnostics: Vec::new(),
-        type_display_names: state.type_display_names.clone(),
-        type_name_to_id: state.type_name_to_id.clone(),
+        type_display_names: state.infer_state.type_display_names.clone(),
+        type_name_to_id: state.infer_state.type_name_to_id.clone(),
     });
 
     // Process init program documents.
@@ -592,10 +597,9 @@ where
             value::Value::CoreDocument { .. } => Err(Box::new(
                 error::Diagnostic::value_not_serializable("CoreDocument".to_string(), span),
             )),
-            value::Value::Scope { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "Scope".to_string(),
-                span,
-            ))),
+            value::Value::SymbolTable { .. } => Err(Box::new(
+                error::Diagnostic::value_not_serializable("SymbolTable".to_string(), span),
+            )),
         }
     })
 }

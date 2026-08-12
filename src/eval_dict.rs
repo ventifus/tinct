@@ -12,7 +12,8 @@ use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::Diagnostic;
-use crate::value::{string_val, EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::symbol_table::SymbolTable;
+use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
@@ -216,7 +217,7 @@ async fn eval_annotation_property_dict(
                         entry.node.value.span.clone(),
                     )));
                 }
-                match eval_core_expr(&core_expr, &EvalFrame::empty(), ctx).await {
+                match eval_core_expr(&core_expr, &SymbolTable::empty(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
                     Err(e) if e.kind == "unimplemented" => {
                         // Placeholder from nested type expressions → skip this key.
@@ -318,41 +319,43 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// is handled by `eval_core_expr` before the dict is returned, not inside `eval_dict_core`.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
-    outer_frame: &Arc<EvalFrame>,
+    outer_scope: &Arc<SymbolTable>,
+    resolver_scope: Option<&Arc<SymbolTable>>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    // EvalFrame-based letrec state is initialized here; the legacy Arc<RwLock<Env>> has been removed.
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
-    // EvalFrame-based letrec: static-key entry thunks are placed into scope_vec at their
-    // assigned_slot positions for Dispatch(_, slot) variable lookup. The frame is built
-    // once after the loop and patched into each non-literal CoreExpr thunk via try_claim/reset.
+    // SymbolTable-based letrec: create a child scope with outer_scope as parent.
+    // Static-key entries are inserted into the SymbolTable at their assigned_slot positions.
+    // Non-literal CoreExpr thunks are created with SymbolTable::empty() as placeholder;
+    // the real letrec scope is patched in after all entries have been processed via
+    // try_claim/reset.
     //
     // ALL non-literal thunks (both static-key and computed-key) are patched with the
-    // letrec frame so that computed-key entry values can access function parameters
-    // and static-key siblings. For dicts with no static keys (e.g.,
-    // [$k: v] where $k is a computed key), the letrec frame is created with an empty
-    // group but still carries params from the outer frame.
-    //
-    // Clone parent scope: static-key entries are placed at their resolver-assigned slot
-    // positions. Computed-key entries (no static key name) are appended sequentially.
-    let mut scope_vec: Vec<Arc<Thunk>> = outer_frame.group.as_ref().clone();
+    // letrec scope so that computed-key entry values can access sibling bindings.
+    // When the resolver's SymbolTable is available, use it directly — one scope shared
+    // across all phases. The resolver already created entries; eval just writes values.
+    // When unavailable (eval-only paths: builtins, tests), create a new scope.
+    let use_resolver_scope = resolver_scope.is_some();
+    let mut letrec_scope_owned = if use_resolver_scope {
+        None
+    } else {
+        Some(SymbolTable::new(Some(Arc::clone(outer_scope))))
+    };
     // Collect the inner CoreExpr thunk for each non-literal entry (both static and computed key),
-    // so we can patch its frame after the group Vec is assembled.
+    // so we can patch its scope after the SymbolTable is assembled.
     let mut core_expr_thunks: Vec<Option<Arc<Thunk>>> = Vec::new();
-    // Whether any non-literal entries were collected (controls whether we need a letrec frame).
-    // ALL non-literal thunks (static-key AND computed-key) need the letrec frame so that
-    // computed-key values (e.g., [$k: v]) can access function parameters and closures.
+    // Whether any non-literal entries were collected (controls whether we need scope patching).
     let mut has_non_literal = false;
 
     for entry in entries {
-        // Keys are evaluated in the parent frame (Key Isolation Invariant): key expressions
-        // must not see letrec sibling bindings. Pass outer_frame so computed keys can
+        // Keys are evaluated in the parent scope (Key Isolation Invariant): key expressions
+        // must not see letrec sibling bindings. Pass outer_scope so computed keys can
         // reference outer-scope variables.
         let key = match &entry.node.key {
-            Some(key_expr) => eval_key_core(key_expr, outer_frame, ctx).await?,
+            Some(key_expr) => eval_key_core(key_expr, outer_scope, ctx).await?,
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
@@ -377,12 +380,12 @@ pub(crate) async fn eval_dict_core(
         };
 
         // Literals are pre-materialized — scope-independent values need no CoreExpr deferral.
-        // Non-literal values become CoreExpr thunks. For static-key entries these thunks are
-        // created with EvalFrame::empty() as a placeholder; the real letrec frame (containing
-        // the group Vec) is patched in after all entries have been processed.
+        // Non-literal values become CoreExpr thunks. These thunks are created with
+        // SymbolTable::empty() as a placeholder; the real letrec scope is patched in
+        // after all entries have been processed.
         //
-        // `core_expr_thunk` tracks the inner CoreExpr thunk for static-key non-literal entries
-        // so we can replace its frame after the group Vec is assembled.
+        // `core_expr_thunk` tracks each non-literal CoreExpr thunk so we can replace
+        // its scope after the SymbolTable is assembled.
         let (value_thunk, core_expr_thunk): (Arc<Thunk>, Option<Arc<Thunk>>) =
             match &entry.node.value.node {
                 CoreExpr::Int { value: n, .. } => (
@@ -424,20 +427,20 @@ pub(crate) async fn eval_dict_core(
                 CoreExpr::Str { value: s, .. } => {
                     (Arc::new(Thunk::value(string_val(s), entry_span)), None)
                 }
-                // Non-literal: create with EvalFrame::empty() as a placeholder.
-                // The real letrec frame is patched in below via try_claim/reset after
-                // the group Vec is assembled. ALL non-literal thunks are patched (both
+                // Non-literal: create with SymbolTable::empty() as a placeholder scope.
+                // The real letrec scope is patched in below via try_claim/reset after
+                // the SymbolTable is assembled. ALL non-literal thunks are patched (both
                 // static-key and computed-key) so that computed-key values can reference
-                // function parameters, closures, and static-key siblings correctly.
+                // sibling bindings correctly.
                 _ => {
                     let t = Arc::new(Thunk::core_expr(
                         Arc::clone(&entry.node.value),
-                        EvalFrame::empty(),
+                        SymbolTable::empty(),
                         Arc::clone(ctx),
                         entry_span,
                     ));
                     // Track for patching regardless of key kind — both static-key and
-                    // computed-key non-literal entries need the letrec frame.
+                    // computed-key non-literal entries need the letrec scope.
                     let t2 = Some(Arc::clone(&t));
                     has_non_literal = true;
                     (t, t2)
@@ -498,6 +501,17 @@ pub(crate) async fn eval_dict_core(
             value_thunk
         };
 
+        // Extract string name before dict_map.insert moves key.
+        let str_name = if let HashableValue::Str(ref name) = key {
+            Some((
+                name.to_string(),
+                entry.node.assigned_slot,
+                entry.node.value.span.clone(),
+            ))
+        } else {
+            None
+        };
+
         // Values go into the dict map (Dict stores Arc<Thunk> directly).
         if let Some(old_thunk) = dict_map.insert(key, Arc::clone(&thunk)) {
             let prev_span = old_thunk.span.clone();
@@ -518,76 +532,56 @@ pub(crate) async fn eval_dict_core(
             ));
         }
 
-        // Uniform slot assignment: every entry gets a real slot in scope_vec.
-        {
-            let slot = entry.node.assigned_slot as usize;
-            if slot < scope_vec.len() {
-                scope_vec[slot] = Arc::clone(&thunk);
-            } else {
-                // Gaps in scope_vec can occur when the resolver assigns non-sequential slots
-                // (e.g., slot 0 for entry 'a', slot 2 for entry 'c' if slot 1 is reserved for
-                // a parent-scope binding that is later overridden). Fill gaps with empty dicts
-                // to maintain slot indexing invariant: scope_vec[N] must exist for all N < len.
-                // Gap entries are never accessed by correct code — they exist only to preserve
-                // the direct-indexing property (VarAddr::Dispatch(_, slot) -> scope_vec[slot]).
-                scope_vec.resize_with(slot + 1, || {
-                    Arc::new(Thunk::value(
-                        Value::Dict {
-                            entries: IndexMap::new(),
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                crate::value::TYPE_ID_DICT,
-                            )),
-                        },
-                        crate::rust_span!(),
-                    ))
-                });
-                scope_vec[slot] = Arc::clone(&thunk);
+        // Insert into the letrec SymbolTable for named entries (only when creating new scope).
+        if !use_resolver_scope {
+            if let Some((name, slot, span)) = str_name {
+                letrec_scope_owned
+                    .as_mut()
+                    .unwrap()
+                    .insert(name, slot, Some(span));
             }
         }
-        // Track all non-literal thunks (both static and computed key) for frame patching.
+        // Track all non-literal thunks (both static and computed key) for scope patching.
         core_expr_thunks.push(core_expr_thunk);
     }
 
-    // Phase 2: build the shared letrec EvalFrame and patch it into each non-literal
-    // CoreExpr thunk.
+    // Phase 2: finalize the letrec SymbolTable and patch each non-literal CoreExpr thunk.
     //
-    // group: scope_vec already contains the parent scope entries plus this dict's own
-    // static-key entries placed at their assigned_slot positions. This ensures
-    // LGM(absolute_slot) lookups resolve correctly for both:
-    //   - Cross-dict refs (e.g., LGM(N) for a root or prior-dict entry) → scope_vec[N]
-    //   - Self-refs within this dict → scope_vec[assigned_slot]
-    //
-    // definition_scope: for document-level dicts, carry the outer_frame.group so that fns
-    // defined in this dict can access cross-dict names via frame.group[slot] at fn-creation
-    // time. For fn-body dicts, carry the outer frame's definition scope unchanged.
+    // The letrec_scope now contains all named entries with their assigned slots.
+    // We write the thunk values into the SymbolTable via set_value, then patch
+    // each non-literal CoreExpr thunk's placeholder scope with the real letrec scope.
     //
     // Patch is safe here: the thunks were just created in this function and have not been
-    // shared with any other task yet (they are not in the dict map until after patch, and
-    // dict_map is local to this function until the Ok(...) return at the end). try_claim()
-    // atomically takes the UnevaluatedState out of the Mutex; reset() puts the updated
-    // state back in. If try_claim() returns None the thunk is already settled (can only
-    // happen for literals, which have core_expr_thunk=None and are skipped).
-    //
-    // Always create the letrec frame when there are any non-literal thunks (both
-    // static-key and computed-key). This ensures computed-key values (e.g., [$k: v]
-    // in make-entry) can access function parameters and closures via the frame.
+    // shared with any other task yet. try_claim() atomically takes the UnevaluatedState
+    // out of the Mutex; reset() puts the updated state back in. If try_claim() returns
+    // None the thunk is already settled (can only happen for literals, which have
+    // core_expr_thunk=None and are skipped).
+    let letrec_scope: Arc<SymbolTable> = if let Some(rs) = resolver_scope {
+        Arc::clone(rs)
+    } else {
+        Arc::new(letrec_scope_owned.take().unwrap())
+    };
+
+    // Write thunk values into the SymbolTable slots.
+    for (hk, thunk) in &dict_map {
+        if let HashableValue::Str(ref name) = hk {
+            if let Some((_, entry)) = letrec_scope
+                .entries()
+                .iter()
+                .find(|(n, _)| n.as_str() == name.as_ref())
+            {
+                letrec_scope.set_value(entry.slot, Arc::clone(thunk));
+            }
+        }
+    }
+
+    // Patch non-literal CoreExpr thunks with the real letrec scope.
     if has_non_literal {
-        // Build group from scope_vec which already contains outer scope + this dict's entries
-        // placed at their assigned_slot positions.
-        let group: crate::value::Scope = std::sync::Arc::new(scope_vec);
-
-        let letrec_frame = std::sync::Arc::new(EvalFrame {
-            group,
-            caller_evidence: std::sync::Arc::clone(&outer_frame.caller_evidence),
-            type_inst: outer_frame.type_inst.clone(),
-        });
-
         for maybe_core_thunk in &core_expr_thunks {
             let Some(core_thunk) = maybe_core_thunk else {
-                continue; // literal — no frame to patch
+                continue; // literal — no scope to patch
             };
-            // Atomically extract the unevaluated state, swap in the real frame, restore.
+            // Atomically extract the unevaluated state, swap in the real scope, restore.
             if let Some(state) = core_thunk.try_claim() {
                 match state {
                     crate::value::UnevaluatedState::CoreExpr {
@@ -595,7 +589,7 @@ pub(crate) async fn eval_dict_core(
                     } => {
                         core_thunk.reset(crate::value::UnevaluatedState::CoreExpr {
                             expr,
-                            frame: std::sync::Arc::clone(&letrec_frame),
+                            scope: Arc::clone(&letrec_scope),
                             ctx: t_ctx,
                         });
                     }
@@ -627,7 +621,7 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
-    frame: &Arc<EvalFrame>,
+    scope: &Arc<SymbolTable>,
     ctx: &Arc<EvalContext>,
 ) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
@@ -659,8 +653,8 @@ pub(crate) async fn eval_key_core(
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete HashableValue keys.
-    // Key expressions evaluate in the parent frame.
-    let thunk = eval_core_expr(key_expr.as_ref(), frame, ctx).await?;
+    // Key expressions evaluate in the parent scope.
+    let thunk = eval_core_expr(key_expr.as_ref(), scope, ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span, ctx)
 }

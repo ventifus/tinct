@@ -1621,10 +1621,7 @@ pub(crate) fn builtin_var_resolution(
                         }
                     }
                 }
-                SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } => {
+                SurfaceExpression::Dict { entries, scope: _ } => {
                     for e in entries {
                         if let Some(k) = &e.node.key {
                             if let Some(r) = find_in_node(k, line, col) {
@@ -2161,10 +2158,7 @@ fn compute_doc_span(
 ///
 /// **Arguments:**
 /// - arg0: `Value::Document` (only Document, not Program — error if Program)
-/// - arg1: `Value::Scope` — scope with name-to-slot mapping. Names are extracted in
-///   insertion order and seeded as `Dispatch(0, root_group_len + i)` (i = 0..n-1)
-///   so that at runtime, `CoreExpr::Var { addr: Dispatch(0, root_group_len + i) }` resolves to
-///   `frame.group[root_group_len + i]` = the i-th scope slot in `eval_core_document_exprs`.
+/// - arg1: `Value::SymbolTable` — scope with name-to-slot mapping.
 ///
 /// **Returns** `{doc: Document, diagnostics: Dict<Int, DiagnosticDict>}`.
 ///
@@ -2204,15 +2198,14 @@ pub(crate) fn builtin_resolve(
             .into());
         };
 
-        // arg1: Value::Scope — env scope with name-to-slot mapping.
-        // Names are extracted in insertion order from the scope's names map.
+        // arg1: Value::SymbolTable — scope with name-to-slot mapping.
         let scope_val = args[1].require_value()?.clone();
-        let scope_names = match scope_val {
-            Value::Scope { names, .. } => names,
+        let table = match scope_val {
+            Value::SymbolTable { table, .. } => table,
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-resolve env".to_string(),
-                    "Scope",
+                    "SymbolTable",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
@@ -2220,39 +2213,10 @@ pub(crate) fn builtin_resolve(
             }
         };
 
-        // The scope's names map IS the resolver's seed frame. No transformation.
-        let scope_frame: IndexMap<String, u32> = scope_names.as_ref().clone();
-        let env_names: Vec<String> = Vec::new();
-        let root_group_len = scope_frame.len() as u32;
-
-        // Use the classes-aware resolver so that any typeclass method names (e.g., `+`, `<`)
-        // in the resolved document emit VarAddr::EffectPerform instead of plain Dispatch.
-        // The class_methods map is built from the EvalContext's type_context when available.
-        // An empty map is safe — it disables EffectPerform emission for methods not listed.
-        let class_methods: std::collections::HashMap<String, u64> = {
-            let tc_guard = ctx.type_context.lock().unwrap();
-            if let Some(ref tc) = *tc_guard {
-                tc.classes
-                    .iter()
-                    .flat_map(|cd| {
-                        let class_id = cd.class_decl_id;
-                        cd.method_signatures
-                            .iter()
-                            .map(move |(method_name, _sig)| (method_name.clone(), class_id))
-                    })
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            }
-        };
-        let (_resolve_table, resolve_diagnostics, unreferenced_names) =
-            crate::resolve::resolve_surface_document_with_seed_frames_and_classes(
-                &doc_arc,
-                &[scope_frame],
-                &env_names,
-                root_group_len,
-                class_methods,
-            );
+        // Resolve the document using the SymbolTable scope.
+        let resolve_result = crate::resolve::resolve_document(&doc_arc, &table);
+        let resolve_diagnostics = resolve_result.diagnostics;
+        let unreferenced_names = resolve_result.unreferenced;
 
         // Build unified diagnostics dict from Diagnostics (errors + warnings).
         // Callers distinguish severity by reading d.level on each entry.
@@ -2578,17 +2542,13 @@ pub(crate) fn builtin_typecheck_doc(
                 type_stage_scope.push(std::collections::HashMap::new());
             }
 
-            // Use build_infer_state to configure all common fields.
-            // type_display_names is empty for builtin path (derived during typecheck, not from guard).
-            crate::typecheck::build_infer_state(
-                &mut state,
-                type_stage_scope,
-                guard.type_stage_fns.clone(),
-                guard.type_stage_type_vars.clone(),
-                guard.tycon_env.clone(),
-                type_name_to_id,
-                std::collections::HashMap::new(), // type_display_names starts empty
-            );
+            // Configure InferState fields directly (build_infer_state was deleted).
+            state.type_stage_data.scope = type_stage_scope;
+            state.type_stage_data.fns = guard.type_stage_fns.clone();
+            state.type_stage_data.type_vars = guard.type_stage_type_vars.clone();
+            state.tycon_env = guard.tycon_env.clone();
+            state.type_name_to_id = type_name_to_id;
+            state.type_display_names = std::collections::HashMap::new();
 
             // Seed classes/instances from TypeContextData.
             state.classes = guard.classes.clone();
@@ -2597,23 +2557,31 @@ pub(crate) fn builtin_typecheck_doc(
             (state,)
         };
 
-        // Push outermost scope with type-stage entries onto scope_chain.
-        if state.scope_chain.is_empty() {
-            let root_frame = ctx.root_group_resolver_map();
-            let outermost_size = root_frame.values().max().map(|m| *m + 1).unwrap_or(0) as usize;
-            let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(outermost_size));
-            for (name, tv) in state.type_stage_scope.iter().flat_map(|m| m.iter()) {
-                if let Some(&slot) = root_frame.get(name) {
-                    outermost.set_type_scheme(slot, Arc::clone(tv));
-                }
+        // Build outermost SymbolTable scope with type-stage entries.
+        if state.current_scope.is_none() {
+            let mut outermost = crate::symbol_table::SymbolTable::new(None);
+            for (slot, (name, tv)) in state
+                .type_stage_data
+                .scope
+                .iter()
+                .flat_map(|m| m.iter())
+                .enumerate()
+            {
+                outermost.insert(name.clone(), slot as u32, None);
+                outermost.set_type_scheme(slot as u32, Arc::clone(tv));
             }
-            state.scope_chain.push(outermost);
+            state.current_scope = Some(std::sync::Arc::new(outermost));
         }
 
+        let scope = state
+            .current_scope
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(crate::symbol_table::SymbolTable::new(None)));
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
         let (_, errors) =
-            crate::typecheck::process_document(&doc_arc, &mut state, &mut type_map_ref).await;
+            crate::typecheck::process_document(&doc_arc, &mut state, &scope, &mut type_map_ref)
+                .await;
 
         // Collect Diagnostics from state.diagnostics — now includes inline CEK emissions
         let mut type_diagnostics: Vec<crate::error::Diagnostic> =
@@ -2631,7 +2599,7 @@ pub(crate) fn builtin_typecheck_doc(
 
             // Write back type_stage_scope: merge new declarations (ADTs, classes) from
             // frame[0] back into TypeContextData so subsequent typecheck calls see them.
-            if let Some(new_entries) = state.type_stage_scope.first() {
+            if let Some(new_entries) = state.type_stage_data.scope.first() {
                 if guard.type_stage_scope.is_empty() {
                     guard
                         .type_stage_scope
@@ -2658,12 +2626,19 @@ pub(crate) fn builtin_typecheck_doc(
         {
             let mut guard = tc_arc.lock().unwrap();
             for class in &state.classes {
-                if !guard.classes.iter().any(|c| c.class_decl_id == class.class_decl_id) {
+                if !guard
+                    .classes
+                    .iter()
+                    .any(|c| c.class_decl_id == class.class_decl_id)
+                {
                     guard.classes.push(class.clone());
                 }
             }
             for (mangled, inst) in &state.instances {
-                guard.instances.entry(mangled.clone()).or_insert_with(|| inst.clone());
+                guard
+                    .instances
+                    .entry(mangled.clone())
+                    .or_insert_with(|| inst.clone());
             }
         }
 
@@ -2924,7 +2899,7 @@ pub(crate) fn builtin_fork_type_ctx(
 ///     - Function → thunk in type_stage_fns (parameterized type constructor)
 ///     - Otherwise: skips (not a type-stage value)
 ///
-/// The new frame is prepended to `TypeContextData.type_stage_scope` (Vec[0] = innermost,
+/// The new frame is prepended to `TypeContextData.type_stage_data.scope` (Vec[0] = innermost,
 /// highest priority). Each module's type-stage is a distinct frame.
 ///
 /// Returns the same TypeContext (mutations are visible through the shared Arc<Mutex>).
@@ -3435,17 +3410,23 @@ pub(crate) fn builtin_doc_meta(
             }
         };
 
-        // Evaluate each header SurfaceNode value with an empty accumulated group.
+        // Evaluate each header SurfaceNode value with an empty SymbolTable.
         // Header values are literals — no env injection needed.
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        let display_names = ctx.type_display_names_snapshot();
         for (key, node_arc) in &doc_arc.header {
-            let nodes = vec![Arc::clone(node_arc)];
-            let eval_result = crate::eval::eval_document_exprs_with_env(&nodes, &ctx, None).await;
-            match eval_result {
-                Ok(thunk) => {
-                    result.insert(HashableValue::Str(key.clone().into()), thunk);
-                }
-                Err(e) => return Err(e),
+            let core_spanned = crate::lower::lower(node_arc, &display_names)
+                .take(&ctx.runtime_diagnostics)
+                .expect("lowering always succeeds");
+            let core_entries = vec![Arc::new(core_spanned)];
+            let (table, _diags) = crate::eval::eval_document(
+                &core_entries[..],
+                &ctx,
+                crate::symbol_table::SymbolTable::empty(),
+            )
+            .await;
+            if let Some(thunk) = table.get("%") {
+                result.insert(HashableValue::Str(key.clone().into()), thunk);
             }
         }
         ok_val(
@@ -3527,8 +3508,8 @@ pub(crate) fn builtin_builtin_module(
     })
 }
 
-/// `builtin-empty-scope`: Return an empty `Value::Scope` with no entries.
-pub(crate) fn builtin_empty_scope(
+/// `builtin-empty-scope`: Return an empty `Value::SymbolTable` with no entries.
+pub(crate) fn builtin_empty_symbol_table(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
@@ -3544,9 +3525,8 @@ pub(crate) fn builtin_empty_scope(
             return Err(Diagnostic::arity_mismatch(0, args.len(), call_span).into());
         }
         Ok(Arc::new(Thunk::value(
-            Value::Scope {
-                slots: Arc::new(Vec::new()),
-                names: Arc::new(IndexMap::new()),
+            Value::SymbolTable {
+                table: crate::symbol_table::SymbolTable::empty(),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_SCOPE,
                 )),
@@ -3556,18 +3536,14 @@ pub(crate) fn builtin_empty_scope(
     })
 }
 
-/// `builtin-scope-extend`: Extend a `Value::Scope` with additional bindings from a `Value::Dict`.
+/// `builtin-scope-extend`: Extend a `Value::SymbolTable` with additional bindings from a `Value::Dict`.
 ///
 /// Takes 2 positional args:
-/// - arg0: `Value::Scope` — the base scope to extend.
+/// - arg0: `Value::SymbolTable` — the base symbol table to extend.
 /// - arg1: `Value::Dict` — additions: string-keyed entries to add or override.
 ///
-/// For each string-keyed entry in `additions`:
-/// - If the name already exists in the scope, override the slot in-place.
-/// - If the name is new, append the thunk and record the name-to-slot mapping.
-///
-/// Returns a new `Value::Scope` with the merged slots and names.
-pub(crate) fn builtin_scope_extend(
+/// Returns a new `Value::SymbolTable` with the merged entries.
+pub(crate) fn builtin_symbol_table_extend(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
@@ -3583,14 +3559,14 @@ pub(crate) fn builtin_scope_extend(
             return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // arg0: Value::Scope
+        // arg0: Value::SymbolTable
         let scope_val = args[0].require_value()?.clone();
-        let (scope_slots, scope_names) = match scope_val {
-            Value::Scope { slots, names, .. } => (slots, names),
+        let table = match scope_val {
+            Value::SymbolTable { table, .. } => table,
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-scope-extend".to_string(),
-                    "Scope",
+                    "SymbolTable",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
@@ -3613,30 +3589,19 @@ pub(crate) fn builtin_scope_extend(
             }
         };
 
-        // Clone the scope vectors for mutation.
-        let mut new_slots: Vec<Arc<Thunk>> = (*scope_slots).clone();
-        let mut new_names: IndexMap<String, u32> = (*scope_names).clone();
-
+        // Build string-keyed map for extend
+        let mut str_additions: IndexMap<String, Arc<Thunk>> = IndexMap::new();
         for (k, thunk) in &additions_map {
-            let name = match k {
-                HashableValue::Str(s) => s.to_string(),
-                _ => continue, // skip non-string keys
-            };
-            if let Some(&existing_slot) = new_names.get(&name) {
-                // Override existing slot
-                new_slots[existing_slot as usize] = Arc::clone(thunk);
-            } else {
-                // Append new entry
-                let slot = new_slots.len() as u32;
-                new_slots.push(Arc::clone(thunk));
-                new_names.insert(name, slot);
+            if let HashableValue::Str(s) = k {
+                str_additions.insert(s.to_string(), Arc::clone(thunk));
             }
         }
 
+        let new_table = table.extend(str_additions);
+
         Ok(Arc::new(Thunk::value(
-            Value::Scope {
-                slots: Arc::new(new_slots),
-                names: Arc::new(new_names),
+            Value::SymbolTable {
+                table: new_table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_SCOPE,
                 )),
@@ -3646,14 +3611,14 @@ pub(crate) fn builtin_scope_extend(
     })
 }
 
-/// `builtin-scope-exports`: Convert a `Value::Scope` to a `Value::Dict` exposing its named entries.
+/// `builtin-symbol-table-get`: Look up a name in a `Value::SymbolTable`.
 ///
-/// Takes 1 positional arg:
-/// - arg0: `Value::Scope`
+/// Takes 2 positional args:
+/// - arg0: String — the name to look up.
+/// - arg1: Value::SymbolTable — the symbol table to search.
 ///
-/// Returns `Value::Dict` with string keys from the scope's name mapping and
-/// their corresponding thunks from the scope's slots.
-pub(crate) fn builtin_scope_exports(
+/// Returns the thunk's value if found, or the empty dict `[]` (null) if not present.
+pub(crate) fn builtin_symbol_table_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
     Box::pin(async move {
@@ -3664,19 +3629,32 @@ pub(crate) fn builtin_scope_exports(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-exports", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+        crate::builtins::reject_named(
+            "builtin-symbol-table-get",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 2 {
+            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // arg0: Value::Scope
-        let scope_val = args[0].require_value()?.clone();
-        let (scope_slots, scope_names) = match scope_val {
-            Value::Scope { slots, names, .. } => (slots, names),
+        // arg0: String — the name to look up
+        let name_val = args[0].require_value()?.clone();
+        let name = crate::builtins::require_string(
+            "builtin-symbol-table-get",
+            name_val,
+            args[0].span.clone(),
+            &ctx,
+        )?;
+
+        // arg1: Value::SymbolTable
+        let scope_val = args[1].require_value()?.clone();
+        let table = match scope_val {
+            Value::SymbolTable { table, .. } => table,
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-scope-exports".to_string(),
-                    "Scope",
+                    "builtin-symbol-table-get".to_string(),
+                    "SymbolTable",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
@@ -3684,47 +3662,30 @@ pub(crate) fn builtin_scope_exports(
             }
         };
 
-        // Build Dict from scope names and slots.
-        let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> =
-            IndexMap::with_capacity(scope_names.len());
-        for (name, &slot) in scope_names.iter() {
-            dict_map.insert(
-                HashableValue::Str(Arc::from(name.as_str())),
-                Arc::clone(&scope_slots[slot as usize]),
-            );
+        match table.get(&name) {
+            Some(thunk) => Ok(thunk),
+            None => ok_val(
+                Value::Dict {
+                    entries: IndexMap::new(),
+                    type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
+                },
+                call_span,
+            ),
         }
-
-        Ok(Arc::new(Thunk::value(
-            Value::Dict {
-                entries: dict_map,
-                type_decl_id: TYPE_ID_DICT,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_DICT,
-                )),
-            },
-            call_span,
-        )))
     })
 }
 
-/// `builtin-eval`: Evaluate a `Value::CoreDocument` against a `Value::Scope`, returning
-/// a `Value::Scope` containing the accumulated scope after evaluation.
+/// `builtin-eval`: Evaluate a `Value::CoreDocument` against a `Value::SymbolTable`.
 ///
 /// Takes 2 positional args:
 /// - arg0: `Value::CoreDocument` — fully lowered document (output of `builtin-lower`).
 ///   Passing `Value::Document` is a type error: call `builtin-lower` first.
-/// - arg1: `Value::Scope` — accumulated environment with slots and name mapping.
-///   Slots become the initial accumulated group for `eval_core_document_exprs`,
-///   enabling `Dispatch(_, i)` references into the env.
-///   The slot order must match the name-set order passed to `builtin-resolve`
-///   (i.e., the slot assignments from the resolver frame).
+/// - arg1: `Value::SymbolTable` — accumulated environment scope.
 ///
-/// Returns `Value::Scope` — the accumulated scope after evaluation, including
-/// the result thunk as the last entry. The accumulated scope contains all
-/// intermediate dict entries and the final expression.
-/// Errors propagate via `Diagnostic` (raises on failure — no diagnostics wrapper).
-///
-/// Accepts `Value::CoreDocument` (output of `builtin-lower`), not `Value::Document`.
+/// Returns `{table: Value::SymbolTable, diagnostics: Dict}`.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
@@ -3767,14 +3728,14 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // arg1: Value::Scope — env scope with slots and name mapping.
+        // arg1: Value::SymbolTable — env scope.
         let env_val = args[1].require_value()?.clone();
-        let (scope_slots, scope_names) = match env_val {
-            Value::Scope { slots, names, .. } => (slots, names),
+        let table = match env_val {
+            Value::SymbolTable { table, .. } => table,
             other => {
                 return Err(Diagnostic::type_mismatch_ctx(
                     "builtin-eval env".to_string(),
-                    "Scope",
+                    "SymbolTable",
                     ctx.type_display_name(other.type_decl_id_of()),
                     call_span,
                 )
@@ -3782,45 +3743,65 @@ pub(crate) fn builtin_eval(
             }
         };
 
-        // The scope's slots ARE the initial_group. No transformation.
-        let initial_group: Vec<Arc<Thunk>> = scope_slots.as_ref().clone();
-        let initial_names: IndexMap<String, u32> = scope_names.as_ref().clone();
+        // Evaluate the document with the SymbolTable scope.
+        // core_entries is Vec<(String, Arc<Spanned<CoreExpr>>)>; eval_document expects &[Arc<Spanned<CoreExpr>>].
+        let core_exprs: Vec<std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> =
+            core_entries
+                .iter()
+                .map(|(_, expr)| Arc::clone(expr))
+                .collect();
+        let (result_table, diagnostics) =
+            crate::eval::eval_document(&core_exprs[..], &ctx, table).await;
 
-        // Evaluate the pre-lowered CoreExpr entries with the scope as the initial group.
-        // Uses eval_core_document_exprs (not eval_document_exprs_with_env) to avoid calling
-        // lower() on already-lowered expressions. Errors propagate directly — no diagnostics
-        // wrapping.
-        let (result_thunk, accumulated_spine, accumulated_names) =
-            crate::eval::eval_core_document_exprs(
-                &core_entries[..],
-                &ctx,
-                initial_group,
-                Some(initial_names),
-            )
-            .await?;
+        // Build result: {table: SymbolTable, diagnostics: Dict}
+        let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
 
-        // Build the result Value::Scope from the accumulated spine and names.
-        // The scope includes root_group entries at their original positions —
-        // no stripping, no reindexing. Slot numbering is absolute.
-        let mut result_names = accumulated_names.unwrap_or_default();
+        let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        for (i, diag) in diagnostics.iter().enumerate() {
+            let w = serialize_diagnostic(diag, &call_span);
+            diagnostics_dict.insert(
+                HashableValue::Int(i as i64),
+                mk(Value::Dict {
+                    entries: w,
+                    type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
+                }),
+            );
+        }
 
-        // Add the result thunk under "%".
-        let full_slots_vec = accumulated_spine.as_ref().clone();
-        let result_slot = full_slots_vec.len() as u32;
-        let mut final_slots = full_slots_vec;
-        final_slots.push(result_thunk);
-        result_names.insert("%".to_string(), result_slot);
-
-        Ok(Arc::new(Thunk::value(
-            Value::Scope {
-                slots: Arc::new(final_slots),
-                names: Arc::new(result_names),
+        let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        result_dict.insert(
+            HashableValue::Str("table".into()),
+            mk(Value::SymbolTable {
+                table: result_table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_SCOPE,
                 )),
+            }),
+        );
+        result_dict.insert(
+            HashableValue::Str("diagnostics".into()),
+            mk(Value::Dict {
+                entries: diagnostics_dict,
+                type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
+            }),
+        );
+
+        ok_val(
+            Value::Dict {
+                entries: result_dict,
+                type_decl_id: TYPE_ID_DICT,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_DICT,
+                )),
             },
             call_span,
-        )))
+        )
     })
 }
 
@@ -3874,61 +3855,16 @@ pub(crate) fn builtin_variant_payload(
     })
 }
 
-/// `builtin-current-env`: capture and return the calling FlatEnv id.
-///
-/// Takes zero arguments. Returns `Value::Int(caller_env_id)` — the FlatEnv id of the
-/// caller's evaluation scope. This is the env_id in scope at the `[builtin-current-env]`
-/// call site.
-pub(crate) fn builtin_current_env(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-            caller_env_id,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("current-env", named.as_ref(), call_span.clone())?;
-        if !args.is_empty() {
-            return Err(Diagnostic::arity_mismatch(0, args.len(), call_span).into());
-        }
-        // caller_env_id is Some only when needs_caller_env = true in the BuiltinDef.
-        // Panicking here indicates a registration bug: builtin-current-env was registered
-        // without the @needs_caller_env flag.
-        let env_id = caller_env_id.expect(
-            "builtin-current-env: caller_env_id is None — BuiltinDef.needs_caller_env must be true",
-        );
-        Ok(Arc::new(Thunk::value(
-            Value::Int {
-                n: env_id as i64,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                )),
-            },
-            call_span,
-        )))
-    })
-}
-
-/// `builtin-eval-macro-ast`: evaluate a macro-produced AST in the call-site scope.
+/// `builtin-eval-macro-ast`: evaluate a macro-produced AST.
 ///
 /// Takes 1 positional arg: an `Expr.*` Value::Variant representing the AST to evaluate.
 ///
-/// The call-site FlatEnv id is provided directly via `BuiltinArgs.caller_env_id`, which is
-/// injected by the @Expr PendingCallDispatch handler in eval_materialize.rs.  This allows
-/// macro functions to call `[eval-macro-ast ast]` without explicitly threading the call
-/// environment through their parameter lists.
-///
 /// Evaluation pipeline:
-///   1. Use `caller_env_id` directly as the call-site FlatEnv id
-///   2. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
-///   3. Wrap in a single-expression `SurfaceProgram`
-///   4. Desugar + resolve in the call-site env
-///   5. Evaluate via `eval_document_exprs_with_env`
-///   6. Return the result thunk (the `%` of the resulting environment)
+///   1. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
+///   2. Wrap in a single-expression `SurfaceProgram`
+///   3. Desugar + expand + resolve with empty SymbolTable
+///   4. Lower to CoreExpr and evaluate via `eval_document`
+///   5. Return the result thunk
 pub(crate) fn builtin_eval_macro_ast(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
@@ -3945,7 +3881,7 @@ pub(crate) fn builtin_eval_macro_ast(
             return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
+        // Convert Expr.* variant to SurfaceNode
         let expr_val = args[0].require_value()?.clone();
 
         let expr_node = match expr_val {
@@ -3972,7 +3908,7 @@ pub(crate) fn builtin_eval_macro_ast(
             }
         };
 
-        // ── Step 3: Wrap in a single-expression SurfaceProgram ────────────────
+        // Wrap in a single-expression SurfaceProgram
         let document = crate::ast::SurfaceDocument {
             header: indexmap::IndexMap::new(),
             items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
@@ -3984,147 +3920,41 @@ pub(crate) fn builtin_eval_macro_ast(
             )],
         });
 
-        // ── Step 4: Desugar + expand + resolve ───────────────────────────────
+        // Desugar + expand + resolve with empty SymbolTable
         let program = crate::expand::expand_program(&program);
-        // Resolve with empty frames — ScopeArena was deleted; de Bruijn coordinates
-        // resolve via MAX/MAX name-based lookup at eval time.
-        let initial_frames: Vec<indexmap::IndexMap<String, u32>> = vec![];
-        let _resolve_table =
-            crate::resolve::resolve_surface_program(&program, &initial_frames);
+        let empty_table = crate::symbol_table::SymbolTable::empty();
+        crate::resolve::resolve_program(&program, &empty_table);
 
-        // ── Step 5: Extract the single expression node ────────────────────────
-        let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
-            .documents
-            .into_iter()
-            .flat_map(|d| d.node.items.clone())
-            .filter_map(|item| {
+        // Lower each document's expressions to CoreExpr and evaluate
+        let display_names = ctx.type_display_names_snapshot();
+        let mut core_entries: Vec<Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> = Vec::new();
+        for doc_spanned in &program.documents {
+            for item in &doc_spanned.node.items {
                 if let crate::ast::SurfaceItem::Expr(node) = item {
-                    Some(node)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // ── Step 6: Evaluate and return the result thunk ──────────────────────
-        let result_thunk =
-            crate::eval::eval_document_exprs_with_env(&expression_nodes, &ctx, None).await?;
-
-        Ok(result_thunk)
-    })
-}
-
-/// `eval-types`: same as `eval` but evaluates in the type-stage environment.
-///
-/// This is used for evaluating type-level expressions (type aliases, class declarations).
-pub(crate) fn builtin_eval_types(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
-        }
-
-        // Reject all named args — eval-types takes only the positional document arg.
-        crate::builtins::reject_named("eval-types", named.as_ref(), call_span.clone())?;
-
-        // Materialize the input — accepts Value::Document only.
-        let input_val = args[0].require_value()?.clone();
-
-        // Document path: extract SurfaceNodes directly (same as builtin-eval Document path).
-        if let Value::Document { doc, .. } = &input_val {
-            let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = doc
-                .items
-                .iter()
-                .filter_map(|item| {
-                    if let crate::ast::SurfaceItem::Expr(node) = item {
-                        Some(std::sync::Arc::clone(node))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let result_thunk =
-                crate::eval::eval_document_exprs_with_env(&expr_nodes, &ctx, None).await?;
-            return Ok(result_thunk);
-        }
-
-        let input_map = match input_val {
-            Value::Dict { entries: m, .. } => m,
-            other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "eval-types".to_string(),
-                    "Document or Dict of Expression",
-                    ctx.type_display_name(other.type_decl_id_of()),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Collect Expr.* variant nodes from the Dict (in insertion order), converting to SurfaceNode.
-        let mut expression_nodes = Vec::new();
-        for (_key, val_thunk) in &input_map {
-            let val = materialize(val_thunk, Some(&call_span), &ctx).await?;
-            match val {
-                Value::Variant {
-                    ref type_decl_id, ..
-                } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
-                    let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
-                        .map_err(|e| {
-                            Diagnostic::internal(
-                                format!("eval-types: Expr.* conversion failed: {}", e),
-                                call_span.clone(),
-                            )
-                        })?;
-                    expression_nodes.push(node);
-                }
-                other => {
-                    return Err(Diagnostic::type_mismatch_ctx(
-                        "eval-types".to_string(),
-                        "Expr.*",
-                        ctx.type_display_name(other.type_decl_id_of()),
-                        call_span,
-                    )
-                    .into())
+                    let core_spanned = crate::lower::lower(node, &display_names)
+                        .take(&ctx.runtime_diagnostics)
+                        .expect("lowering always succeeds");
+                    core_entries.push(Arc::new(core_spanned));
                 }
             }
         }
 
-        // Build integer-keyed Dict of CoreExpr thunks (one per expression, pre-lowered).
-        let mut result_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        for (i, node) in expression_nodes.into_iter().enumerate() {
-            let display_names = ctx.type_display_names_snapshot();
-            let core_spanned = crate::lower::lower(&node, &display_names)
-                .take(&ctx.runtime_diagnostics)
-                .expect("lowering always succeeds");
-            let core_thunk = Arc::new(Thunk::core_expr(
-                Arc::new(core_spanned),
-                crate::value::EvalFrame::empty(),
-                Arc::clone(&ctx),
-                call_span.clone(),
-            ));
-            result_dict.insert(HashableValue::Int(i as i64), core_thunk);
-        }
-
-        ok_val(
-            Value::Dict {
-                entries: result_dict,
-                type_decl_id: TYPE_ID_DICT,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_DICT,
-                )),
-            },
-            call_span,
+        let (result_table, _diagnostics) = crate::eval::eval_document(
+            &core_entries[..],
+            &ctx,
+            crate::symbol_table::SymbolTable::empty(),
         )
+        .await;
+
+        // Get the result from the table
+        match result_table.get("%") {
+            Some(thunk) => Ok(thunk),
+            None => Err(Diagnostic::internal(
+                "eval-macro-ast: no result in evaluated document".to_string(),
+                call_span,
+            )
+            .into()),
+        }
     })
 }
 
@@ -5102,20 +4932,11 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
         // ── AST construction and evaluation ───────────────────────────────────────────
         builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id], 0, ["x"]),
         builtin!(
-            @needs_caller_env,
             "builtin-eval-macro-ast",
             builtin_eval_macro_ast,
             [Strictness::Seq],
             1,
             ["ast"]
-        ),
-        builtin!(
-            @needs_caller_env,
-            "builtin-eval-types",
-            builtin_eval_types,
-            [Strictness::Seq],
-            1,
-            ["program"]
         ),
         builtin!(
             "builtin-ast-to-program",
@@ -5260,10 +5081,6 @@ pub fn meta_builtins() -> Vec<crate::value::BuiltinDef> {
             0,
             ["cap"]
         ),
-        // ── Environment access ────────────────────────────────────────────────────────
-        // builtin-current-env: zero-arg; returns the calling lexical environment.
-        // needs_caller_env: true — only builtin that requires BuiltinArgs.caller_env_id to be Some.
-        builtin!(@needs_caller_env, "builtin-current-env", builtin_current_env),
     ]
 }
 
@@ -5274,7 +5091,7 @@ mod tests {
     use crate::value::TYPE_ID_DICT;
     use indexmap::IndexMap;
 
-    use super::{builtin_current_env, builtin_tag_of};
+    use super::builtin_tag_of;
     use crate::test_util::test_span;
     use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
@@ -5289,10 +5106,6 @@ mod tests {
     /// Wrap a Value as an Arc<Thunk> for use in BuiltinArgs.args.
     fn thunk_id(val: Value) -> Arc<Thunk> {
         thunk(val)
-    }
-
-    fn empty_evidence() -> crate::value::Scope {
-        crate::value::empty_scope()
     }
 
     fn call_span() -> crate::ast::Span {
@@ -5387,8 +5200,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5426,8 +5239,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -5473,71 +5286,13 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
         assert_eq!(val, string_val("Circle"));
         Ok(())
-    }
-
-    /// `builtin_current_env` returns the caller's FlatEnv id as `Value::Int(caller_env_id)`.
-    #[tokio::test]
-    async fn current_env_captures_caller_env() -> Result<(), Box<crate::error::Diagnostic>> {
-        let ctx = test_ctx();
-        let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: std::sync::Arc::clone(&ctx),
-            caller_env_id: Some(42),
-            caller_evidence: empty_evidence(),
-        }))
-        .await?;
-
-        // builtin_current_env now returns Value::Int(caller_env_id).
-        let val = materialize_sync(&result, &ctx).await?;
-        assert_eq!(
-            val,
-            Value::Int {
-                n: 42,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT
-                ))
-            },
-            "expected caller_env_id as Int(42)"
-        );
-        Ok(())
-    }
-
-    /// `builtin_current_env` rejects positional arguments — it takes zero args.
-    #[tokio::test]
-    async fn current_env_rejects_positional_args() {
-        let ctx = test_ctx();
-        let result = run(builtin_current_env(BuiltinArgs {
-            args: vec![thunk_id(Value::Int {
-                n: 1,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                )),
-            })],
-            named: no_named(),
-            call_span: call_span(),
-            ctx,
-            caller_env_id: Some(0),
-            caller_evidence: empty_evidence(),
-        }))
-        .await;
-        assert!(
-            result.is_err(),
-            "expected arity error when passing args to current-env, got ok"
-        );
-        let msg = format!("{}", result.unwrap_err());
-        assert!(
-            msg.contains("E020") || msg.contains("arity"),
-            "error should be an arity mismatch, got: {msg}"
-        );
     }
 
     /// `builtin_tag_of` returns a type-mismatch error when the peeled value is not a
@@ -5566,8 +5321,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(

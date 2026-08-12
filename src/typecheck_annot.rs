@@ -76,7 +76,7 @@ pub(crate) async fn resolve_fn_metadata(
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict {
                             entries: bind_entries,
-                            scope_frame: _,
+                            scope: _,
                         } => {
                             for bind_entry in bind_entries {
                                 if bind_entry.node.key.is_some() {
@@ -249,7 +249,7 @@ pub(crate) async fn resolve_fn_metadata(
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict {
                             entries: kinds_entries,
-                            scope_frame: _,
+                            scope: _,
                         } => {
                             for kind_entry in kinds_entries {
                                 let typevar_name = match &kind_entry.node.key {
@@ -351,7 +351,7 @@ pub(crate) async fn resolve_fn_metadata(
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict {
                             entries: constraint_entries,
-                            scope_frame: _,
+                            scope: _,
                         } => {
                             for c_entry in constraint_entries {
                                 // Skip positional entries (MPTC) — handled in Step 1b
@@ -513,7 +513,7 @@ pub(crate) async fn resolve_fn_metadata(
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict {
                             entries: constraint_entries,
-                            scope_frame: _,
+                            scope: _,
                         } => {
                             let mut i = 0;
                             while i < constraint_entries.len() {
@@ -1529,9 +1529,9 @@ async fn instantiate_tycon_def(
 ///   - Type application: `[Seq a]`, `[Iterable a]`, `[Map K V]` — call with resolved args
 ///
 /// Lookup order:
-///   1. `state.type_stage_scope` (resolved TypeValues): return directly (with App wrapping if args present)
-///   2. `state.type_stage_fns` (Function thunks): call the thunk with args
-///   3. `state.type_stage_type_vars` (TypeVar kinds): fresh TypeVar of the given kind
+///   1. `state.type_stage_data.scope` (resolved TypeValues): return directly (with App wrapping if args present)
+///   2. `state.type_stage_data.fns` (Function thunks): call the thunk with args
+///   3. `state.type_stage_data.type_vars` (TypeVar kinds): fresh TypeVar of the given kind
 ///   4. `state.env` (ClassDecl): fresh TypeVar with a class constraint
 ///   5. Undefined → Diagnostic
 ///
@@ -1546,7 +1546,7 @@ async fn resolve_type_head(
     span: Span,
 ) -> Result<TypeValue, Diagnostic> {
     // Step 1: check type_stage_scope for a resolved TypeValue.
-    for scope in &state.type_stage_scope {
+    for scope in &state.type_stage_data.scope {
         if let Some(tv) = scope.get(name) {
             // Fully materialized TypeValue (e.g., TypeNode.Int → TypeValue.Repr) — return directly.
             if args.is_empty() {
@@ -1561,7 +1561,7 @@ async fn resolve_type_head(
     }
 
     // Step 2: check type_stage_fns for a parameterized type constructor thunk.
-    if let Some(thunk) = state.type_stage_fns.get(name).cloned() {
+    if let Some(thunk) = state.type_stage_data.fns.get(name).cloned() {
         // Function thunk — parameterized type constructor (e.g., Seq, Result).
         if args.is_empty() {
             // Zero-arg reference to a parameterized type constructor (e.g.,
@@ -1615,7 +1615,7 @@ async fn resolve_type_head(
     }
 
     // Step 3: check type_stage_type_vars for a TypeVar kind annotation.
-    if let Some(kind) = state.type_stage_type_vars.get(name).cloned() {
+    if let Some(kind) = state.type_stage_data.type_vars.get(name).cloned() {
         // Operator-kinded names in application position produce App chains.
         // This handles `[m SomeType]` where `m@Operator` was declared in a class.
         let kind_is_operator = kind == "Operator";
@@ -1925,10 +1925,7 @@ pub(crate) async fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, scope: _ } => {
             Box::pin(resolve_type_dict(
                 entries,
                 node.span.clone(),
@@ -1986,7 +1983,7 @@ pub(crate) async fn resolve_type_expr(
                         match &param_list.expr {
                             SurfaceExpression::Dict {
                                 entries: param_entries,
-                                scope_frame: _,
+                                scope: _,
                             } => {
                                 for entry in param_entries {
                                     // Extract parameter name from key if present
@@ -2523,11 +2520,12 @@ pub(crate) async fn resolve_type_dict(
                     // Check whether this name is a known type head — i.e., it appears in
                     // type_stage_scope, type_stage_fns, type_stage_type_vars, or class env.
                     let in_scope = state
-                        .type_stage_scope
+                        .type_stage_data
+                        .scope
                         .iter()
                         .any(|s| s.contains_key(name.as_str()))
-                        || state.type_stage_fns.contains_key(name.as_str())
-                        || state.type_stage_type_vars.contains_key(name.as_str())
+                        || state.type_stage_data.fns.contains_key(name.as_str())
+                        || state.type_stage_data.type_vars.contains_key(name.as_str())
                         || state.classes.iter().any(|c| c.name == name.as_str());
 
                     if in_scope {
@@ -2616,7 +2614,7 @@ pub(crate) async fn resolve_type_dict(
                             match &entry.node.value.expr {
                                 SurfaceExpression::Dict {
                                     entries: field_entries,
-                                    scope_frame: _,
+                                    scope: _,
                                 } => {
                                     let mut fields = indexmap::IndexMap::new();
                                     for fe in field_entries {
@@ -3070,7 +3068,7 @@ pub(crate) async fn resolve_type_dict(
 ///   synthesize `SurfaceExpression::Call { implied: true, func, args }`.
 ///
 /// - **Dict form** (keyed entries or first entry is not a VarRef):
-///   synthesize `SurfaceExpression::Dict { entries: entries, scope_frame: std::sync::OnceLock::new() }`. Dict evaluation in the type-stage
+///   synthesize `SurfaceExpression::Dict { entries: entries, scope: std::sync::OnceLock::new() }`. Dict evaluation in the type-stage
 ///   env produces an integer-keyed Dict value, which `typenode_value_to_type` will not
 ///   recognize — this is the correct fallback for metadata-style annotations that reach
 ///   the type-stage path (they will return `Type::Unknown` after failing conversion).
@@ -3104,7 +3102,7 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
         Arc::new(SurfaceNode::new(
             SurfaceExpression::Dict {
                 entries: entries.to_vec(),
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             },
             span,
         ))
@@ -3802,14 +3800,14 @@ pub(crate) async fn typenode_value_to_type(
 ///
 /// ## Mechanism
 ///
-/// 1. Looks up [`AS_TYPENODE_PROTOCOL_NAME`] in `state.type_stage_fns` (Function thunks).
+/// 1. Looks up [`AS_TYPENODE_PROTOCOL_NAME`] in `state.type_stage_data.fns` (Function thunks).
 /// 2. Materialises the thunk via `state.eval_ctx` to obtain the resolver function value.
 /// 3. Invokes the function inline via `evaluate_resolver_by_value` with the TypeNode value as
 ///    the sole argument. Returns a normalised TypeNode.
 /// 4. Converts the normalised TypeNode value to a TypeValue via `typenode_value_to_type`.
 ///
 /// Returns `Ok(None)` if:
-/// - `state.type_stage_fns` does not contain `as-typenode` (no type-stage configured).
+/// - `state.type_stage_data.fns` does not contain `as-typenode` (no type-stage configured).
 /// - `state.eval_ctx` is `None`.
 /// - The resolver function is not a single-parameter `Value::Function`.
 /// - The result is unrecognised (would cause recursion; stopped at this depth).
@@ -3838,10 +3836,15 @@ pub(crate) async fn as_type_dispatch(
     // Step 1: locate the `AS_TYPENODE_PROTOCOL_NAME` resolver in type_stage_fns.
     // This function is a parameterized type constructor that dispatches TypeNode values.
     let resolver_thunk = {
-        let scope_non_empty = !state.type_stage_fns.is_empty()
-            || state.type_stage_scope.iter().any(|s| !s.is_empty())
-            || !state.type_stage_type_vars.is_empty();
-        match state.type_stage_fns.get(AS_TYPENODE_PROTOCOL_NAME).cloned() {
+        let scope_non_empty = !state.type_stage_data.fns.is_empty()
+            || state.type_stage_data.scope.iter().any(|s| !s.is_empty())
+            || !state.type_stage_data.type_vars.is_empty();
+        match state
+            .type_stage_data
+            .fns
+            .get(AS_TYPENODE_PROTOCOL_NAME)
+            .cloned()
+        {
             Some(t) => t,
             None => {
                 // If the type-stage scope is non-empty but does not define the
@@ -3894,11 +3897,11 @@ pub(crate) async fn as_type_dispatch(
             let call_ctx = crate::eval_call::CallContext {
                 clauses,
                 definition_scope: Arc::clone(definition_scope),
+                caller_scope: Arc::clone(&eval_ctx.current_scope),
                 positional: &[arg_thunk],
                 named: None,
                 call_span: origin_span.clone(),
                 ctx: &eval_ctx,
-                caller_evidence: crate::value::empty_scope(),
                 type_instantiation: std::collections::HashMap::new(),
             };
             crate::eval_call::invoke_function(&call_ctx).await?
@@ -3962,14 +3965,9 @@ pub(crate) async fn eval_expr(
     let scope = state
         .eval_scope
         .as_ref()
-        .map_or_else(|| Arc::clone(&ctx.root_spine), |s| Arc::clone(s));
-    let frame = std::sync::Arc::new(crate::value::EvalFrame {
-        group: scope,
-        caller_evidence: crate::value::empty_scope(),
-        type_inst: std::collections::HashMap::new(),
-    });
+        .map_or_else(|| Arc::clone(&ctx.current_scope), |s| Arc::clone(s));
 
-    let thunk = crate::eval::eval_expr(node, &frame, &ctx)
+    let thunk = crate::eval::eval_expr(node, &scope, &ctx)
         .take(&ctx.runtime_diagnostics)
         .expect("eval_expr always succeeds");
 
@@ -3997,7 +3995,7 @@ pub(crate) async fn eval_type_stage_expr(
     match typenode_value_to_type(
         &typenode_val,
         &ctx,
-        &state.type_stage_scope,
+        &state.type_stage_data.scope,
         &state.type_name_to_id,
     )
     .await
@@ -4094,7 +4092,7 @@ async fn try_resolve_fn_type_expr(
     .await?;
 
     // The parameter list can be:
-    // - SurfaceExpression::Dict { entries: entries, scope_frame: std::sync::OnceLock::new() } — standard syntax: `[$a $b]` or `[$Number]`
+    // - SurfaceExpression::Dict { entries: entries, scope: std::sync::OnceLock::new() } — standard syntax: `[$a $b]` or `[$Number]`
     //   (unnamed params) or new syntax: `[x: String  y: Bool]` (named params)
     // - SurfaceExpression::Call { implied: true, func, args } — bare identifiers like `[a b]`
     //   parse as implied calls. Extract func + args as the parameter type expressions.
@@ -4102,7 +4100,7 @@ async fn try_resolve_fn_type_expr(
     match &second.node.value.expr {
         SurfaceExpression::Dict {
             entries: param_entries,
-            scope_frame: _,
+            scope: _,
         } => {
             for entry in param_entries.iter() {
                 // Extract parameter name from key if present

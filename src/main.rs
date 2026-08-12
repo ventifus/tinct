@@ -1362,9 +1362,8 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
     // Resource limits are now applied globally in main() before subcommand dispatch.
 
-    // Collect (name, thunk) cap entries here; inject into arena after eval_ctx is created.
-    // The matching thunks are appended to FlatEnv[0] (root_group) after construction.
-    // The resolver reads names from root_group_resolver_map() — no separate Env needed.
+    // Collect (name, thunk) cap entries here; they are assembled into the initial
+    // SymbolTable scope after eval_ctx is created.
     let mut deferred_cap_thunks: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
 
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
@@ -1917,11 +1916,8 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         ctx
     };
 
-    // Inject deferred cap thunks into the root scope, carrying the capability name on the span.
-    // The name on the thunk's span is how the resolver frame (built from root_group_resolver_map())
-    // assigns LGM(slot) addresses. Ordering MUST be consistent: capabilities are
-    // appended to root_group after the builtin slots, in the order they are added here.
-    // The resolver reads the same ordering from root_group_resolver_map() later.
+    // Inject deferred cap thunks into the capabilities list, carrying the capability name on the span.
+    // Capabilities are assembled into the initial SymbolTable scope below.
     let mut capabilities: Vec<(String, Arc<tinct::Thunk>)> = Vec::new();
     for (name, thunk) in deferred_cap_thunks {
         let span = thunk
@@ -2086,7 +2082,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         }
     };
 
-    // Inject %programs and %args into the capabilities list so they appear in root_group
+    // Inject %programs and %args into the capabilities list so they appear in the scope
     // alongside the other capabilities (%cwd, %libdir, %clock, etc.).
     // Ordering: %programs and %args are appended last, matching the resolver seed ordering.
     {
@@ -2102,11 +2098,14 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         capabilities.push(("%args".to_string(), args_thunk));
     }
 
-    // Attach the complete capability list to the eval context.
-    // All capability thunks (%cwd, %libdir, %clock, --cap-fs / --cap-net, %programs, %args)
-    // are now part of root_group. accumulated_group starts with root_group, so LGM(slot)
-    // resolves each capability directly — no frame traversal or special fallback needed.
-    let eval_ctx = eval_ctx.with_root_group_capabilities(capabilities);
+    // Build the initial SymbolTable scope with all capabilities.
+    // The scope extends the eval context's builtin scope with capability entries
+    // (%cwd, %libdir, %clock, --cap-fs / --cap-net, %programs, %args).
+    let initial_scope = {
+        let cap_entries: indexmap::IndexMap<String, Arc<tinct::Thunk>> =
+            capabilities.into_iter().collect();
+        tinct::SymbolTable::empty().extend(cap_entries)
+    };
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.
@@ -2143,10 +2142,16 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        tinct::run_loader_pipeline(&eval_ctx, &libdir_for_loader, init_source, init_path)
-            .await
-            .take(&eval_ctx.runtime_diagnostics)
-            .map_err(|e| Box::new(e))
+        tinct::run_loader_pipeline(
+            &eval_ctx,
+            &libdir_for_loader,
+            init_source,
+            init_path,
+            initial_scope.clone(),
+        )
+        .await
+        .take(&eval_ctx.runtime_diagnostics)
+        .map_err(|e| Box::new(e))
     })
     .await; // end of eval_result async block
 

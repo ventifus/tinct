@@ -326,10 +326,7 @@ fn lower_expr(
             inferred_type: make_typevalue_unknown(),
         },
 
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, ref scope } => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
                 let key = se.node.key.as_ref().map(|k| {
@@ -409,6 +406,7 @@ fn lower_expr(
             }
             CoreExpr::Dict {
                 entries: core_entries,
+                scope: scope.get().cloned(),
                 inferred_type: make_typevalue_unknown(),
             }
         }
@@ -693,7 +691,7 @@ fn lower_expr(
                     // Build params from let_bindings (T-2128).
                     // Extract binding names from [let name1 name2 ...], mirroring
                     // resolve.rs::extract_case_arm_binding_names. The resolver assigns
-                    // Dispatch(0, accumulated_dict_offset + i) to each name via enter_param_scope;
+                    // Dispatch(0, i) to each name via per-frame relative slots;
                     // lowering materializes that as CoreParam entries (slot = i, variadic = false).
                     // `_` is excluded — it is a wildcard, not a binding.
                     let let_bindings = &arm.let_bindings;
@@ -987,7 +985,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 body: core_expr_to_surface_node(&clause.body),
                 desugared: *desugared,
                 resolved_return_annotation: crate::ast::TypeAnnotation::new(),
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             }
         }
         CoreExpr::TypeAssert { check, expr, .. } => {
@@ -1061,7 +1059,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                         guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                         body: vec![core_expr_to_surface_node(&arm.body)],
                         guard_matchable_binding: arm.guard_matchable_binding.clone(),
-                        scope_frame: std::sync::OnceLock::new(),
+                        scope: std::sync::OnceLock::new(),
                     }
                 })
                 .collect(),
@@ -1095,7 +1093,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                     )
                 })
                 .collect(),
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         },
         CoreExpr::Placeholder { .. } => SurfaceExpression::Placeholder(None, None),
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
@@ -1524,7 +1522,7 @@ mod tests {
                 body,
                 desugared: false,
                 resolved_return_annotation: TypeAnnotation::new(),
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             },
             span,
         ))
@@ -1613,7 +1611,7 @@ mod tests {
                 body,
                 desugared: false,
                 resolved_return_annotation: TypeAnnotation::new(),
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             },
             span,
         ));

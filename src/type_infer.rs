@@ -2232,12 +2232,11 @@ pub struct InferState {
     /// Generated when overloaded builtins are called with type variables.
     /// During generalization, constraints on generalized variables are included in the TypeValue.Scheme.
     pub constraints: Vec<Arc<crate::value::Value>>,
-    /// Scope chain: references to ScopeFrames from AST nodes.
-    /// Pushed when entering a scope (Dict/Fn/MatchArm), popped when leaving.
-    /// These ARE the resolver's frames, not a parallel structure.
-    /// Type schemes are read via scope_chain[len - 1 - depth].get_type_scheme(slot).
-    /// Type schemes are written via scope_chain.last().unwrap().set_type_scheme(slot, scheme).
-    pub scope_chain: Vec<std::sync::Arc<crate::ast::ScopeFrame>>,
+    /// Current scope: reference to the innermost SymbolTable from the AST node being type-checked.
+    /// Set when entering a scope (Dict/Fn/MatchArm), restored to parent when leaving.
+    /// Type schemes are read via current_scope.lookup(depth, slot).
+    /// Type schemes are written via current_scope.set_type_scheme(slot, scheme).
+    pub current_scope: Option<std::sync::Arc<crate::symbol_table::SymbolTable>>,
     /// Type class declarations.
     /// Moved from Env to InferState. Populated during type-stage processing.
     pub classes: Vec<crate::type_class::ClassDecl>,
@@ -2297,16 +2296,7 @@ pub struct InferState {
     /// here — they live in `type_stage_fns`. TypeVar entries are NOT stored here — they
     /// live in `type_stage_type_vars`. Class entries are NOT stored here — they are looked
     /// up via `state.env`.
-    pub type_stage_scope: Vec<std::collections::HashMap<String, TypeValue>>,
-    /// Parameterized type constructor thunks from type-stage evaluation.
-    /// Maps type name → function thunk for constructors like Seq, Result that take type
-    /// arguments and return a TypeNode when called.
-    pub type_stage_fns: std::collections::HashMap<String, std::sync::Arc<crate::value::Thunk>>,
-    /// TypeVar kind annotations from type-stage evaluation.
-    /// Maps type name → kind string (e.g., "Operator", "Label", "Type") for names that
-    /// were declared as type-variable markers in the type-stage section (e.g., `Operator`,
-    /// `Label` in builtin_core.llt).
-    pub type_stage_type_vars: std::collections::HashMap<String, String>,
+    pub type_stage_data: TypeStageData,
     /// Type constructor environment.
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
@@ -2368,7 +2358,7 @@ pub struct InferState {
     /// Current accumulated scope at type-check time. Populated by the pipeline before
     /// type-checking each document. Used by eval_expr to evaluate expressions (e.g.,
     /// constructor patterns in coverage checking) in the same scope they appear in.
-    pub eval_scope: Option<crate::value::Scope>,
+    pub eval_scope: Option<std::sync::Arc<crate::symbol_table::SymbolTable>>,
     /// Temporary: renaming from the most recent scheme instantiation at a call site.
     /// Maps original type parameter names to fresh TypeVar names (e.g. "a" → "a⦀42").
     /// Set during VarRef scheme instantiation, consumed by the CallArg handler to build
@@ -2380,7 +2370,7 @@ impl InferState {
     pub fn new() -> Self {
         Self {
             constraints: Vec::new(),
-            scope_chain: Vec::new(),
+            current_scope: None,
             classes: Vec::new(),
             instances: std::collections::HashMap::new(),
             failed_bindings: HashMap::new(),
@@ -2391,9 +2381,7 @@ impl InferState {
             deferred_equalities: Vec::new(),
             type_var_source_names: HashMap::new(),
             eval_ctx: None,
-            type_stage_scope: Vec::new(),
-            type_stage_fns: std::collections::HashMap::new(),
-            type_stage_type_vars: std::collections::HashMap::new(),
+            type_stage_data: TypeStageData::new(),
             tycon_env: std::collections::HashMap::new(),
             type_name_to_id: std::collections::HashMap::new(),
             type_display_names: std::collections::HashMap::new(),

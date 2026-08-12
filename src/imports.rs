@@ -154,8 +154,8 @@ async fn build_builtin_core_envs_inner() -> Result<
     }
 
     Ok((
-        state.tycon_env,
-        state.type_stage_data,
-        state.type_name_to_id,
+        state.infer_state.tycon_env,
+        state.infer_state.type_stage_data,
+        state.infer_state.type_name_to_id,
     ))
 }

@@ -142,7 +142,7 @@ fn expand_node(node: &mut Arc<SurfaceNode>) {
                 Some(DeclAction::EmptyDict) => {
                     node_mut.expr = SurfaceExpression::Dict {
                         entries: vec![],
-                        scope_frame: std::sync::OnceLock::new(),
+                        scope: std::sync::OnceLock::new(),
                     };
                 }
                 Some(DeclAction::InstanceFanOut(arms, span)) => {
@@ -187,15 +187,12 @@ fn expand_node(node: &mut Arc<SurfaceNode>) {
         // and spread-dict (...expr) rewriting to nested builtin-dict-merge calls.
         SurfaceExpression::Dict { .. } => {
             // Take entries out of the Dict to avoid borrow conflicts.
-            let mut entries = if let SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } = &mut node_mut.expr
-            {
-                std::mem::take(entries)
-            } else {
-                unreachable!()
-            };
+            let mut entries =
+                if let SurfaceExpression::Dict { entries, scope: _ } = &mut node_mut.expr {
+                    std::mem::take(entries)
+                } else {
+                    unreachable!()
+                };
 
             // Check for spread markers — spread-dict takes priority (matches
             // the old lowerer's early-return semantics).
@@ -210,7 +207,7 @@ fn expand_node(node: &mut Arc<SurfaceNode>) {
                 expand_dict_entries(&mut entries, &node_mut.span);
                 node_mut.expr = SurfaceExpression::Dict {
                     entries,
-                    scope_frame: std::sync::OnceLock::new(),
+                    scope: std::sync::OnceLock::new(),
                 };
             }
         }
@@ -507,7 +504,7 @@ fn expand_type_alias(
             let payload_dict = Arc::new(SurfaceNode::new(
                 SurfaceExpression::Dict {
                     entries: payload_entries,
-                    scope_frame: std::sync::OnceLock::new(),
+                    scope: std::sync::OnceLock::new(),
                 },
                 span.clone(),
             ));
@@ -529,7 +526,7 @@ fn expand_type_alias(
                     body: variant_body,
                     desugared: false,
                     resolved_return_annotation: crate::ast::TypeAnnotation::new(),
-                    scope_frame: std::sync::OnceLock::new(),
+                    scope: std::sync::OnceLock::new(),
                 },
                 span.clone(),
             ));
@@ -572,7 +569,7 @@ fn expand_type_alias(
     } else {
         SurfaceExpression::Dict {
             entries: surface_entries,
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         }
     };
 
@@ -632,7 +629,7 @@ fn wrap_in_make_annotated(
     let ann_dict = Arc::new(SurfaceNode::new(
         SurfaceExpression::Dict {
             entries: dict_entries,
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         },
         span.clone(),
     ));
@@ -714,11 +711,7 @@ fn extract_repr_and_is_from_body(
     }
 
     // Dict body form.
-    let SurfaceExpression::Dict {
-        entries,
-        scope_frame: _,
-    } = body
-    else {
+    let SurfaceExpression::Dict { entries, scope: _ } = body else {
         return (None, None);
     };
     extract_repr_and_is_from_entries(entries)
@@ -865,10 +858,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
     }
 
     match body {
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, scope: _ } => {
             let has_named_uppercase_key = entries.iter().any(|e| {
                 if let Some(k) = &e.node.key {
                     matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if is_ctor(name))
@@ -1016,7 +1006,7 @@ fn build_field_annotations_surface_entry(
             let inner_dict = Arc::new(SurfaceNode::new(
                 SurfaceExpression::Dict {
                     entries: vec![role_entry],
-                    scope_frame: std::sync::OnceLock::new(),
+                    scope: std::sync::OnceLock::new(),
                 },
                 span.clone(),
             ));
@@ -1045,7 +1035,7 @@ fn build_field_annotations_surface_entry(
     let field_ann_dict = Arc::new(SurfaceNode::new(
         SurfaceExpression::Dict {
             entries: field_entries,
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         },
         span.clone(),
     ));
@@ -1157,7 +1147,7 @@ fn expand_instance_to_dict(
     }
     SurfaceExpression::Dict {
         entries,
-        scope_frame: std::sync::OnceLock::new(),
+        scope: std::sync::OnceLock::new(),
     }
 }
 
@@ -1255,7 +1245,7 @@ fn expand_class_in_dict(entry: &Spanned<SurfaceEntry>, out: &mut Vec<Spanned<Sur
                 value: Arc::new(SurfaceNode::new(
                     SurfaceExpression::Dict {
                         entries: vec![],
-                        scope_frame: std::sync::OnceLock::new(),
+                        scope: std::sync::OnceLock::new(),
                     },
                     entry.node.value.span.clone(),
                 )),
@@ -1318,7 +1308,7 @@ fn expand_spread_dict(entries: &[Spanned<SurfaceEntry>], span: &Span) -> Surface
         Arc::new(SurfaceNode::new(
             SurfaceExpression::Dict {
                 entries: seg_entries,
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             },
             span.clone(),
         ))
@@ -1406,10 +1396,7 @@ mod tests {
     /// (parser-produced dict keys) and VarRef keys (expand-produced constructor keys).
     fn dict_entry_value<'a>(expr: &'a SurfaceExpression, key_name: &str) -> &'a SurfaceExpression {
         let entries = match expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => entries,
+            SurfaceExpression::Dict { entries, scope: _ } => entries,
             other => panic!("expected Dict, got {:?}", std::mem::discriminant(other)),
         };
         for entry in entries {
@@ -1430,10 +1417,7 @@ mod tests {
     /// Return the entries vec from a Dict expression.
     fn dict_entries(expr: &SurfaceExpression) -> &Vec<Spanned<SurfaceEntry>> {
         match expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => entries,
+            SurfaceExpression::Dict { entries, scope: _ } => entries,
             other => panic!("expected Dict, got {:?}", std::mem::discriminant(other)),
         }
     }

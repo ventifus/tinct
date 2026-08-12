@@ -183,11 +183,11 @@ pub(crate) fn builtin_task(
                     }
                     let thunk = eval_core_expr(
                         &clause.body,
-                        &crate::value::EvalFrame::for_function_call(
+                        &Arc::new(crate::symbol_table::SymbolTable::new_call_frame(
                             Arc::clone(&definition_scope),
-                            vec![],
-                            crate::value::empty_scope(),
-                        ),
+                            None,
+                            None,
+                        )),
                         &ctx_clone,
                     )
                     .await?;
@@ -199,8 +199,7 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
-                        caller_env_id: None,
-                        caller_evidence: crate::value::empty_scope(),
+                        scope: crate::symbol_table::SymbolTable::empty(),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;

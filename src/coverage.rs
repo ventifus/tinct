@@ -413,10 +413,7 @@ async fn ast_pattern_to_coverage_inner(
             "cannot analyze pattern: float literal `{n}` has infinite domain"
         )),
 
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, scope: _ } => {
             let keyed: Vec<_> = entries
                 .iter()
                 .filter_map(|e| {
@@ -2011,7 +2008,7 @@ mod tests {
         );
         let node = mknode(SurfaceExpression::Dict {
             entries: vec![entry],
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         });
         let result = ast_pattern_to_coverage(&node, &state).await.unwrap();
         assert_eq!(

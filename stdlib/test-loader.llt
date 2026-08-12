@@ -298,7 +298,7 @@
   # needed. Attempting to call builtin-tc-update-type-stage-env with type-stage letrec exports
   # causes circular-dependency errors because materializing letrec thunks in the same group
   # creates mutual dependencies that the evaluator detects as cycles (T-1646).
-  uses-scope: [fn [let module-names@Dict tc@TypeContext env@Scope err]
+  uses-scope: [fn [let module-names@Dict tc@TypeContext env@SymbolTable err]
     [reduce
       [fn [let acc@[impls: Dict  stderr: Dict] name]
         # Intermediate dict: path and result (type-checking side effect).
@@ -338,7 +338,7 @@
   # core-tc0 is kept so the same object is passed to uses-scope AND returned — both arms
   # of the match return the original TypeContext.
   core-tc0: [builtin-make-type-ctx]
-  core-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] core-tc0 [builtin-empty-scope] %stderr].impls] 0]
+  core-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] core-tc0 [builtin-empty-symbol-table] %stderr].impls] 0]
     0: core-tc0
     1: core-tc0]
 
@@ -414,10 +414,10 @@
 
   # ── Stage: eval-program ───────────────────────────────────────────────────────
   # Two-pass eval on state.parsed: type-stage documents first, then runtime.
-  # Uses Scope protocol: builtin-resolve takes Scope, builtin-eval takes
-  # (lowered, Scope) and returns a Scope. builtin-scope-exports extracts the Dict.
+  # Uses SymbolTable protocol: builtin-resolve takes SymbolTable, builtin-eval takes
+  # (lowered, SymbolTable) and returns {table, diagnostics}. builtin-symbol-table-get extracts entries.
   # Adds: env, last-result.
-  eval-program: [fn [let seed@Scope tc@TypeContext state@[parsed: [documents: Dict]  stderr: Dict  diagnostics: Dict]]
+  eval-program: [fn [let seed@SymbolTable tc@TypeContext state@[parsed: [documents: Dict]  stderr: Dict  diagnostics: Dict]]
     # Capture Boolean from the outer closure before any inner dict could shadow it.
     # bool-type ≠ Boolean, so this is not a self-reference.
     [bool-type: Boolean]
@@ -427,15 +427,15 @@
     # builtin-tc-update-type-stage-env (which would create circular-dependency errors) —
     # uses-scope passes only the type-stage module's own exports to
     # builtin-tc-update-type-stage-env, never the full env. See uses-scope.
-    [env: [builtin-scope-extend seed [Boolean: bool-type  True: bool-type.True  False: bool-type.False]]]
-    [step: [fn [let acc@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] doc]
+    [env: [builtin-symbol-table-extend seed [Boolean: bool-type  True: bool-type.True  False: bool-type.False]]]
+    [step: [fn [let acc@[env: SymbolTable  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] doc]
       # Short-circuit: if a previous doc in this pass already has errors, skip remaining docs.
       [match [builtin-eq-int [count-errors acc.diagnostics] 0]
         0: acc
         1: [call [fn [let]
           [hdr:   [builtin-doc-meta doc]]
           [mods:  [@[impls: Dict  stderr: Dict] [uses-scope [get-or [] "uses" hdr] acc.tc acc.env acc.stderr]]]
-          [scope: [builtin-scope-extend acc.env mods.impls]]
+          [scope: [builtin-symbol-table-extend acc.env mods.impls]]
           [res:   [builtin-resolve doc scope]]
           [err:   [emit-diagnostics res.diagnostics mods.stderr]]
           [match [builtin-eq-int [count-errors res.diagnostics] 0]
@@ -444,24 +444,17 @@
             1: [call [fn [let]
                  [checked: [builtin-typecheck-doc res.doc acc.tc scope]]
                  [lowered: [builtin-lower checked.doc]]
-                 [evaled:  [builtin-try [call [fn [] [builtin-eval lowered scope]]]]]
-                 [match evaled
-                   [case [let eval-scope] [ok: eval-scope]
-                     [call [fn [let]
-                       [all-exports: [builtin-scope-exports eval-scope]]
-                       [exports: [builtin-dict-get "%" all-exports]]
-                       [name: [get-or "" "name" hdr]]
-                       [env-base: [builtin-scope-extend eval-scope [%: exports]]]
-                       [env: [match [builtin-eq-string name ""]
-                                0: [builtin-scope-extend env-base [$name: exports]]
-                                1: env-base]]
-                       [env: .env  tc: acc.tc  last-result: exports
-                        stderr: err  diagnostics: acc.diagnostics]]]]
-                   # Catch-all: evaled is an error Diagnostic. Accumulate without formatting
-                   # (format-diagnostic requires narrowed Diagnostic type; evaled is a union).
-                   ...: [call [fn [let]
-                     [env: acc.env  tc: acc.tc  last-result: acc.last-result
-                      stderr: err  diagnostics: [append-diags acc.diagnostics [$evaled]]]]]]]]]]]]]]
+                 [eval-result: [builtin-eval lowered scope]]
+                 [eval-scope: eval-result.table]
+                 [call [fn [let]
+                   [exports: [builtin-symbol-table-get eval-scope "%"]]
+                   [name: [get-or "" "name" hdr]]
+                   [env-base: [builtin-symbol-table-extend eval-scope [%: exports]]]
+                   [env: [match [builtin-eq-string name ""]
+                            0: [builtin-symbol-table-extend env-base [$name: exports]]
+                            1: env-base]]
+                   [env: .env  tc: acc.tc  last-result: exports
+                    stderr: err  diagnostics: [append-diags acc.diagnostics eval-result.diagnostics]]]]]]]]]]]
     # Split documents by stage: check hdr.stage string.
     # Stage headers (--- stage: "type") are string literals — no env needed.
     # Using env here creates a circular dependency: docs forces env from the same
@@ -480,7 +473,7 @@
       [@[ts: Dict  rt: Dict] [ts: []  rt: []]]
       state.parsed.documents]]
     # Pass 1: evaluate type-stage documents. Accumulator threads env dict.
-    [ts: [reduce step [@[env: Scope  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []]] docs.ts]]
+    [ts: [reduce step [@[env: SymbolTable  tc: TypeContext  last-result: Dict  stderr: Dict  diagnostics: Dict] [env: .env  tc: .tc  last-result: []  stderr: state.stderr  diagnostics: []]] docs.ts]]
     # Force ts once via ts-tc before rt's initial acc accesses ts multiple times.
     # Without this, rt's initial acc forces ts.env/ts.tc/ts.stderr/ts.diagnostics
     # concurrently — a diamond-DAG that triggers false InProgress cycle detection (T-1646).
@@ -506,23 +499,11 @@
   # but that % must not appear in the prelude-env used as the test scope — it would
   # point to the last prelude doc's result, causing abandoned-input warnings.
   # Since tinct has no dict-delete builtin, we rebuild env using a key-scan loop.
-  export: [fn [let state@[last-result: Dict  env: Scope]]
+  export: [fn [let state@[last-result: Dict  env: SymbolTable]]
     [exported: state.last-result]
-    # Rebuild env excluding % to prevent it leaking into test document scopes.
-    # state.env is a Scope — extract its Dict representation first.
-    [env-dict: [builtin-scope-exports state.env]]
-    [keys: [builtin-keys env-dict]]
-    [n:    [builtin-dict-length keys]]
-    [clean-env: [call [fn []
-      [loop: [fn [let i b]
-        [match [builtin-int-gte i n]
-          0: [k: [builtin-dict-get i keys]]
-             [match [builtin-eq-string k "%"]
-               1: [loop [builtin-int-add i 1] b]
-               0: [loop [builtin-int-add i 1] [builtin-builder-set k [builtin-dict-get k env-dict] b]]]
-          1: [builtin-builder-finish b]]]]
-      [loop 0 [builtin-make-builder]]]]]
-    [merge state [full-env: [builtin-scope-extend [builtin-empty-scope] [merge clean-env exported]]]]]
+    # SymbolTable uses parent chains — % from previous documents is naturally
+    # shadowed by child frames during evaluation. No filtering needed.
+    [merge state [full-env: [builtin-symbol-table-extend state.env exported]]]]
 
   # ── Stage: set-tc-ready ───────────────────────────────────────────────────────
   # Wire tc-ready without re-typechecking. eval-program already called
@@ -602,10 +583,10 @@
   # at the pipeline level when diagnostics has errors.
   # builtin-eval errors ARE caught via a nested builtin-try per-document.
   # Adds: env, last-result, diagnostics, doc-results, documents.
-  eval-docs: [fn [let base-env@Scope state@[stderr: Dict  parsed: [documents: Dict]]]
-    [test-state: [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] [reduce
-      [fn [let s@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] doc]
-        [env:     [@Scope       [builtin-dict-get "env"         s]]]
+  eval-docs: [fn [let base-env@SymbolTable state@[stderr: Dict  parsed: [documents: Dict]]]
+    [test-state: [@[env: SymbolTable  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] [reduce
+      [fn [let s@[env: SymbolTable  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict] doc]
+        [env:     [@SymbolTable       [builtin-dict-get "env"         s]]]
         [prev:    [@Dict        [builtin-dict-get "last-result" s]]]
         [tc:      [@TypeContext [builtin-dict-get "tc"          s]]]
         [err:     [@Dict        [builtin-dict-get "stderr"      s]]]
@@ -623,8 +604,8 @@
             # the previous document's result as %, mirroring how prelude.llt threads % through
             # a multi-document pipeline.
             [scope: [match [builtin-eq-int idx 0]
-                       0: [builtin-scope-extend env [merge mods.impls [%: prev]]]
-                       1: [builtin-scope-extend env mods.impls]]]
+                       0: [builtin-symbol-table-extend env [merge mods.impls [%: prev]]]
+                       1: [builtin-symbol-table-extend env mods.impls]]]
             [r:     [builtin-resolve doc scope]]
             [err:   [emit-diagnostics r.diagnostics mods.stderr]]
             [match [builtin-eq-int [count-errors r.diagnostics] 0]
@@ -636,47 +617,35 @@
               1: [call [fn [let]
                    [checked: [builtin-typecheck-doc r.doc tc scope].doc]
                    [lowered: [builtin-lower checked]]
-                   # Wrap builtin-eval in builtin-try to capture eval errors as diagnostics.
-                   [evaled:  [builtin-try [call [fn [] [builtin-eval lowered scope]]]]]
-                   [match evaled
-                     [case [let eval-scope] [ok: eval-scope]
-                       [call [fn [let]
-                          [all-exports: [builtin-scope-exports eval-scope]]
-                          [exports: [builtin-dict-get "%" all-exports]]
-                          # Validate --- caps: declarations.
-                          [caps-list: [get-or [] "caps" hdr]]
-                          [caps-validated: [reduce
-                            [fn [let result cap-name]
-                              [match [builtin-cap-env-has? cap-name scope]
-                                0: [builtin-raise [make-diag [builtin-string-concat "missing required capability: " cap-name]]]
-                                1: result]]
-                            exports
-                            [builtin-keys caps-list]]]
-                          # Validate --- expects: type annotation.
-                          [expects: [get-or [] "expects" hdr]]
-                          [result: [match [builtin-eq-int [builtin-dict-length expects] 0]
-                            0: [builtin-check-type expects caps-validated]
-                            1: caps-validated]]
-                          # Update next state via merge so the return inherits s's annotated type.
-                          # The type checker accepts [] initial values for diagnostics/doc-results
-                          # through the s@[...] parameter annotation rather than re-verifying literals.
-                          # result may be non-Dict (e.g. %.x selects a field value). Only merge
-                          # result's entries into scope when it IS a Dict; always inject %: result.
-                          [scope-ext: [match result Dict: result  ...: []]]
-                          [env:         [builtin-scope-extend eval-scope [builtin-dict-merge scope-ext [%: result]]]
-                           last-result:  result
-                           tc:          .tc
-                           stderr:      err
-                           diagnostics: diags
-                           doc-index:   [builtin-int-add idx 1]
-                           doc-results: [builtin-dict-merge history [$idx: result]]]
-                           ]]]
-                     # Catch-all: evaled is an error Diagnostic. Accumulate without formatting.
-                     ...: [call [fn [let]
-                       [env: .env  last-result: prev  tc: .tc
-                        stderr: err  diagnostics: [append-diags diags [$evaled]]
-                        doc-index: idx  doc-results: history]]]]]]]]]]]
-      [@[env: Scope  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict]
+                   # builtin-eval returns {table, diagnostics} — no longer raises.
+                   [eval-result: [builtin-eval lowered scope]]
+                   [eval-scope: eval-result.table]
+                   [call [fn [let]
+                      [exports: [builtin-symbol-table-get eval-scope "%"]]
+                      # Validate --- caps: declarations.
+                      [caps-list: [get-or [] "caps" hdr]]
+                      [caps-validated: [reduce
+                        [fn [let result cap-name]
+                          [match [builtin-cap-env-has? cap-name scope]
+                            0: [builtin-raise [make-diag [builtin-string-concat "missing required capability: " cap-name]]]
+                            1: result]]
+                        exports
+                        [builtin-keys caps-list]]]
+                      # Validate --- expects: type annotation.
+                      [expects: [get-or [] "expects" hdr]]
+                      [result: [match [builtin-eq-int [builtin-dict-length expects] 0]
+                        0: [builtin-check-type expects caps-validated]
+                        1: caps-validated]]
+                      [scope-ext: [match result Dict: result  ...: []]]
+                      [env:         [builtin-symbol-table-extend eval-scope [builtin-dict-merge scope-ext [%: result]]]
+                       last-result:  result
+                       tc:          .tc
+                       stderr:      err
+                       diagnostics: [append-diags diags eval-result.diagnostics]
+                       doc-index:   [builtin-int-add idx 1]
+                       doc-results: [builtin-dict-merge history [$idx: result]]]
+                       ]]]]]]]]]]
+      [@[env: SymbolTable  last-result: Dict  tc: TypeContext  stderr: Dict  diagnostics: Dict  doc-index: Integer  doc-results: Dict]
        [env:         base-env
         last-result: []
         tc:         [get-or core-tc "tc" state]
@@ -703,7 +672,7 @@
   # match either kind. Callers distinguish severity by reading d.level on each entry.
   # Also runs the pipeline stage lint (builtin-lint-pipeline-docs) to emit
   # abandoned-output warnings for pipeline keys not consumed by the next stage.
-  typecheck-docs: [fn [let tc@TypeContext base-env@Scope state@[env: Scope  documents: Dict  stderr: Dict  last-result: Dict]]
+  typecheck-docs: [fn [let tc@TypeContext base-env@SymbolTable state@[env: SymbolTable  documents: Dict  stderr: Dict  last-result: Dict]]
     # doc-results from eval-docs: dict of {doc-index → result}. Used to inject % per-document
     # so abandoned-input errors only fire when the CORRECT document ignores its pipeline %.
     [doc-results: [get-or [] "doc-results" state]]
@@ -716,7 +685,7 @@
              # Per-document scope injection: inject %: prev-result for non-first
              # documents so the resolver sees % in scope.
              [resolve-env: [match [builtin-eq-int doc-index 0]
-               0: [builtin-scope-extend state.env [%: [builtin-dict-get [builtin-int-sub doc-index 1] doc-results]]]
+               0: [builtin-symbol-table-extend state.env [%: [builtin-dict-get [builtin-int-sub doc-index 1] doc-results]]]
                1: state.env]]
              [res: [builtin-resolve doc resolve-env]]
              [typed: [builtin-typecheck-doc res.doc tc resolve-env]]
@@ -774,7 +743,7 @@
   # cli/out/llt.llt runs as the output formatter with % = last-result.
   # The formatter writes llt-repr(%) to a StringWriter (prelude's functional
   # string capture). Output = formatter's StringWriter.cells — same as the CLI.
-  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [let source path prelude-env@Scope prelude-tc stderr-h]
+  run-test-pipeline: [fn@[diagnostics: Dict  output: String  tc-diagnostics: Dict  stderr: Dict] [let source path prelude-env@SymbolTable prelude-tc stderr-h]
     [out: [make-string-handle]]
     # Parse first so pragma headers are available before the env is constructed.
     # .path references the function parameter from the parent scope, not the letrec
@@ -794,7 +763,7 @@
     # Create an emit channel for the test program. The test program sends emitted
     # values here via [emit v]; the formatter drains it via recv-all.
     [emit-ch: [builtin-channel]]
-    [scope: [builtin-scope-extend env
+    [scope: [builtin-symbol-table-extend env
                   [%cwd:          .%cwd
                    %libdir:       .%libdir
                    %stdout:       out
@@ -815,7 +784,7 @@
       0: [merge test-result [output: ""  tc-diagnostics: []]]
       1: [call [fn [let]
            [sw: [StringWriter.Writer cells: ""]]
-           [fmt-scope: [builtin-scope-extend scope [%: test-result.last-result  %stdout: sw  %emit-channel: emit-ch]]]
+           [fmt-scope: [builtin-symbol-table-extend scope [%: test-result.last-result  %stdout: sw  %emit-channel: emit-ch]]]
            [fmt-result: [[path: "cli/out/llt.llt"  diagnostics: []  stderr: test-result.stderr  tc: prelude-tc]
              | [if-ok load-bytes %libdir]
              | [if-ok log-step "  formatting"]
@@ -874,7 +843,7 @@
 
   # run-test-file: execute a single file ProgramItem. Takes stderr-h from run-test.
   # Returns result dict including stderr: err so the cascade continues.
-  run-test-file: [fn [let p prelude-env@Scope prelude-tc stderr-h]
+  run-test-file: [fn [let p prelude-env@SymbolTable prelude-tc stderr-h]
     [bytes:          [read-file p.handle [builtin-bytes]]]
     [content:        [builtin-bytes-str bytes]]
     [source:         [extract-source content]]
@@ -959,7 +928,7 @@
   # run-test: run one ProgramItem as a corpus test.
   # Takes stderr-h so the "test: path" log write threads into the data-flow cascade.
   # Returns result dict including stderr: updated-handle so the outer reduce can chain it.
-  run-test: [fn [let item prelude-env@Scope prelude-tc stderr-h]
+  run-test: [fn [let item prelude-env@SymbolTable prelude-tc stderr-h]
     [p:         [match item
                   ProgramItem.File: item.path
                   ...:              "<expr>"]]
@@ -1026,7 +995,7 @@
     | [if-ok parse-source]
     | [if-ok log-step "prelude: evaluating"]
     | [if-ok eval-program
-        [builtin-scope-extend [builtin-empty-scope] [%prelude: []]]
+        [builtin-symbol-table-extend [builtin-empty-symbol-table] [%prelude: []]]
         core-tc]
     | [if-ok export]
     | [if-ok set-tc-ready core-tc]

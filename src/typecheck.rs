@@ -191,45 +191,10 @@ fn make_typevalue_record(
     })
 }
 
-/// Configure InferState fields used by both bootstrap (pipeline.rs) and builtin (builtins_meta.rs).
-///
-/// Sets:
-/// - type_stage_scope, type_stage_fns, type_stage_type_vars
-/// - tycon_env, type_name_to_id, type_display_names
-/// - ctx.type_name_to_id, ctx.type_display_names, ctx.tycon_env
-///
-/// Mutates `state` in place — the bootstrap path accumulates state across documents.
-pub(crate) fn build_infer_state(
-    state: &mut InferState,
-    type_stage_scope: Vec<std::collections::HashMap<String, crate::type_infer::TypeValue>>,
-    type_stage_fns: std::collections::HashMap<String, Arc<crate::value::Thunk>>,
-    type_stage_type_vars: std::collections::HashMap<String, String>,
-    tycon_env: std::collections::HashMap<u64, Arc<crate::type_def::TyConDef>>,
-    type_name_to_id: std::collections::HashMap<String, u64>,
-    type_display_names: std::collections::HashMap<u64, String>,
-) {
-    // Set type-stage data
-    state.type_stage_scope = type_stage_scope;
-    state.type_stage_fns = type_stage_fns;
-    state.type_stage_type_vars = type_stage_type_vars;
-
-    // Set type constructor environment and name mappings
-    state.tycon_env = tycon_env;
-    state.type_name_to_id = type_name_to_id.clone();
-    state.type_display_names = type_display_names.clone();
-
-    // Sync into the embedded InferenceContext
-    state.ctx.type_name_to_id = type_name_to_id;
-    state.ctx.type_display_names = type_display_names;
-    state.ctx.tycon_env.clear();
-    for (id, def) in &state.tycon_env {
-        state.ctx.tycon_env.insert(*id, Arc::clone(def));
-    }
-}
-
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     state: &mut InferState,
+    _scope: &Arc<crate::symbol_table::SymbolTable>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> (Arc<Value>, Vec<Diagnostic>) {
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
@@ -394,10 +359,7 @@ pub(crate) fn infer_class_decl_from_surface(
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
     for fd_node in *determines {
         match &fd_node.expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } if entries.len() == 2 => {
+            SurfaceExpression::Dict { entries, scope: _ } if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
                 let determining_indices =
                     extract_param_indices(determining, params, fd_node.span.clone())?;
@@ -671,7 +633,10 @@ pub(crate) async fn infer_instance_decl_from_surface(
         };
         let pushed_frame = !param_type_frame.is_empty();
         if pushed_frame {
-            state.type_stage_scope.insert(0, param_type_frame.clone());
+            state
+                .type_stage_data
+                .scope
+                .insert(0, param_type_frame.clone());
         }
 
         for method in *methods {
@@ -681,7 +646,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                     SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                     _ => {
                         if pushed_frame {
-                            state.type_stage_scope.remove(0);
+                            state.type_stage_data.scope.remove(0);
                         }
                         return Err(vec![Diagnostic::error(
                             "type-error",
@@ -692,7 +657,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                 },
                 None => {
                     if pushed_frame {
-                        state.type_stage_scope.remove(0);
+                        state.type_stage_data.scope.remove(0);
                     }
                     return Err(vec![Diagnostic::error(
                         "type-error",
@@ -771,7 +736,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             state.expected_fn_params = None;
             if !method_errors.is_empty() {
                 if pushed_frame {
-                    state.type_stage_scope.remove(0);
+                    state.type_stage_data.scope.remove(0);
                 }
                 return Err(method_errors);
             }
@@ -921,13 +886,13 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
             let _scheme = generalize_tv(state.ctx.current_level, &method_impl_type, &state.ctx);
 
-            // Type scheme write removed — scope_chain on InferState handles type scheme storage.
+            // Type scheme write removed — current_scope (SymbolTable) on InferState handles type scheme storage.
             let _ = binding_name;
         }
 
         // Pop the type param scope frame pushed before method body checking.
         if pushed_frame {
-            state.type_stage_scope.remove(0);
+            state.type_stage_data.scope.remove(0);
         }
 
         let det_positions: Vec<usize> = {

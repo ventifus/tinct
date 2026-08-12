@@ -83,10 +83,10 @@
 #   Type:    builtin-make-type-ctx, builtin-fork-type-ctx,
 #            builtin-tc-update-type-stage-env
 #   Meta:    builtin-module, builtin-eval
-# Note: builtin-resolve now takes a Scope value (not scope frames or name-set).
-#       builtin-eval now takes (lowered CoreDocument, Scope) and returns
-#       a Scope (raises on error). Use builtin-scope-exports to extract the Dict.
-#       builtin-scope-extend takes a Scope + Dict and returns a new Scope.
+# Note: builtin-resolve now takes a SymbolTable value (not scope frames or name-set).
+#       builtin-eval now takes (lowered CoreDocument, SymbolTable) and returns
+#       {table: SymbolTable, diagnostics: Diagnostics}. Use builtin-symbol-table-get to extract entries.
+#       builtin-symbol-table-extend takes a SymbolTable + Dict and returns a new SymbolTable.
 #       builtin-tc-update-type-stage-env wires the type-stage env into the TypeContext.
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
 #   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
@@ -251,7 +251,7 @@
   # DirCap, Boolean, etc. propagate only through this explicit parameter.
   #
   # seed-env: the accumulated env dict to use for declaration file resolve/doc-meta.
-  uses-scope: [fn [let module-names@Dict seed-tc@TypeContext seed-env@Scope]
+  uses-scope: [fn [let module-names@Dict seed-tc@TypeContext seed-env@SymbolTable]
     [reduce
       [fn [let acc name]
         [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
@@ -285,7 +285,7 @@
   # The builtin-dict-length data dependency forces uses-scope before returning
   # _fundamental-base-tc, ensuring core types are in place before any
   # downstream module type-checks run.
-  # Uses empty env as seed (no scope arena needed — Scope protocol).
+  # Uses empty env as seed (no scope arena needed — SymbolTable protocol).
   #
   # Note: repr: TypeValue declarations (third document of builtin_core.llt) are
   # processed at eval time by CoreExpr::ReprDecl, not at type-check time. The
@@ -293,7 +293,7 @@
   # sufficient for annotation resolution. The repr: types serve the runtime
   # type_val mechanism only.
   _fundamental-base-tc: [builtin-make-type-ctx]
-  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc [builtin-empty-scope]]] 0]
+  fundamental-tc: [match [builtin-int-gte [builtin-dict-length [uses-scope ["core"] _fundamental-base-tc [builtin-empty-symbol-table]]] 0]
     0: _fundamental-base-tc
     ...: _fundamental-base-tc]
 
@@ -358,11 +358,11 @@
     # Dot-access desugars to builtin-dict-get (a core builtin always in scope).
     [seed-env: extras]
     # Per-document reduce fn: unified for type-stage and runtime passes.
-    # acc is {env: Scope  tc: TypeContext}.
-    [eval-doc: [fn [let acc@[env: Scope  tc: TypeContext] doc@Document]
+    # acc is {env: SymbolTable  tc: TypeContext}.
+    [eval-doc: [fn [let acc@[env: SymbolTable  tc: TypeContext] doc@Document]
       [meta:     [builtin-doc-meta doc]]
       [uses:     [uses-scope [get-or [] "uses" meta] acc.tc acc.env]]
-      [doc-env:  [builtin-scope-extend acc.env uses]]
+      [doc-env:  [builtin-symbol-table-extend acc.env uses]]
       [res:      [builtin-resolve doc doc-env]]
       [n-re:     [builtin-dict-length res.diagnostics]]
       [_re:      [builtin-dict-length [emit-diagnostics res.diagnostics]]]
@@ -372,11 +372,12 @@
                       ...: []]
                     [builtin-typecheck-doc res.doc acc.tc doc-env]]]
       [lowered: [builtin-lower typed.doc]]
-      [eval-scope: [builtin-eval lowered doc-env]]
-      [all-exports: [builtin-scope-exports eval-scope]]
-      [exports: [builtin-dict-get "%" all-exports]]
+      [eval-result: [builtin-eval lowered doc-env]]
+      [eval-scope: eval-result.table]
+      [_eval-diags: [emit-diagnostics eval-result.diagnostics]]
+      [exports: [builtin-symbol-table-get eval-scope "%"]]
       [doc-name: [get-or "" "name" meta]]
-      [next-env: [builtin-scope-extend eval-scope
+      [next-env: [builtin-symbol-table-extend eval-scope
                    [merge [%: exports]
                      [match [builtin-eq-string doc-name ""]
                        0: [make-entry doc-name exports]
@@ -393,7 +394,7 @@
       [ts: []  rt: []]
       docs]]
     # Pass 1: evaluate type-stage documents to build ts env.
-    [ts-acc: [reduce eval-doc [env: [builtin-scope-extend [builtin-empty-scope] seed-env]  tc: fundamental-tc] split.ts]]
+    [ts-acc: [reduce eval-doc [env: [builtin-symbol-table-extend [builtin-empty-symbol-table] seed-env]  tc: fundamental-tc] split.ts]]
     # Wire ts env into the TypeContext so type-stage functions are visible
     # during type-checking of runtime documents.
     [tc: [builtin-tc-update-type-stage-env ts-acc.tc ts-acc.env]]
@@ -419,7 +420,7 @@
   # mod-scope: Dict of module builtins from uses-scope.
   # prelude-env: the accumulated env dict from prelude evaluation.
   # Computed once per file in eval-file and threaded into each document.
-  eval-document-runtime: [fn [let state@Dict mod-scope@Dict doc@Document include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
+  eval-document-runtime: [fn [let state@Dict mod-scope@Dict doc@Document include-dir@DirCap prelude-env@SymbolTable tc@TypeContext emit-ch@Channel]
     [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
     # Build full env: start from prelude env, add per-doc bindings.
     # Env priority (later merges shadow earlier ones):
@@ -437,8 +438,8 @@
       [include cap path [%prelude: prelude-env]].env]]
     # Env construction: merge in priority order (each merge shadows the previous).
     # merge A B = right-biased, B wins. So later merges have higher priority.
-    [base-env:  [builtin-scope-extend prelude-env state.named]]
-    [caps-env:  [builtin-scope-extend base-env
+    [base-env:  [builtin-symbol-table-extend prelude-env state.named]]
+    [caps-env:  [builtin-symbol-table-extend base-env
                   [%:            state.percent
                    %include-dir:  include-dir
                    emit:          emit-fn
@@ -449,8 +450,8 @@
                    %stderr:       %stderr
                    %args:         %args
                    include:       ctx-include]]]
-    [full-env:  [builtin-scope-extend caps-env mod-scope]]
-    # Per-document resolve against the fully-constructed env (Scope).
+    [full-env:  [builtin-symbol-table-extend caps-env mod-scope]]
+    # Per-document resolve against the fully-constructed env (SymbolTable).
     [doc-resolved: [builtin-resolve doc full-env]]
     [n-re: [builtin-dict-length doc-resolved.diagnostics]]
     [_re:  [builtin-dict-length [emit-diagnostics doc-resolved.diagnostics]]]
@@ -475,12 +476,13 @@
                   0: [builtin-raise [make-diag "resolve error(s)"]]
                   ...: []]
                 [builtin-typecheck-doc doc-resolved.doc tc full-env]]]
-    # Lower to CoreDocument, then evaluate with Scope protocol.
+    # Lower to CoreDocument, then evaluate with SymbolTable protocol.
     [lowered: [builtin-lower typed.doc]]
-    # builtin-eval returns a Scope; raises on error. Extract exports Dict.
-    [eval-scope: [builtin-eval lowered full-env]]
-    [all-exports: [builtin-scope-exports eval-scope]]
-    [evaled: [builtin-dict-get "%" all-exports]]
+    # builtin-eval returns {table: SymbolTable, diagnostics: Diagnostics}.
+    [eval-result: [builtin-eval lowered full-env]]
+    [eval-scope: eval-result.table]
+    [_eval-diags: [emit-diagnostics eval-result.diagnostics]]
+    [evaled: [builtin-symbol-table-get eval-scope "%"]]
     # Extract document metadata for caps validation and named-section bookkeeping.
     [meta: [builtin-doc-meta doc]]
     # Validate --- caps: declarations. Each declared cap must be present in full-env.
@@ -500,12 +502,12 @@
 
   # ── Pipeline item dispatch ────────────────────────────────────────────────
 
-  eval-pipeline-item: [fn [let item@ProgramItem prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
+  eval-pipeline-item: [fn [let item@ProgramItem prev include-dir@DirCap prelude-env@SymbolTable tc@TypeContext emit-ch@Channel]
     [match item
       [case [let p] [ProgramItem.File p] [eval-file p prev include-dir prelude-env tc emit-ch]]
       [case [let p] [ProgramItem.Expr p] [eval-expr p.src prev include-dir prelude-env tc emit-ch]]]]
 
-  eval-file: [fn [let item prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
+  eval-file: [fn [let item prev include-dir@DirCap prelude-env@SymbolTable tc@TypeContext emit-ch@Channel]
     # %include-dir for this file's documents = the directory containing item.path,
     # derived by narrowing %cwd (the CLI-provided working directory cap) to the
     # parent directory component of the path. No ambient filesystem access.
@@ -535,7 +537,7 @@
       [percent: prev  named: []  doc-index: 0]
       docs].percent]
 
-  eval-expr: [fn [let src@String prev include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
+  eval-expr: [fn [let src@String prev include-dir@DirCap prelude-env@SymbolTable tc@TypeContext emit-ch@Channel]
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
     # Emit parse errors as a data dependency (no >> needed).
@@ -561,7 +563,7 @@
   # %cwd, %libdir, %stdout, %stderr, %args flow via closure, not as parameters.
   # The formatter is passed separately and run last.
 
-  cli-pipeline: [fn [let programs@Dict formatter@ProgramItem initial include-dir@DirCap prelude-env@Scope tc@TypeContext emit-ch@Channel]
+  cli-pipeline: [fn [let programs@Dict formatter@ProgramItem initial include-dir@DirCap prelude-env@SymbolTable tc@TypeContext emit-ch@Channel]
     [result: [reduce
       [fn [let prev item]
         [eval-pipeline-item item prev include-dir prelude-env tc emit-ch]]

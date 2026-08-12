@@ -11,9 +11,9 @@ use crate::expand;
 ///
 /// Formatter scripts access the parsed AST of the input source as `input-ast`.
 /// This name is injected into the formatter script's evaluation environment via
-/// `resolve_surface_document_with_seed_frames`. The formatter script must bind its
-/// AST input to this name — any custom formatter script must use `input-ast` as
-/// the variable that receives the AST dict value passed by the Rust host.
+/// the SymbolTable scope. The formatter script must bind its AST input to this
+/// name — any custom formatter script must use `input-ast` as the variable that
+/// receives the AST dict value passed by the Rust host.
 ///
 /// See also: `doc/16b-rust-tinct-protocol.md §7` (Protocol Entry Points).
 pub const FORMATTER_INPUT_VAR: &str = "input-ast";
@@ -40,6 +40,7 @@ pub async fn format_source_tinct(
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
     use crate::resolve;
+    use crate::symbol_table::SymbolTable;
     use crate::value::Value;
     use std::sync::Arc;
 
@@ -57,24 +58,16 @@ pub async fn format_source_tinct(
 
     let ctx = EvalContext::new_empty();
 
-    // Resolve the formatter program, seeding the resolver with root_group so that
-    // builtins (including builtin-dict-get, used for dot-access) are in scope at their
-    // correct runtime slots. FORMATTER_INPUT_VAR ("input-ast") is the formatter's own
-    // input variable name (not the loader's % convention). It is appended after the seed
-    // frames, so Field.resolution is always populated by the resolver — the lowerer never
-    // needs to fall back to a scope_frames search.
-    let root_group_len = ctx.root_group.len() as u32;
-    let root_frame = ctx.root_group_resolver_map();
+    // Build the scope for the formatter. FORMATTER_INPUT_VAR ("input-ast") is the
+    // formatter's own input variable name (not the loader's % convention). It is
+    // inserted into the scope so Field.resolution is always populated by the resolver.
+    let scope = SymbolTable::empty();
+
+    // Resolve the formatter program against the scope.
     let mut resolve_diags: Vec<crate::error::Diagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let (_table, diags, _unresolved) =
-            resolve::resolve_surface_document_with_seed_frames(
-                &doc_spanned.node,
-                &[root_frame.clone()],
-                &[FORMATTER_INPUT_VAR.to_string()],
-                root_group_len,
-            );
-        resolve_diags.extend(diags);
+        let result = resolve::resolve_document(&doc_spanned.node, &scope);
+        resolve_diags.extend(result.diagnostics);
     }
     let resolve_errors: Vec<_> = resolve_diags
         .iter()
@@ -113,11 +106,11 @@ pub async fn format_source_tinct(
     let ast_thunk =
         surface_program_to_dict(&parse_output.program, &opts, &ctx).map_err(|e| format!("{e}"))?;
 
-    // Evaluate formatter with AST as % (pipeline input).
-    let formatter_thunk =
-        eval::eval_surface_file_with_input(&formatter_program, &ctx, Some(ast_thunk))
-            .await
-            .map_err(|e| format!("formatter eval error: {e}"))?;
+    let mut input_scope = indexmap::IndexMap::new();
+    input_scope.insert("%".to_string(), ast_thunk);
+    let formatter_thunk = eval::eval_surface_file_with_input(&formatter_program, &ctx, input_scope)
+        .await
+        .map_err(|e| format!("formatter eval error: {e}"))?;
 
     // Materialize the result — the formatter script must return a bare String.
     // If it raises (calls `raise`), the error propagates as an Diagnostic here.

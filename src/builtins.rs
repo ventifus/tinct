@@ -46,7 +46,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
-            needs_caller_env: false,
+
         }
     }};
     // 3-arg form: with strictness array (force_count=0)
@@ -57,7 +57,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
-            needs_caller_env: false,
+
         }
     }};
     // 4-arg form: with strictness array and force_count
@@ -68,7 +68,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            needs_caller_env: false,
+
         }
     }};
     // 5-arg form: with strictness array, force_count, and param names (param names ignored — BuiltinDef no longer stores them)
@@ -79,7 +79,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            needs_caller_env: false,
+
         }
     }};
     // 6-arg form: with strictness, force_count, param names, and named kwargs (param/named names ignored — BuiltinDef no longer stores them)
@@ -90,46 +90,7 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-            needs_caller_env: false,
-        }
-    }};
-    // needs_caller_env forms: marks the builtin as requiring the caller's lexical scope id.
-    // Used by builtins that either perform scope introspection (builtin-current-env) or
-    // construct child thunks that must execute in the caller's lexical scope (until, apply,
-    // eval-macro-ast, eval-types). When needs_caller_env is false, BuiltinArgs.caller_env_id
-    // is None. When true, it is Some(env_id).
-    //
-    // Usage: builtin!(@needs_caller_env, "name", func)
-    //        builtin!(@needs_caller_env, "name", func, [strictness...], force_count)
-    //        builtin!(@needs_caller_env, "name", func, [strictness...], force_count, [params...])
-    (@needs_caller_env, $name:literal, $func:expr) => {{
-        const S: &[crate::value::Strictness] = &[];
-        crate::value::BuiltinDef {
-            func: $func as crate::value::BuiltinFn,
-            name: $name,
-            pos_strictness: S,
-            force_count: 0,
-            needs_caller_env: true,
-        }
-    }};
-    (@needs_caller_env, $name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
-        const S: &[crate::value::Strictness] = &[$($strictness),*];
-        crate::value::BuiltinDef {
-            func: $func as crate::value::BuiltinFn,
-            name: $name,
-            pos_strictness: S,
-            force_count: $force_count,
-            needs_caller_env: true,
-        }
-    }};
-    (@needs_caller_env, $name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?]) => {{
-        const S: &[crate::value::Strictness] = &[$($strictness),*];
-        crate::value::BuiltinDef {
-            func: $func as crate::value::BuiltinFn,
-            name: $name,
-            pos_strictness: S,
-            force_count: $force_count,
-            needs_caller_env: true,
+
         }
     }};
 }
@@ -603,10 +564,6 @@ mod tests {
         crate::eval::EvalContext::new_empty()
     }
 
-    fn empty_evidence() -> crate::value::Scope {
-        crate::value::empty_scope()
-    }
-
     /// Drive an async builtin to completion in tests.
     async fn run(
         f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
@@ -649,16 +606,20 @@ mod tests {
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
-        let root_frame = ctx.root_group_resolver_map();
         let _table =
-            crate::resolve::resolve_surface_program(&program, &[root_frame]);
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty());
 
         {
             let mut infer_state = crate::type_infer::InferState::new();
             for doc_spanned in &program.documents {
                 let doc = doc_spanned.node.as_ref();
-                let (_result_ty, _tc_errors) =
-                    crate::typecheck::process_document(doc, &mut infer_state, &mut None).await;
+                let (_result_ty, _tc_errors) = crate::typecheck::process_document(
+                    doc,
+                    &mut infer_state,
+                    &crate::symbol_table::SymbolTable::empty(),
+                    &mut None,
+                )
+                .await;
             }
         }
 
@@ -689,7 +650,7 @@ mod tests {
         ));
         Arc::new(Thunk::core_expr(
             expr,
-            crate::value::EvalFrame::empty(),
+            crate::symbol_table::SymbolTable::empty(),
             Arc::clone(ctx),
             span,
         ))
@@ -734,8 +695,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -765,8 +726,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -796,8 +757,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -827,8 +788,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -859,8 +820,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -890,8 +851,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -921,8 +882,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -952,8 +913,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -976,8 +937,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1004,8 +965,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1024,8 +985,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1044,8 +1005,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1073,8 +1034,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1093,8 +1054,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1128,8 +1089,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1165,8 +1126,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1189,8 +1150,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1217,8 +1178,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1245,8 +1206,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1276,8 +1237,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1308,8 +1269,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1340,8 +1301,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1371,8 +1332,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1402,8 +1363,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1434,8 +1395,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1466,8 +1427,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1497,8 +1458,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1528,8 +1489,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1559,8 +1520,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1590,8 +1551,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1614,8 +1575,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1642,8 +1603,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1662,8 +1623,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1682,8 +1643,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1702,8 +1663,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1737,8 +1698,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1761,8 +1722,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1789,8 +1750,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1809,8 +1770,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1832,8 +1793,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1855,8 +1816,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1878,8 +1839,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -1901,8 +1862,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1917,8 +1878,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1933,8 +1894,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1949,8 +1910,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -1973,8 +1934,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2001,8 +1962,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2025,8 +1986,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2050,8 +2011,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2066,8 +2027,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2082,8 +2043,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2098,8 +2059,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2122,8 +2083,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2145,8 +2106,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2168,8 +2129,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2191,8 +2152,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2214,8 +2175,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2238,8 +2199,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -2261,8 +2222,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2277,8 +2238,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2293,8 +2254,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2313,8 +2274,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2333,8 +2294,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2353,8 +2314,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2381,8 +2342,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2405,8 +2366,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2430,8 +2391,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2446,8 +2407,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2465,8 +2426,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2483,8 +2444,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2500,8 +2461,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2521,8 +2482,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2542,8 +2503,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2567,8 +2528,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2589,8 +2550,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2624,8 +2585,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2643,8 +2604,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2668,8 +2629,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -2701,8 +2662,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -2728,8 +2689,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         if let Value::Dict { entries: map, .. } = result {
@@ -2750,8 +2711,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2788,9 +2749,8 @@ mod tests {
             vec![],
             None,
             call_span(),
-            0,
             Arc::clone(&ctx),
-            empty_evidence(),
+            crate::symbol_table::SymbolTable::empty(),
             crate::type_infer::make_typevalue_unknown(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
@@ -2798,8 +2758,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -2846,9 +2806,8 @@ mod tests {
             vec![],
             None,
             call_span(),
-            0,
             Arc::clone(&ctx),
-            empty_evidence(),
+            crate::symbol_table::SymbolTable::empty(),
             crate::type_infer::make_typevalue_unknown(),
         ));
         let result = mat(builtin_try(BuiltinArgs {
@@ -2856,8 +2815,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -2906,9 +2865,8 @@ mod tests {
             vec![],
             None,
             call_span(),
-            0,
             Arc::clone(&ctx),
-            empty_evidence(),
+            crate::symbol_table::SymbolTable::empty(),
             crate::type_infer::make_typevalue_unknown(),
         ));
         let err = run(builtin_try(BuiltinArgs {
@@ -2916,8 +2874,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -2947,8 +2905,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         // value.type_decl_id_of() for Int → TYPE_ID_INT, wrapped as TypeValue.Nominal(TYPE_ID_INT) — a Variant.
@@ -2984,8 +2942,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match &result {
@@ -3012,8 +2970,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match &result {
@@ -3049,8 +3007,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match &result {
@@ -3080,8 +3038,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         // thunk.type_decl_id for Function → TypeValue.Fn or TypeValue.Nominal(TYPE_ID_FUNCTION), both Variants.
@@ -3123,7 +3081,6 @@ mod tests {
                 name: "dummy",
                 pos_strictness: &[],
                 force_count: 0,
-                needs_caller_env: false,
             },
             type_val: Some(crate::type_infer::make_typevalue_nominal(
                 crate::value::TYPE_ID_BUILTIN,
@@ -3135,8 +3092,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         // builtin_type_of(Builtin) → TypeValue.Nominal(TYPE_ID_BUILTIN).
@@ -3173,8 +3130,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         // builtin_type_of(Variant) → TypeValue.Nominal(type_decl_id) — a Variant with ctor=TV_NOMINAL.
@@ -3201,8 +3158,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3218,8 +3175,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -3242,8 +3199,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -3292,8 +3249,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -3327,8 +3284,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -3401,8 +3358,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -3429,8 +3386,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3481,8 +3438,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3508,8 +3465,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3563,8 +3520,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3580,8 +3537,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3596,8 +3553,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3613,8 +3570,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3637,8 +3594,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3657,8 +3614,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -3678,8 +3635,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3701,8 +3658,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3725,8 +3682,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -3752,8 +3709,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello Rust"));
@@ -3771,8 +3728,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("bonono"));
@@ -3790,8 +3747,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3809,8 +3766,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-"));
@@ -3828,8 +3785,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("heo"));
@@ -3851,8 +3808,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(result.is_err());
@@ -3874,8 +3831,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -3890,8 +3847,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3905,8 +3862,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3920,8 +3877,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3935,8 +3892,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3950,8 +3907,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -3965,8 +3922,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3980,8 +3937,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -3995,8 +3952,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4012,8 +3969,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4040,8 +3997,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4073,8 +4030,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4105,8 +4062,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4133,8 +4090,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4155,8 +4112,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4189,8 +4146,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4226,8 +4183,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4255,8 +4212,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4288,8 +4245,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4336,8 +4293,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4384,8 +4341,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4432,8 +4389,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4480,8 +4437,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4528,8 +4485,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4576,8 +4533,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4621,8 +4578,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4660,8 +4617,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4690,8 +4647,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4752,8 +4709,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -4796,8 +4753,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -4838,8 +4795,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -4880,8 +4837,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -4922,8 +4879,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -4956,8 +4913,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -4985,8 +4942,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5020,8 +4977,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5059,8 +5016,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5098,8 +5055,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5140,8 +5097,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5182,8 +5139,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5224,8 +5181,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5247,8 +5204,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5271,8 +5228,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5298,8 +5255,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5338,8 +5295,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5380,8 +5337,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5422,8 +5379,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5464,8 +5421,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5506,8 +5463,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5548,8 +5505,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5587,8 +5544,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5623,8 +5580,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5658,8 +5615,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5697,8 +5654,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5732,8 +5689,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match r {
@@ -5771,8 +5728,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match r {
@@ -5808,8 +5765,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match r {
@@ -5847,8 +5804,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -5889,8 +5846,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5934,8 +5891,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -5974,8 +5931,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6013,8 +5970,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6055,8 +6012,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6097,8 +6054,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6140,8 +6097,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6182,8 +6139,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6224,8 +6181,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6266,8 +6223,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6293,8 +6250,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6319,8 +6276,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6350,8 +6307,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6385,8 +6342,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6427,8 +6384,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6469,8 +6426,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6511,8 +6468,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6537,8 +6494,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6563,8 +6520,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6589,8 +6546,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6615,8 +6572,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6659,8 +6616,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6699,8 +6656,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6730,8 +6687,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6770,8 +6727,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6813,8 +6770,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6856,8 +6813,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6899,8 +6856,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -6943,8 +6900,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -6967,8 +6924,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7002,8 +6959,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -7044,8 +7001,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -7127,8 +7084,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -7197,8 +7154,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -7239,8 +7196,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -7290,8 +7247,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -7321,8 +7278,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(result.is_err());
@@ -7347,8 +7304,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(result.is_err());
@@ -7370,8 +7327,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(result.is_err());
@@ -7408,8 +7365,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
 
@@ -7472,8 +7429,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
 
@@ -7556,8 +7513,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
 
@@ -7636,8 +7593,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7699,8 +7656,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
 
@@ -7781,8 +7738,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
 
@@ -7822,8 +7779,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap();
@@ -7856,8 +7813,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7888,8 +7845,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7929,8 +7886,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7959,8 +7916,8 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await
         .unwrap_err();
@@ -7999,15 +7956,14 @@ mod tests {
             );
         }
 
-        // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
-        assert!(
-            !names.iter().any(|n| n == "map"),
-            "map should not be in core env"
-        );
-        assert!(
-            !names.iter().any(|n| n == "filter"),
-            "filter should not be in core env"
-        );
+        // Core env must contain only builtins (names starting with "builtin-") and
+        // protocol-level names. Prelude functions are NOT in core env.
+        for name in &names {
+            assert!(
+                name.starts_with("builtin-") || name.starts_with("builtin_"),
+                "core env should only contain builtin names, found: {name}"
+            );
+        }
     }
 
     // ========== dict-nth/dict-key-nth/dict-kv-nth tests ==========
@@ -8059,8 +8015,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(
@@ -8105,8 +8061,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(
@@ -8153,8 +8109,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -8189,8 +8145,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         match result {
@@ -8225,8 +8181,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert_eq!(result, string_val("second"));
@@ -8259,8 +8215,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         assert!(result.is_err());
@@ -8301,8 +8257,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -8344,8 +8300,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

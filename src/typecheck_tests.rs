@@ -1065,7 +1065,7 @@ fn test_cek_compute_sccs_fn_body_sibling_reference_creates_dependency() {
         body: fn_body,
         desugared: false,
         resolved_return_annotation: crate::ast::TypeAnnotation::new(),
-        scope_frame: std::sync::OnceLock::new(),
+        scope: std::sync::OnceLock::new(),
     });
     let f_entry = sp(SurfaceEntry {
         key: None,
@@ -1374,11 +1374,12 @@ fn test_type_stage_type_vars_contains_kind_entries() {
 
     let mut state = InferState::new();
     state
-        .type_stage_type_vars
+        .type_stage_data
+        .type_vars
         .insert("a".to_string(), "Type".to_string());
 
     // The type_stage_type_vars must contain the kind entry for "a".
-    let found = state.type_stage_type_vars.get("a").map(|k| k.as_str()) == Some("Type");
+    let found = state.type_stage_data.type_vars.get("a").map(|k| k.as_str()) == Some("Type");
 
     assert!(
         found,
@@ -1478,7 +1479,10 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     });
 
     // Manually set the resolution to EffectPerform.
-    let effect_addr = VarAddr::EffectPerform { slot: 0 };
+    let effect_addr = VarAddr::EffectPerform {
+        class_decl_id: 0,
+        method_slot: 0,
+    };
     if let SurfaceExpression::VarRef { resolution, .. } = &varref_node.expr {
         resolution.set(Some(effect_addr.clone()));
     }
@@ -1525,8 +1529,8 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     );
 }
 
-/// T-2326: resolver-miss diagnostic fires when a VarRef has no resolution OnceLock entry.
-/// A VarRef with no resolution must emit a "resolver-miss" diagnostic.
+/// T-2326: unresolved-variable diagnostic fires when a VarRef has no resolution OnceLock entry.
+/// A VarRef with no resolution must emit a "unresolved-variable" diagnostic.
 #[tokio::test]
 async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
     use crate::ast::{SurfaceExpression, SurfaceNode};
@@ -1565,11 +1569,11 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
 
     let resolver_miss_errors: Vec<_> = errors
         .iter()
-        .filter(|d| d.kind == "resolver-miss")
+        .filter(|d| d.kind == "unresolved-variable")
         .collect();
     assert!(
         !resolver_miss_errors.is_empty(),
-        "Expected resolver-miss diagnostic for VarRef with no resolution"
+        "Expected unresolved-variable diagnostic for VarRef with no resolution"
     );
 }
 

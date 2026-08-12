@@ -1905,7 +1905,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
             guard,
             body: vec![body_node],
             guard_matchable_binding: crate::ast::MatchableBinding::new(),
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         });
     }
     Ok(arms)
@@ -2853,11 +2853,7 @@ fn surface_node_to_thunk_id(
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
     // so that bare flags and comment fields are correctly populated.
-    let val = if let SurfaceExpression::Dict {
-        entries,
-        scope_frame: _,
-    } = &node.expr
-    {
+    let val = if let SurfaceExpression::Dict { entries, scope: _ } = &node.expr {
         let entries_thunk = alloc_entry_list_with_opts(entries, opts, ctx)?;
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("entries".into()), entries_thunk);

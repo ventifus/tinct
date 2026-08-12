@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Scope` (EvalFrame-based variable lookup).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization), `SymbolTable`-based variable lookup.
 
 use std::fmt;
 use std::future::Future;
@@ -12,10 +12,12 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::Diagnostic;
 
-/// Type alias for the optional default expression + environment pair in guarded thunks.
+/// Type alias for the optional default expression + scope pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-/// `env_id` is the caller's FlatEnv identity, used for scope resolution during default evaluation.
-type GuardDefault = (Arc<Spanned<CoreExpr>>, u32);
+type GuardDefault = (
+    Arc<Spanned<CoreExpr>>,
+    Arc<crate::symbol_table::SymbolTable>,
+);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
@@ -46,11 +48,7 @@ pub struct BuiltinArgs {
     pub named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
-    /// Caller's scope id — present only when `BuiltinDef::needs_caller_env` is true.
-    /// None for the vast majority of builtins that do not need lexical scope access.
-    /// Panics in `builtin-current-env` if unexpectedly None (indicates a registration bug).
-    pub caller_env_id: Option<u32>,
-    pub caller_evidence: Scope,
+    pub scope: Arc<crate::symbol_table::SymbolTable>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -91,11 +89,6 @@ pub struct BuiltinDef {
     /// Number of positional args to pre-materialize unconditionally before dispatch.
     /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
     pub force_count: usize,
-    /// Whether this builtin needs the caller's lexical scope id.
-    /// When false (the default for almost all builtins), `BuiltinArgs.caller_env_id` is None.
-    /// When true, `BuiltinArgs.caller_env_id` is Some(env_id).
-    /// Only `builtin-current-env` (and similar scope-introspecting builtins) set this to true.
-    pub needs_caller_env: bool,
 }
 
 impl PartialEq for BuiltinDef {
@@ -113,100 +106,7 @@ impl fmt::Debug for BuiltinDef {
             .field("name", &self.name)
             .field("pos_strictness", &self.pos_strictness)
             .field("force_count", &self.force_count)
-            .field("needs_caller_env", &self.needs_caller_env)
             .finish_non_exhaustive()
-    }
-}
-
-/// Flat scope vector for LGM slot resolution in EvalFrame.
-///
-/// Each slot index maps directly to a thunk. Creating a new scope is O(|entries|);
-/// extending appends to a cloned Vec; get(slot) is O(1).
-pub type Scope = std::sync::Arc<Vec<std::sync::Arc<Thunk>>>;
-
-pub fn empty_scope() -> Scope {
-    std::sync::Arc::new(Vec::new())
-}
-
-pub fn scope_from_flat(entries: Vec<std::sync::Arc<Thunk>>) -> Scope {
-    std::sync::Arc::new(entries)
-}
-
-pub fn scope_extend(parent: &Scope, new_entries: Vec<std::sync::Arc<Thunk>>) -> Scope {
-    if new_entries.is_empty() {
-        return std::sync::Arc::clone(parent);
-    }
-    let mut v = (**parent).clone();
-    v.extend(new_entries);
-    std::sync::Arc::new(v)
-}
-
-/// Replaces ScopeArena-based scope chain traversal.
-///
-/// - `group[i]`: thunk for `VarAddr::Dispatch(_, i)` references (slot = i).
-///   At document level, `group` is the accumulated_group: root-scope entries at slots 0..N-1,
-///   followed by each dict's entries at cumulative slot offsets. Inside a function body,
-///   `group` is the definition-site scope captured when the function was created, with
-///   function parameters appended after definition_scope entries.
-///   No outer-frame traversal needed.
-///
-/// All VarAddr variants index directly into this frame's vectors (EffectPerform does a
-/// direct slot lookup in caller_evidence). No outer-frame chain traversal — cross-scope
-/// Frame for evaluating expressions. Params are appended to the group after definition_scope entries.
-/// Variable references resolve through Dispatch (absolute group slot) or EffectPerform.
-#[derive(Debug, Clone)]
-pub struct EvalFrame {
-    pub group: Scope,
-    pub caller_evidence: Scope,
-    pub type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
-}
-
-impl EvalFrame {
-    pub fn empty() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            group: empty_scope(),
-            caller_evidence: empty_scope(),
-            type_inst: std::collections::HashMap::new(),
-        })
-    }
-
-    pub fn for_function_call(
-        definition_scope: Scope,
-        params: Vec<std::sync::Arc<Thunk>>,
-        caller_evidence: Scope,
-    ) -> std::sync::Arc<Self> {
-        let group = if params.is_empty() {
-            definition_scope
-        } else {
-            let mut g = (*definition_scope).clone();
-            g.extend(params);
-            std::sync::Arc::new(g)
-        };
-        std::sync::Arc::new(Self {
-            group,
-            caller_evidence,
-            type_inst: std::collections::HashMap::new(),
-        })
-    }
-
-    pub fn for_function_call_with_type_inst(
-        definition_scope: Scope,
-        params: Vec<std::sync::Arc<Thunk>>,
-        caller_evidence: Scope,
-        type_inst: std::collections::HashMap<String, std::sync::Arc<Value>>,
-    ) -> std::sync::Arc<Self> {
-        let group = if params.is_empty() {
-            definition_scope
-        } else {
-            let mut g = (*definition_scope).clone();
-            g.extend(params);
-            std::sync::Arc::new(g)
-        };
-        std::sync::Arc::new(Self {
-            group,
-            caller_evidence,
-            type_inst,
-        })
     }
 }
 
@@ -846,16 +746,16 @@ pub enum Value {
     /// For single-clause functions (the common case) `clauses.len() == 1`; multi-clause
     /// functions (from multi-arm instance methods) have `clauses.len() > 1`.
     ///
-    /// `definition_scope` is the definition-site scope (`frame.group`) captured at
-    /// fn-definition time. All outer-scope names resolve through Dispatch addresses
-    /// into this scope — no closure conversion or outer-frame pointer needed at call time.
+    /// `definition_scope` is the definition-site SymbolTable captured at fn-definition time.
+    /// All outer-scope names resolve through the SymbolTable's parent chain — no closure
+    /// conversion or outer-frame pointer needed at call time.
     ///
     /// T-2133 will implement full multi-clause dispatch via `invoke_function`. Until then,
     /// call sites that need `params`/`body` must extract them from `clauses[0]` using the
     /// helpers defined for the single-clause common case.
     Function {
         clauses: std::sync::Arc<Vec<crate::ast::CoreClause>>,
-        definition_scope: Scope,
+        definition_scope: Arc<crate::symbol_table::SymbolTable>,
         annotation: Option<Box<FnAnnotation>>,
         type_val: Option<std::sync::Arc<Value>>,
     },
@@ -1086,11 +986,10 @@ pub enum Value {
         type_val: Option<std::sync::Arc<Value>>,
     },
     /// Opaque scope value for pipeline env passing between stages.
-    /// Contains slots (thunks) and a name-to-slot mapping. Not inspectable
-    /// as a Dict — use `builtin-scope-exports` to extract entries.
-    Scope {
-        slots: Arc<Vec<Arc<Thunk>>>,
-        names: Arc<IndexMap<String, u32>>,
+    /// Contains a SymbolTable. Not inspectable as a Dict — use
+    /// `builtin-scope-exports` to extract entries.
+    SymbolTable {
+        table: Arc<crate::symbol_table::SymbolTable>,
         type_val: Option<std::sync::Arc<Value>>,
     },
 }
@@ -1138,7 +1037,7 @@ impl Clone for Value {
                 type_val,
             } => Value::Function {
                 clauses: std::sync::Arc::clone(clauses),
-                definition_scope: std::sync::Arc::clone(definition_scope),
+                definition_scope: Arc::clone(definition_scope),
                 annotation: annotation.clone(),
                 type_val: type_val.clone(),
             },
@@ -1336,13 +1235,8 @@ impl Clone for Value {
                 span: span.clone(),
                 type_val: type_val.clone(),
             },
-            Value::Scope {
-                slots,
-                names,
-                type_val,
-            } => Value::Scope {
-                slots: Arc::clone(slots),
-                names: Arc::clone(names),
+            Value::SymbolTable { table, type_val } => Value::SymbolTable {
+                table: Arc::clone(table),
                 type_val: type_val.clone(),
             },
         }
@@ -1468,7 +1362,7 @@ impl Value {
             | Value::Annotated { type_val, .. }
             | Value::TypeContext { type_val, .. }
             | Value::CoreDocument { type_val, .. }
-            | Value::Scope { type_val, .. } => type_val.as_ref(),
+            | Value::SymbolTable { type_val, .. } => type_val.as_ref(),
             Value::Builder(_) => None,
         }
     }
@@ -1515,7 +1409,7 @@ impl Value {
             | Value::Annotated { type_val, .. }
             | Value::TypeContext { type_val, .. }
             | Value::CoreDocument { type_val, .. }
-            | Value::Scope { type_val, .. } => {
+            | Value::SymbolTable { type_val, .. } => {
                 *type_val = tv;
             }
             Value::Builder(_) => {} // no type_val field
@@ -1554,7 +1448,7 @@ impl Value {
             Value::QuicDatagramHandle { .. } => Some("QuicDatagramHandle"),
             Value::Http2Session { .. } => Some("Http2Session"),
             Value::Http3Session { .. } => Some("Http3Session"),
-            Value::Scope { .. } => Some("Scope"),
+            Value::SymbolTable { .. } => Some("Scope"),
             // All other values (Int, String, Float, Dict, Function,
             // Builtin, Variant, Bytes, Uri, Proxy, Annotated, etc.) are handled through
             // structural type checking or TyConDef constructor matching.
@@ -1681,8 +1575,8 @@ impl fmt::Debug for Value {
             Value::CoreDocument { entries, .. } => {
                 write!(f, "CoreDocument({} entries)", entries.len())
             }
-            Value::Scope { slots, .. } => {
-                write!(f, "Scope({} entries)", slots.len())
+            Value::SymbolTable { table, .. } => {
+                write!(f, "Scope({} entries)", table.len())
             }
         }
     }
@@ -1797,7 +1691,7 @@ impl Value {
             Value::CoreDocument { entries, .. } => {
                 format!("<core-document:{} entries>", entries.len())
             }
-            Value::Scope { slots, .. } => format!("<Scope: {} entries>", slots.len()),
+            Value::SymbolTable { table, .. } => format!("<Scope: {} entries>", table.len()),
         }
     }
 }
@@ -1888,7 +1782,7 @@ pub enum UnevaluatedState {
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        frame: std::sync::Arc<EvalFrame>,
+        scope: Arc<crate::symbol_table::SymbolTable>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
@@ -1897,10 +1791,8 @@ pub enum UnevaluatedState {
         args: Vec<std::sync::Arc<Thunk>>,
         named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         call_span: Span,
-        /// Caller environment identity; used by `builtin-current-env` for scope introspection.
-        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
-        caller_evidence: Scope,
+        scope: Arc<crate::symbol_table::SymbolTable>,
     },
     /// Deferred function call (was PendingCall).
     FnCall {
@@ -1908,12 +1800,10 @@ pub enum UnevaluatedState {
         args: Vec<std::sync::Arc<Thunk>>,
         named: Option<Box<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>>,
         call_span: Span,
-        /// Caller environment identity; used by `builtin-current-env` for scope introspection.
-        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for PendingBuiltin lazy-arg re-dispatch.
         original_call: Arc<Spanned<CoreExpr>>,
-        caller_evidence: Scope,
+        scope: Arc<crate::symbol_table::SymbolTable>,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
@@ -1939,32 +1829,17 @@ pub enum UnevaluatedState {
     },
 }
 
-impl UnevaluatedState {
-    pub fn initial_env_id(&self) -> u32 {
-        match self {
-            UnevaluatedState::CoreExpr { .. } => 0,
-            UnevaluatedState::BuiltinCall { caller_env_id, .. } => *caller_env_id,
-            UnevaluatedState::FnCall { caller_env_id, .. } => *caller_env_id,
-            UnevaluatedState::AstField { .. } => 0,
-            UnevaluatedState::Guarded { .. } => 0,
-            UnevaluatedState::AnnotatedWrap { .. } => 0,
-        }
-    }
-}
-
 /// Groups the call-site information for a user-function invocation into a single value.
 ///
 /// Passed to `Thunk::fn_call` to reduce the argument count below Clippy's limit.
 pub struct FnCallSpec {
     /// The span of the call expression (for error messages).
     pub call_span: Span,
-    /// The caller's FlatEnv id (for `builtin-current-env` and future scope wiring).
-    pub caller_env_id: u32,
     /// The evaluation context.
     pub ctx: Arc<crate::eval::EvalContext>,
     /// The original call expression (for error messages).
     pub original_call: Arc<Spanned<CoreExpr>>,
-    pub caller_evidence: Scope,
+    pub scope: Arc<crate::symbol_table::SymbolTable>,
 }
 
 /// New thunk structure for async evaluation (Sprint 2B).
@@ -2037,23 +1912,22 @@ impl Thunk {
     /// Panics if the CoreExpr has no inferred_type — every expression must be type-checked.
     pub fn core_expr(
         expr: std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        frame: std::sync::Arc<EvalFrame>,
+        scope: Arc<crate::symbol_table::SymbolTable>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
         let inferred_type = Arc::clone(expr.node.inferred_type());
-        let type_inst = frame.type_inst.clone();
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new((
-                    Some(UnevaluatedState::CoreExpr { expr, frame, ctx }),
+                    Some(UnevaluatedState::CoreExpr { expr, scope, ctx }),
                     None,
                 )),
                 result: tokio::sync::OnceCell::new(),
                 notify: std::sync::OnceLock::new(),
             },
             span,
-            type_inst,
+            type_inst: std::collections::HashMap::new(),
             inferred_type,
         }
     }
@@ -2139,9 +2013,8 @@ impl Thunk {
         args: Vec<std::sync::Arc<Thunk>>,
         named: Option<indexmap::IndexMap<String, std::sync::Arc<Thunk>>>,
         span: Span,
-        caller_env_id: u32,
         ctx: Arc<crate::eval::EvalContext>,
-        caller_evidence: Scope,
+        scope: Arc<crate::symbol_table::SymbolTable>,
         inferred_type: std::sync::Arc<Value>,
     ) -> Self {
         Self {
@@ -2152,9 +2025,8 @@ impl Thunk {
                         args,
                         named,
                         call_span: span.clone(),
-                        caller_env_id,
                         ctx,
-                        caller_evidence,
+                        scope,
                     }),
                     None,
                 )),
@@ -2188,10 +2060,9 @@ impl Thunk {
                         args,
                         named: named_opt,
                         call_span: spec.call_span,
-                        caller_env_id: spec.caller_env_id,
                         ctx: spec.ctx,
                         original_call: spec.original_call,
-                        caller_evidence: spec.caller_evidence,
+                        scope: spec.scope,
                     }),
                     None,
                 )),
@@ -2340,11 +2211,11 @@ impl Thunk {
         let new_state = match state {
             UnevaluatedState::CoreExpr {
                 expr,
-                frame,
+                scope,
                 ctx: _,
             } => UnevaluatedState::CoreExpr {
                 expr,
-                frame,
+                scope,
                 ctx: new_ctx,
             },
             UnevaluatedState::AstField {
@@ -2361,36 +2232,32 @@ impl Thunk {
                 args,
                 named,
                 call_span,
-                caller_env_id,
                 ctx: _,
-                caller_evidence,
+                scope,
             } => UnevaluatedState::BuiltinCall {
                 def,
                 args,
                 named,
                 call_span,
-                caller_env_id,
                 ctx: new_ctx,
-                caller_evidence,
+                scope,
             },
             UnevaluatedState::FnCall {
                 func,
                 args,
                 named,
                 call_span,
-                caller_env_id,
                 ctx: _,
                 original_call,
-                caller_evidence,
+                scope,
             } => UnevaluatedState::FnCall {
                 func,
                 args,
                 named,
                 call_span,
-                caller_env_id,
                 ctx: new_ctx,
                 original_call,
-                caller_evidence,
+                scope,
             },
             UnevaluatedState::Guarded {
                 inner,
@@ -2589,7 +2456,7 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
+        let thunk = Thunk::core_expr(expr, crate::symbol_table::SymbolTable::empty(), ctx, span);
 
         assert!(!thunk.is_settled(), "Expected unevaluated (not settled)");
         assert!(
@@ -2768,7 +2635,12 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr.clone(), EvalFrame::empty(), ctx.clone(), span);
+        let thunk = Thunk::core_expr(
+            expr.clone(),
+            crate::symbol_table::SymbolTable::empty(),
+            ctx.clone(),
+            span,
+        );
 
         let state = thunk.try_claim();
         assert!(state.is_some(), "try_claim should succeed on unevaluated");
@@ -2800,7 +2672,7 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx, span);
+        let thunk = Thunk::core_expr(expr, crate::symbol_table::SymbolTable::empty(), ctx, span);
 
         let first_claim = thunk.try_claim();
         assert!(first_claim.is_some(), "First claim should succeed");
@@ -2820,7 +2692,12 @@ mod tests {
             },
             span.clone(),
         ));
-        let thunk = Thunk::core_expr(expr, EvalFrame::empty(), ctx.clone(), span);
+        let thunk = Thunk::core_expr(
+            expr,
+            crate::symbol_table::SymbolTable::empty(),
+            ctx.clone(),
+            span,
+        );
 
         let state = thunk.try_claim().expect("try_claim should succeed");
 
@@ -3213,120 +3090,5 @@ mod tests {
             type_val: Some(crate::type_infer::make_typevalue_nominal(200)),
         };
         assert_eq!(variant.type_decl_id_of(), 200);
-    }
-}
-
-#[cfg(test)]
-mod groupspine_tests {
-    use super::*;
-
-    fn make_thunk(n: i64) -> Arc<Thunk> {
-        Arc::new(Thunk::value(
-            Value::Int {
-                n,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
-            },
-            crate::rust_span!(),
-        ))
-    }
-
-    #[test]
-    fn test_empty_scope() {
-        let scope = empty_scope();
-        assert_eq!(scope.len(), 0);
-        assert!(scope.is_empty());
-        assert!(scope.get(0).is_none());
-    }
-
-    #[test]
-    fn test_scope_from_flat() {
-        let t0 = make_thunk(10);
-        let t1 = make_thunk(20);
-        let scope = scope_from_flat(vec![Arc::clone(&t0), Arc::clone(&t1)]);
-        assert_eq!(scope.len(), 2);
-        assert!(!scope.is_empty());
-        // Verify identity: get returns the exact Arc that was inserted
-        assert!(Arc::ptr_eq(scope.get(0).unwrap(), &t0));
-        assert!(Arc::ptr_eq(scope.get(1).unwrap(), &t1));
-        assert!(scope.get(2).is_none());
-    }
-
-    #[test]
-    fn test_scope_extend_single_level() {
-        let base = empty_scope();
-        let t0 = make_thunk(1);
-        let scope = scope_extend(&base, vec![Arc::clone(&t0)]);
-        assert_eq!(scope.len(), 1);
-        assert!(Arc::ptr_eq(scope.get(0).unwrap(), &t0));
-        assert!(scope.get(1).is_none());
-    }
-
-    #[test]
-    fn test_scope_extend_multi_level() {
-        let t0 = make_thunk(100);
-        let t1 = make_thunk(200);
-        let t2 = make_thunk(300);
-        let base = scope_from_flat(vec![Arc::clone(&t0)]);
-        let mid = scope_extend(&base, vec![Arc::clone(&t1)]);
-        let top = scope_extend(&mid, vec![Arc::clone(&t2)]);
-
-        assert_eq!(top.len(), 3);
-        // Verify each slot returns the correct thunk (not just any present thunk)
-        assert!(Arc::ptr_eq(top.get(0).unwrap(), &t0)); // from base
-        assert!(Arc::ptr_eq(top.get(1).unwrap(), &t1)); // from mid
-        assert!(Arc::ptr_eq(top.get(2).unwrap(), &t2)); // from top
-        assert!(top.get(3).is_none());
-
-        // Earlier levels unaffected — scope_extend creates a new Vec copy
-        assert_eq!(base.len(), 1);
-        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t0));
-        assert!(base.get(1).is_none());
-
-        assert_eq!(mid.len(), 2);
-        assert!(Arc::ptr_eq(mid.get(0).unwrap(), &t0));
-        assert!(Arc::ptr_eq(mid.get(1).unwrap(), &t1));
-        assert!(mid.get(2).is_none());
-    }
-
-    #[test]
-    fn test_scope_extend_empty_returns_same_arc() {
-        let scope = scope_from_flat(vec![make_thunk(1)]);
-        let extended = scope_extend(&scope, vec![]);
-        // extend with empty returns Arc::clone of self
-        assert!(Arc::ptr_eq(&scope, &extended));
-    }
-
-    #[test]
-    fn test_scope_boundary_get() {
-        let t = make_thunk(42);
-        let base = scope_from_flat(vec![Arc::clone(&t)]);
-        // Boundary: slot 0 present, slot 1 absent
-        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t));
-        assert!(base.get(1).is_none());
-        // After extend, new entry at slot 1 — old slot 0 still maps to t
-        let t2 = make_thunk(99);
-        let ext = scope_extend(&base, vec![Arc::clone(&t2)]);
-        assert!(Arc::ptr_eq(ext.get(0).unwrap(), &t));
-        assert!(Arc::ptr_eq(ext.get(1).unwrap(), &t2));
-        assert!(ext.get(2).is_none());
-    }
-
-    #[test]
-    fn test_scope_override() {
-        let t0 = make_thunk(100);
-        let t0_replacement = make_thunk(999);
-        let base = scope_from_flat(vec![Arc::clone(&t0)]);
-
-        // Clone the scope's inner Vec and replace slot 0
-        let mut vec = base.as_ref().clone();
-        vec[0] = Arc::clone(&t0_replacement);
-        let overridden = Arc::new(vec);
-
-        // Verify slot 0 now returns the replacement, not the original
-        assert!(Arc::ptr_eq(overridden.get(0).unwrap(), &t0_replacement));
-        assert!(!Arc::ptr_eq(overridden.get(0).unwrap(), &t0));
-
-        // Original scope unchanged
-        assert!(Arc::ptr_eq(base.get(0).unwrap(), &t0));
     }
 }

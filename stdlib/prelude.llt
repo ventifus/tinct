@@ -2363,8 +2363,7 @@ program-docs@[doc: "Extract all documents from a desugared Program as a Dict of 
 resolve@[doc: "Resolve a Document against a name-set, returning {doc, diagnostics}. name-set: flat Dict<String,1> of all visible names. diagnostics: errors only (undefined variables). Args: doc name-set."]: builtin-resolve
 lower@[doc: "Lower a resolved+typechecked Document to a CoreDocument. Must be called after typecheck-doc and before eval."]: builtin-lower
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
-eval@[doc: "Evaluate a lowered CoreDocument with an env dict. Args: lowered env. Returns the exports Dict directly (raises on error)."]: builtin-eval
-eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
+eval@[doc: "Evaluate a lowered CoreDocument with a SymbolTable scope. Returns {table: SymbolTable, diagnostics: Diagnostics}."]: builtin-eval
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
 env-to-name-set@[doc: "Convert an accumulated env dict to a flat Dict<String,1> for builtin-resolve. All visible names map to 1 (values ignored by resolver)."]: .env-to-name-set

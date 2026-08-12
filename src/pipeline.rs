@@ -11,35 +11,32 @@ use std::sync::Arc;
 
 use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
 use crate::eval::EvalContext;
-use crate::type_infer::{InferState, TypeStageData, TypeValue};
+use crate::symbol_table::SymbolTable;
+use crate::type_infer::{InferState, TypeValue};
 
 /// Accumulated state threaded through the per-document pipeline.
 pub struct PipelineState {
-    /// Type-stage scope — TypeValues from type-stage documents.
-    pub type_stage_data: TypeStageData,
-    /// Type constructor definitions accumulated across documents.
-    pub tycon_env: crate::type_def::TyConEnv,
-    /// Type name → type_decl_id mapping.
-    pub type_name_to_id: HashMap<String, u64>,
-    /// type_decl_id → display name mapping.
-    pub type_display_names: HashMap<u64, String>,
-    /// Type checker state — carries substitution, constraints, levels, etc.
+    /// Type checker state — single source of truth for type-stage data,
+    /// tycon_env, type_name_to_id, type_display_names, etc.
     pub(crate) infer_state: InferState,
+    /// Current scope — grows as documents are processed.
+    pub current_scope: Arc<SymbolTable>,
 }
 
 impl PipelineState {
-    /// Create the initial pipeline state from the Rust-native builtins.
-    pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
+    /// Create the initial pipeline state from a scope (builtins + capabilities).
+    pub fn from_scope(scope: Arc<SymbolTable>, ctx: &Arc<EvalContext>) -> Self {
         let mut infer_state = InferState::new();
         infer_state.eval_ctx = Some(Arc::clone(ctx));
-
         Self {
-            type_stage_data: TypeStageData::new(),
-            tycon_env: HashMap::new(),
-            type_name_to_id: HashMap::new(),
-            type_display_names: HashMap::new(),
             infer_state,
+            current_scope: scope,
         }
+    }
+
+    /// Create the initial pipeline state from the Rust-native builtins.
+    pub fn from_builtins(ctx: &Arc<EvalContext>) -> Self {
+        Self::from_scope(SymbolTable::empty(), ctx)
     }
 
     /// Access type checker diagnostics collected during pipeline processing.
@@ -58,74 +55,24 @@ pub async fn typecheck_pipeline_document(
 ) -> Vec<crate::error::Diagnostic> {
     let doc = doc_spanned.node.as_ref();
 
-    // Step 1: Resolve this document against the current environment.
-    let env_names: Vec<String> = Vec::new();
-    let root_frame = state.infer_state.eval_ctx.as_ref().expect("eval_ctx required").root_group_resolver_map();
-    let root_group_len = root_frame
-        .values()
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+    // Step 1: Resolve this document against the current scope.
+    let _resolve_diags = crate::resolve::resolve_document(doc, &state.current_scope);
 
-    let (_resolve_table, _resolve_diags, _unreferenced) =
-        crate::resolve::resolve_surface_document_with_seed_frames(
-            doc,
-            &[root_frame.clone()],
-            &env_names,
-            root_group_len,
-        );
-
+    // Sync type-stage data into InferState before typecheck.
     // Step 2: Typecheck this document.
-    crate::typecheck::build_infer_state(
+    // InferState is the single source of truth — no sync needed.
+    let (_result_ty, tc_errors) = crate::typecheck::process_document(
+        doc,
         &mut state.infer_state,
-        state.type_stage_data.scope.clone(),
-        state.type_stage_data.fns.clone(),
-        state.type_stage_data.type_vars.clone(),
-        state.tycon_env.clone(),
-        state.type_name_to_id.clone(),
-        state.type_display_names.clone(),
-    );
+        &state.current_scope,
+        &mut None,
+    )
+    .await;
 
-    // Push outermost scope onto scope_chain. Populated from:
-    // 1. Root group values — Nominal(value.type_decl_id_of()) for each slot
-    // 2. Type-stage entries — override with declared types from builtin_core.llt
-    if state.infer_state.scope_chain.is_empty() {
-        let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
-        // Seed from root group values' type_decl_ids.
-        if let Some(eval_ctx) = &state.infer_state.eval_ctx {
-            for (i, thunk) in eval_ctx.root_group.iter().enumerate() {
-                if let Some(Ok(val)) = thunk.peek_result() {
-                    let tid = val.type_decl_id_of();
-                    if tid > 0 {
-                        outermost.set_type_scheme(i as u32, crate::type_infer::make_typevalue_nominal(tid));
-                    }
-                }
-            }
-        }
-        // Override with type-stage type schemes (declared types from builtin_core.llt).
-        for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            if let Some(&slot) = root_frame.iter().find_map(|(n, s)| if n == name { Some(s) } else { None }) {
-                outermost.set_type_scheme(slot, Arc::clone(tv));
-            }
-        }
-        state.infer_state.scope_chain.push(outermost);
-    }
-
-    let (_result_ty, tc_errors) =
-        crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
-
-    // Append tc_errors to state diagnostics so state.diagnostics() is the
-    // single source of truth — consistent with process_pipeline_document.
     state
         .infer_state
         .diagnostics
         .extend(tc_errors.iter().cloned());
-
-    // Update state for next document.
-    state.tycon_env = state.infer_state.tycon_env.clone();
-    state.type_name_to_id = state.infer_state.type_name_to_id.clone();
-    state.type_display_names = state.infer_state.type_display_names.clone();
 
     tc_errors
 }
@@ -133,7 +80,7 @@ pub async fn typecheck_pipeline_document(
 /// Process a single document through the full pipeline: resolve → typecheck → eval.
 ///
 /// After evaluation, routes results based on the document's stage header:
-/// - `stage: "type"` → classify entries and update `state.type_stage_data`
+/// - `stage: "type"` → classify entries and update `state.infer_state.type_stage_data`
 pub async fn process_pipeline_document(
     doc_spanned: &Spanned<Arc<SurfaceDocument>>,
     state: &mut PipelineState,
@@ -141,62 +88,38 @@ pub async fn process_pipeline_document(
 ) -> Result<(), Box<crate::error::Diagnostic>> {
     let doc = doc_spanned.node.as_ref();
 
-    // Step 1: Resolve this document against the current environment.
-    let env_names: Vec<String> = Vec::new();
-    let root_frame = ctx.root_group_resolver_map();
-    let root_group_len = root_frame
-        .values()
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
+    // Step 1: Resolve this document against the current scope.
+    let _resolve_diags = crate::resolve::resolve_document(doc, &state.current_scope);
 
-    let (_resolve_table, _resolve_diags, _unreferenced) =
-        crate::resolve::resolve_surface_document_with_seed_frames(
-            doc,
-            &[root_frame.clone()],
-            &env_names,
-            root_group_len,
-        );
-
-    // Step 2: Typecheck this document.
-    crate::typecheck::build_infer_state(
-        &mut state.infer_state,
-        state.type_stage_data.scope.clone(),
-        state.type_stage_data.fns.clone(),
-        state.type_stage_data.type_vars.clone(),
-        state.tycon_env.clone(),
-        state.type_name_to_id.clone(),
-        state.type_display_names.clone(),
-    );
-
-    // Push outermost scope if not already present.
-    if state.infer_state.scope_chain.is_empty() {
-        let outermost = std::sync::Arc::new(crate::ast::ScopeFrame::new(root_group_len as usize));
-        for (name, tv) in state.type_stage_data.scope.iter().flat_map(|m| m.iter()) {
-            if let Some(&slot) = root_frame.iter().find_map(|(n, s)| if n == name { Some(s) } else { None }) {
-                outermost.set_type_scheme(slot, Arc::clone(tv));
+    // Step 1b: Wire Rust builtins — for each scope entry matching a registered
+    // builtin name, pre-write Value::Builtin. OnceLock is write-once, so eval's
+    // Placeholder write becomes a no-op.
+    let builtin_defs = crate::builtins_core::core_builtins();
+    for doc_item in &doc.items {
+        if let crate::ast::SurfaceItem::Expr(node) = doc_item {
+            if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
+                if let Some(dict_scope) = scope.get() {
+                    for def in &builtin_defs {
+                        if let Some(entry) = dict_scope.entries().get(def.name) {
+                            let thunk = std::sync::Arc::new(crate::value::Thunk::value(
+                                crate::value::Value::Builtin {
+                                    def: def.clone(),
+                                    type_val: None,
+                                },
+                                crate::rust_span!(),
+                            ));
+                            entry
+                                .value
+                                .set(thunk)
+                                .expect("builtin wiring: scope entry must be empty before eval");
+                        }
+                    }
+                }
             }
         }
-        state.infer_state.scope_chain.push(outermost);
     }
 
-    let (_result_ty, tc_errors) =
-        crate::typecheck::process_document(doc, &mut state.infer_state, &mut None).await;
-
-    // Propagate type checker errors — they are already Diagnostics.
-    for err in &tc_errors {
-        if err.level == crate::error::DiagnosticLevel::Err {
-            return Err(Box::new(err.clone()));
-        }
-    }
-
-    // Collect tycon_env updates from the type checker.
-    state.tycon_env = state.infer_state.tycon_env.clone();
-    state.type_name_to_id = state.infer_state.type_name_to_id.clone();
-    state.type_display_names = state.infer_state.type_display_names.clone();
-
-    // Step 3: Evaluate this document.
+    // Step 2: Evaluate this document.
     let expr_nodes: Vec<Arc<crate::ast::SurfaceNode>> = doc
         .items
         .iter()
@@ -206,7 +129,39 @@ pub async fn process_pipeline_document(
         })
         .collect();
 
-    let result_thunk = crate::eval::eval_document_exprs_with_env(&expr_nodes, ctx, None).await?;
+    // Lower expressions to CoreExpr for eval_document.
+    let display_names = state.infer_state.type_display_names.clone();
+    let entries: Vec<Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> = expr_nodes
+        .iter()
+        .map(|node| {
+            Arc::new(
+                crate::lower::lower(node, &display_names)
+                    .take(&ctx.runtime_diagnostics)
+                    .expect("lowering always succeeds"),
+            )
+        })
+        .collect();
+
+    let (_eval_scope, eval_diags) =
+        crate::eval::eval_document(&entries, ctx, Arc::clone(&state.current_scope)).await;
+
+    // Propagate eval diagnostics.
+    for diag in &eval_diags {
+        if diag.level == crate::error::DiagnosticLevel::Err {
+            return Err(Box::new(diag.clone()));
+        }
+    }
+
+    // Read the scope from the document's outermost Dict AST node.
+    // The resolver created this scope; eval populated its values.
+    for node in expr_nodes.iter().rev() {
+        if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
+            if let Some(dict_scope) = scope.get() {
+                state.current_scope = Arc::clone(dict_scope);
+                break;
+            }
+        }
+    }
 
     // Step 4: Route results based on stage header.
     let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
@@ -218,52 +173,74 @@ pub async fn process_pipeline_document(
     });
 
     if is_type_stage {
-        // Materialize the result and classify each entry.
-        let result_val = crate::eval::materialize(&result_thunk, None, ctx).await?;
-        if let crate::value::Value::Dict { entries, .. } = &result_val {
-            let mut scope_map: HashMap<String, TypeValue> = HashMap::new();
-            for (key, thunk) in entries {
-                if let crate::value::HashableValue::Str(name) = key {
-                    let val = crate::eval::materialize(thunk, None, ctx).await?;
-                    if let Some((tv, opt_fn_thunk, opt_kind)) =
-                        crate::imports::classify_type_stage_entry(
-                            name,
-                            thunk,
-                            &val,
-                            ctx,
-                            &state.type_stage_data.scope,
-                            &state.type_name_to_id,
-                        )
-                        .await?
-                    {
-                        scope_map.insert(name.to_string(), tv);
-                        if let Some(fn_thunk) = opt_fn_thunk {
-                            state.type_stage_data.fns.insert(name.to_string(), fn_thunk);
-                        }
-                        if let Some(kind) = opt_kind {
+        let scope_entries = state.current_scope.entries();
+        let mut scope_map: HashMap<String, TypeValue> = HashMap::new();
+        for (name, entry) in scope_entries {
+            if let Some(thunk) = entry.value.get() {
+                let val = crate::eval::materialize(thunk, None, ctx).await?;
+                if let Some((tv, opt_fn_thunk, opt_kind)) =
+                    crate::imports::classify_type_stage_entry(
+                        name,
+                        thunk,
+                        &val,
+                        ctx,
+                        &state.infer_state.type_stage_data.scope,
+                        &state.infer_state.type_name_to_id,
+                    )
+                    .await?
+                {
+                    scope_map.insert(name.to_string(), tv);
+                    if let Some(fn_thunk) = opt_fn_thunk {
+                        state
+                            .infer_state
+                            .type_stage_data
+                            .fns
+                            .insert(name.to_string(), fn_thunk);
+                    }
+                    if let Some(kind) = opt_kind {
+                        state
+                            .infer_state
+                            .type_stage_data
+                            .type_vars
+                            .insert(name.to_string(), kind);
+                    }
+                    if let Some(id) = crate::type_infer::typevalue_nominal_id(
+                        scope_map.get(name.as_str()).unwrap(),
+                    ) {
+                        if id > 0 {
                             state
-                                .type_stage_data
-                                .type_vars
-                                .insert(name.to_string(), kind);
-                        }
-                        // Register type_name_to_id from the TypeValue if nominal.
-                        if let Some(id) = crate::type_infer::typevalue_nominal_id(
-                            scope_map.get(name.as_ref()).unwrap(),
-                        ) {
-                            if id > 0 {
-                                state.type_name_to_id.insert(name.to_string(), id);
-                                state
-                                    .type_display_names
-                                    .entry(id)
-                                    .or_insert_with(|| name.to_string());
-                            }
+                                .infer_state
+                                .type_name_to_id
+                                .insert(name.to_string(), id);
+                            state
+                                .infer_state
+                                .type_display_names
+                                .entry(id)
+                                .or_insert_with(|| name.to_string());
                         }
                     }
                 }
             }
-            if !scope_map.is_empty() {
-                state.type_stage_data.scope.push(scope_map);
-            }
+        }
+        if !scope_map.is_empty() {
+            state.infer_state.type_stage_data.scope.push(scope_map);
+        }
+    }
+
+    // Step 4: Typecheck. Runs AFTER eval so that the scope has values
+    // and type-stage entries are classified. The type checker resolves
+    // annotations by looking up values in the scope.
+    let (_result_ty, tc_errors) = crate::typecheck::process_document(
+        doc,
+        &mut state.infer_state,
+        &state.current_scope,
+        &mut None,
+    )
+    .await;
+
+    for err in &tc_errors {
+        if err.level == crate::error::DiagnosticLevel::Err {
+            return Err(Box::new(err.clone()));
         }
     }
 

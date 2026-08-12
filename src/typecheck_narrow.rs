@@ -137,7 +137,7 @@ fn varref_addr(node: &SurfaceNode) -> Option<crate::ast::VarAddr> {
 pub(crate) fn extract_narrowings(
     cond: &Arc<SurfaceNode>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-    scope_chain: &[std::sync::Arc<crate::ast::ScopeFrame>],
+    current_scope: &std::sync::Arc<crate::symbol_table::SymbolTable>,
 ) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
@@ -180,7 +180,11 @@ pub(crate) fn extract_narrowings(
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg, type_name_to_id, scope_chain));
+                            narrowings.extend(extract_narrowings(
+                                arg,
+                                type_name_to_id,
+                                current_scope,
+                            ));
                         }
                         return narrowings;
                     }
@@ -191,14 +195,17 @@ pub(crate) fn extract_narrowings(
                     // or `@[is: T]` on its first parameter.
                     _ if args.len() == 1 => {
                         if let Some(arg_addr) = varref_addr(&args[0]) {
-                            // Annotation-based narrowing: look up the FUNC's scheme via scope_chain.
+                            // Annotation-based narrowing: look up the FUNC's scheme via current_scope.
                             // If the func has a @[narrows: T] annotation, calling it narrows the arg to T.
                             if let Some(func_addr) = varref_addr(func) {
                                 if let crate::ast::VarAddr::Dispatch(depth, slot) = &func_addr {
-                                    let scope_idx = scope_chain.len().checked_sub(1 + *depth as usize);
-                                    let func_scheme = scope_idx.and_then(|idx| scope_chain[idx].get_type_scheme(*slot));
+                                    let func_scheme = current_scope
+                                        .lookup(*depth, *slot)
+                                        .and_then(|e| e.type_scheme.get().cloned());
                                     if let Some(ref scheme_tv) = func_scheme {
-                                        if let Some(narrowing_ty) = extract_scheme_narrowings_first(scheme_tv) {
+                                        if let Some(narrowing_ty) =
+                                            extract_scheme_narrowings_first(scheme_tv)
+                                        {
                                             return vec![Narrowing::TypeOf {
                                                 addr: arg_addr,
                                                 ty: narrowing_ty,
@@ -303,13 +310,17 @@ pub(crate) fn apply_narrowings(
                 let fresh_field_tv = state.fresh_type_var(&crate::rust_span!());
                 let mut fields: indexmap::IndexMap<String, Arc<Value>> = indexmap::IndexMap::new();
                 fields.insert(key.clone(), fresh_field_tv);
-                // Look up existing type via scope_chain using the VarAddr.
-                let current_tv: Option<Arc<crate::value::Value>> = if let crate::ast::VarAddr::Dispatch(depth, slot) = addr {
-                    state.scope_chain.len().checked_sub(1 + *depth as usize)
-                        .and_then(|idx| state.scope_chain[idx].get_type_scheme(*slot))
-                } else {
-                    None
-                };
+                // Look up existing type via current_scope using the VarAddr.
+                let current_tv: Option<Arc<crate::value::Value>> =
+                    if let crate::ast::VarAddr::Dispatch(depth, slot) = addr {
+                        state
+                            .current_scope
+                            .as_ref()
+                            .and_then(|s| s.lookup(*depth, *slot))
+                            .and_then(|e| e.type_scheme.get().cloned())
+                    } else {
+                        None
+                    };
                 if let Some(existing_tv) = current_tv {
                     if let Some(existing_fields) =
                         crate::typecheck::extract_record_fields_pub(&existing_tv)
@@ -506,10 +517,7 @@ pub(crate) fn extract_binding_types<'a>(
             // Binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax for multi-param).
             // Named-key dicts like [key: k  value: v] represent a SINGLE structural type (a record),
             // not multiple independent type parameters. Only auto-indexed (keyless) dicts expand.
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 let all_keyless = entries.iter().all(|e| e.node.key.is_none());
                 if all_keyless {
                     for entry in entries {
@@ -763,10 +771,7 @@ pub(crate) fn extract_param_indices(
         }
         // Multiple params as auto-indexed Dict: produced when bracket contains
         // a literal/annotated head (e.g. `[a@Int b]` → Dict with auto-indexed entries)
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, scope: _ } => {
             for entry in entries {
                 let param_name = match &entry.node.value.expr {
                     SurfaceExpression::VarRef { name, .. } => name,

@@ -420,8 +420,7 @@ pub(crate) fn builtin_lte(
         args,
         named,
         call_span,
-        caller_env_id,
-        caller_evidence,
+        scope,
         ctx,
         ..
     } = ctx_arg;
@@ -437,8 +436,7 @@ pub(crate) fn builtin_lte(
             args: swapped_args,
             named,
             call_span: call_span.clone(),
-            caller_env_id,
-            caller_evidence,
+            scope,
             ctx,
         })
         .await?;
@@ -1957,10 +1955,6 @@ mod tests {
         Arc::new(Thunk::value(val, test_span(1, 1, 1, 5)))
     }
 
-    fn empty_evidence() -> crate::value::Scope {
-        crate::value::empty_scope()
-    }
-
     /// Drive an async builtin to completion synchronously in tests.
     fn run(
         f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
@@ -1996,8 +1990,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
@@ -2023,8 +2017,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }));
         assert!(
             result.is_err(),
@@ -2062,8 +2056,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(
@@ -2105,8 +2099,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(
@@ -2130,8 +2124,8 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx,
-            caller_env_id: None,
-            caller_evidence: empty_evidence(),
+
+            scope: crate::symbol_table::SymbolTable::empty(),
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

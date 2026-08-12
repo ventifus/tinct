@@ -173,8 +173,7 @@ pub struct Param {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order index for VarAddr::Dispatch slot lookup in EvalFrame.group.
-    /// Params are appended to the group after definition_scope entries.
+    /// Declaration-order index for VarAddr::Dispatch slot lookup in the SymbolTable frame.
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).
@@ -738,7 +737,7 @@ pub enum SurfaceExpression {
         #[expr(key = "entries", entry_list)]
         entries: Vec<Spanned<SurfaceEntry>>,
         #[expr(skip, default_fn = "std::sync::OnceLock::new")]
-        scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
+        scope: std::sync::OnceLock<std::sync::Arc<crate::symbol_table::SymbolTable>>,
     },
 
     // Function call — implied: true = [f x y], false = [call f x y]
@@ -778,7 +777,7 @@ pub enum SurfaceExpression {
         #[expr(skip, default_fn = "crate::ast::TypeAnnotation::new")]
         resolved_return_annotation: TypeAnnotation,
         #[expr(skip, default_fn = "std::sync::OnceLock::new")]
-        scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
+        scope: std::sync::OnceLock<std::sync::Arc<crate::symbol_table::SymbolTable>>,
     },
 
     // Type assertion — resolved_type is set inline by the type checker, read by the lowerer.
@@ -973,7 +972,7 @@ pub struct SurfaceMatchArm {
     /// Resolved by the type checker after the guard's return type is inferred.
     /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
     pub guard_matchable_binding: MatchableBinding,
-    pub scope_frame: std::sync::OnceLock<std::sync::Arc<ScopeFrame>>,
+    pub scope: std::sync::OnceLock<std::sync::Arc<crate::symbol_table::SymbolTable>>,
 }
 
 impl SurfaceMatchArm {
@@ -1106,98 +1105,6 @@ impl Default for TypeAnnotation {
 impl std::fmt::Debug for TypeAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeAnnotation({:?})", self.0.get().map(|o| o.is_some()))
-    }
-}
-
-/// Type scheme storage for a scope, indexed by resolver-assigned slot position.
-/// Set on scope-creating AST nodes (Dict, Fn, MatchArm) by the resolver.
-/// Type checker writes type schemes into slots during inference.
-pub struct ScopeFrame {
-    slots: Vec<ScopeSlot>,
-}
-
-pub struct ScopeSlot {
-    pub type_scheme: std::sync::OnceLock<Arc<crate::value::Value>>,
-    pub referenced: std::sync::atomic::AtomicBool,
-    pub definition_span: Option<Span>,
-}
-
-impl ScopeFrame {
-    pub fn new(size: usize) -> Self {
-        Self {
-            slots: (0..size)
-                .map(|_| ScopeSlot {
-                    type_scheme: std::sync::OnceLock::new(),
-                    referenced: std::sync::atomic::AtomicBool::new(false),
-                    definition_span: None,
-                })
-                .collect(),
-        }
-    }
-
-    pub fn with_definition_spans(size: usize, spans: Vec<Option<Span>>) -> Self {
-        Self {
-            slots: (0..size)
-                .map(|i| ScopeSlot {
-                    type_scheme: std::sync::OnceLock::new(),
-                    referenced: std::sync::atomic::AtomicBool::new(false),
-                    definition_span: spans.get(i).cloned().flatten(),
-                })
-                .collect(),
-        }
-    }
-
-    pub fn get_type_scheme(&self, slot: u32) -> Option<Arc<crate::value::Value>> {
-        self.slots
-            .get(slot as usize)
-            .and_then(|s| s.type_scheme.get().cloned())
-    }
-
-    pub fn set_type_scheme(&self, slot: u32, scheme: Arc<crate::value::Value>) {
-        if let Some(s) = self.slots.get(slot as usize) {
-            let _ = s.type_scheme.set(scheme);
-        }
-    }
-
-    pub fn mark_referenced(&self, slot: u32) {
-        if let Some(s) = self.slots.get(slot as usize) {
-            s.referenced
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    pub fn is_referenced(&self, slot: u32) -> bool {
-        self.slots.get(slot as usize).map_or(false, |s| {
-            s.referenced.load(std::sync::atomic::Ordering::Relaxed)
-        })
-    }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
-    }
-
-    pub fn definition_span(&self, slot: u32) -> Option<&Span> {
-        self.slots
-            .get(slot as usize)
-            .and_then(|s| s.definition_span.as_ref())
-    }
-}
-
-impl Clone for ScopeFrame {
-    fn clone(&self) -> Self {
-        Self::new(self.slots.len())
-    }
-}
-
-impl PartialEq for ScopeFrame {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for ScopeFrame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ScopeFrame({} slots)", self.slots.len())
     }
 }
 
@@ -1517,29 +1424,24 @@ impl std::fmt::Debug for MatchableBinding {
 /// Replaces (level, slot) de Bruijn coordinates.
 ///
 /// All variable references use exactly two variants — no runtime frame traversal:
-/// - `Dispatch(depth, slot)` — index into the accumulated group.
-///   Root-scope entries occupy slots 0..N-1; document dict entries at cumulative slots;
-///   function/match-arm parameters are appended after definition_scope entries.
-///   `depth` is the scope-stack traversal distance from the referencing scope to the defining
-///   scope (0 = same frame, 1 = one level up). Used by the type-checker via `get_scheme_at`.
-///   Replaces the former `LetrecGroupMember { depth, slot }` named-field variant.
-/// - `EffectPerform { slot }` — typeclass method call; resolved by direct slot lookup
-///   in the caller's evidence (scope).
+/// - `Dispatch(depth, slot)` — per-frame relative slot lookup.
+///   `depth` is the number of parent links to walk (0 = current frame).
+///   `slot` is the entry index within that frame. Both are load-bearing.
+/// - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
+///   resolved at runtime via the evidence map on the caller's SymbolTable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VarAddr {
-    /// Index into EvalFrame.group (accumulated scope thunks).
-    /// Root-scope entries (builtins and capabilities) occupy slots 0..N-1;
-    /// document dict entries follow at cumulative slot offsets.
-    /// Function bodies carry the definition-site group, so Dispatch addresses
-    /// resolve directly to the captured scope.
-    /// Function parameters are appended to the group after definition_scope entries.
-    /// `depth` is the resolver scope-stack traversal distance (0 = same frame, 1 = one
-    /// level up). The evaluator ignores `depth` and uses `slot` directly; the type-checker
-    /// uses `depth` to call `get_scheme_at(depth, slot)` for cross-scope references.
+    /// Per-frame relative slot lookup.
+    /// `depth` = number of SymbolTable parent links to walk (0 = current frame).
+    /// `slot` = entry index within the target frame.
     Dispatch(u32, u32),
-    /// Typeclass method call — resolved at runtime by direct slot lookup in
-    /// the caller's evidence (scope). `slot` is the slot index assigned by the resolver.
-    EffectPerform { slot: u32 },
+    /// Typeclass method call — resolved at runtime via the evidence map.
+    /// `class_decl_id` identifies the typeclass declaration.
+    /// `method_slot` is the method's position within the class.
+    EffectPerform {
+        class_decl_id: u64,
+        method_slot: u32,
+    },
 }
 
 /// Specifies how the TypeAssert node obtains its expected type.
@@ -1625,6 +1527,7 @@ pub enum CoreExpr {
     },
     Dict {
         entries: Vec<Spanned<CoreEntry>>,
+        scope: Option<Arc<crate::symbol_table::SymbolTable>>,
         inferred_type: Arc<crate::value::Value>,
     },
     Call {
@@ -1830,8 +1733,7 @@ pub struct CoreParam {
     pub name: String,
     pub annotation: Option<Spanned<Annotation>>,
     pub variadic: bool,
-    /// Declaration-order index for VarAddr::Dispatch slot lookup in EvalFrame.group.
-    /// Params are appended to the group after definition_scope entries.
+    /// Declaration-order index for VarAddr::Dispatch slot lookup in the SymbolTable frame.
     pub slot: u32,
     /// TypeValue resolved by the type checker from the parameter annotation.
     /// `None` means unknown/unannotated — accept all values at runtime (gradual typing).

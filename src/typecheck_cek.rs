@@ -108,7 +108,7 @@ pub(crate) async fn run_fd_improvement_fixpoint(
             &state.instances,
             &mut state.fd_depth,
             state.eval_ctx.clone(),
-            &state.type_stage_fns,
+            &state.type_stage_data.fns,
             errors,
             &state.type_name_to_id,
         )
@@ -272,20 +272,13 @@ pub(crate) enum TypeCheckCont {
         match_node: Arc<SurfaceNode>,
     },
 
-    /// Terminal dict — run HM letrec inference via typecheck_letrec_group.
-    ///
-    /// Pushed by the `Dict` arm of `infer_step`. The handler calls `typecheck_letrec_group`
-    /// directly, which performs key resolution, SCC decomposition, and per-SCC inference
-    /// inline. This avoids duplicating the letrec algorithm in the continuation chain.
-    LetrecGroupPassZero { entries: Vec<Spanned<SurfaceEntry>> },
-
     /// All Dict intermediate bodies in a Sequential processed — restores saved state.
     ///
     /// Pushed by the `Sequential` arm after all Dict intermediates are processed, just
     /// before evaluating the final expression. Restores saved_use_def, saved_current_binding,
     /// and saved_narrowing_map so that nested blocks don't corrupt the enclosing scope.
     ///
-    /// Lost-binding detection will be re-implemented using ScopeFrame in a future commit.
+    /// Lost-binding detection uses SymbolTable unreferenced-entry checks.
     AfterBlock {
         /// Saved state.use_def from the enclosing block (or empty map if at top level).
         /// Restored after AfterBlock fires so that nested blocks do not corrupt
@@ -557,21 +550,8 @@ async fn infer_step(
             let saved_current_binding = state.current_binding.take();
 
             for (_i, intermediate) in intermediates.iter().enumerate() {
-                // Check if this is a dict — if so, use typecheck_letrec_group for proper letrec
-                if let SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } = &intermediate.expr
-                {
-                    // The resolver writes each entry's absolute slot into assigned_slot.
-                    // The first entry's slot is the base for this dict body.
-                    let body_slot_base_pre: Option<u32> = entries
-                        .first()
-                        .and_then(|e| e.node.assigned_slot.get().copied());
-
-                    let (_, _schemes, mut dict_errs) =
-                        typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
-                    errors.append(&mut dict_errs);
+                if let SurfaceExpression::Dict { entries, ref scope } = &intermediate.expr {
+                    let _ = process_dict_in_scope(entries, scope, state, type_map, errors).await;
                 } else {
                     // Every tinct expression is a dict. A non-Dict in intermediate position
                     // means the program is malformed (e.g. a corpus test with a syntax error).
@@ -649,25 +629,13 @@ async fn infer_step(
         // ===== Fn — resolve annotations, build env, push FnBody, eval body =====
         SurfaceExpression::Fn { .. } => infer_fn_push_cont(node, state, errors, stack).await,
 
-        // ===== Dict — push LetrecGroupPassZero, complete inference via typecheck_letrec_group =====
-        //
-        // HM letrec inference is performed by typecheck_letrec_group in
-        // the LetrecGroupPassZero handler. Push the continuation and return Done(Unknown) immediately
-        // to trigger apply_cont — there is no child node to evaluate at this point.
-        SurfaceExpression::Dict {
-            entries,
-            ref scope_frame,
-        } => {
-            if let Some(sf) = scope_frame.get() {
-                state.scope_chain.push(Arc::clone(sf));
-            }
-            stack.push((
-                TypeCheckCont::LetrecGroupPassZero {
-                    entries: entries.to_vec(),
-                },
-                Arc::clone(node),
-            ));
-            TypeCheckAction::Done(state.fresh_type_var(&node.span))
+        // ===== Dict — same processing as Sequential children =====
+        SurfaceExpression::Dict { entries, ref scope } => {
+            let record_type = Box::pin(process_dict_in_scope(
+                entries, scope, state, type_map, errors,
+            ))
+            .await;
+            TypeCheckAction::Done(record_type)
         }
 
         // ===== Match — compound: eval scrutinee first =====
@@ -1526,56 +1494,44 @@ async fn apply_cont(
         // match arm). Restores saved_use_def, saved_current_binding, and
         // saved_narrowing_map so that nested blocks don't corrupt the enclosing scope.
         //
-        // Lost-binding detection will be re-implemented using ScopeFrame in a future commit.
+        // Lost-binding detection uses SymbolTable unreferenced-entry checks.
         TypeCheckCont::AfterBlock {
             saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
         } => {
-            // Pop scope_chain and check for lost bindings.
-            if let Some(popped_scope) = state.scope_chain.pop() {
+            // Pop current_scope (restore to parent) and check for lost bindings.
+            if let Some(ref popped_scope) = state.current_scope {
                 for slot_idx in 0..popped_scope.len() {
                     let slot = slot_idx as u32;
-                    if popped_scope.get_type_scheme(slot).is_some()
-                        && !popped_scope.is_referenced(slot)
-                    {
-                        if let Some(def_span) = popped_scope.definition_span(slot) {
-                            errors.push(Diagnostic::warn(
-                                "lost-binding",
-                                "binding is never used",
-                                def_span.clone(),
-                            ));
+                    if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
+                        if entry.1.type_scheme.get().is_some()
+                            && !entry
+                                .1
+                                .referenced
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            if let Some(def_span) = &entry.1.definition_span {
+                                errors.push(Diagnostic::warn(
+                                    "lost-binding",
+                                    "binding is never used",
+                                    def_span.clone(),
+                                ));
+                            }
                         }
                     }
                 }
             }
+            state.current_scope = state
+                .current_scope
+                .as_ref()
+                .and_then(|s| s.parent().cloned());
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
             state.narrowing_map = saved_narrowing_map;
 
             TypeCheckAction::Done(child_ty)
-        }
-
-        // ===== LetrecGroupPassZero =====
-        //
-        // Terminal dict — run HM letrec inference via typecheck_letrec_group.
-        // Schemes are not propagated to the parent env: this is a terminal dict expression,
-        // not an intermediate scope-chain body. The returned record type carries the full
-        // structural type information.
-        TypeCheckCont::LetrecGroupPassZero { entries } => {
-            let body_slot_base_pre: Option<u32> = entries
-                .first()
-                .and_then(|e| e.node.assigned_slot.get().copied());
-            let (record_type, _schemes, mut dict_errs) = Box::pin(typecheck_letrec_group(
-                &entries,
-                state,
-                type_map,
-                body_slot_base_pre,
-            ))
-            .await;
-            errors.append(&mut dict_errs);
-            TypeCheckAction::Done(record_type)
         }
     }
 }
@@ -1590,24 +1546,30 @@ async fn infer_var_ref(
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
     // Resolve VarRef via the resolution field on the VarRef node.
-    // Dispatch uses slot-based lookup via scope_chain;
+    // Dispatch uses slot-based lookup via current_scope;
     // EffectPerform uses typeclass method signature instantiation.
     // No fallback — missing entry is a resolver bug.
     let scheme: Option<TypeValue> = if let SurfaceExpression::VarRef { resolution, .. } = &node.expr
     {
         if let Some(Some(addr)) = resolution.get() {
             match addr {
-                crate::ast::VarAddr::EffectPerform { slot } => {
+                crate::ast::VarAddr::EffectPerform {
+                    class_decl_id,
+                    method_slot,
+                } => {
                     // Typeclass method call — resolved at runtime by scanning the accumulated group
                     // for an instance whose primary dispatch type matches the first argument's runtime type.
                     // Look up the class by class_decl_id, extract the method signature, and instantiate
                     // it with fresh TypeVars (the method signature uses the class's type parameters as
                     // TypeValue.Var nodes that must be instantiated at each call site).
-                    let class_opt = state.classes.iter().find(|c| c.class_decl_id == 0);
+                    let class_opt = state
+                        .classes
+                        .iter()
+                        .find(|c| c.class_decl_id == *class_decl_id);
                     if let Some(class_decl) = class_opt {
                         let method_sig = class_decl
                             .method_signatures
-                            .get(*slot as usize)
+                            .get(*method_slot as usize)
                             .map(|(_, tv)| Arc::clone(tv));
                         if let Some(sig) = method_sig {
                             // The method signature is a TypeValue.Fn using the class's type parameters
@@ -1706,20 +1668,29 @@ async fn infer_var_ref(
                         unreachable!()
                     };
                     let (resolver_level, slot) = (*resolver_level, *slot);
-                    // Slot lookup via scope_chain.
-                    // scope_chain[len - 1 - depth] is the frame at depth `depth` from the current scope.
-                    // resolver_level = depth from current scope to target frame.
-                    let scope_idx = state
-                        .scope_chain
-                        .len()
-                        .checked_sub(1 + resolver_level as usize);
-                    let slot_scheme =
-                        scope_idx.and_then(|idx| state.scope_chain[idx].get_type_scheme(slot));
-                    if slot_scheme.is_some() {
-                        let dep_def_span = scope_idx
-                            .and_then(|idx| state.scope_chain[idx].definition_span(slot).cloned());
-                        if let Some(idx) = scope_idx {
-                            state.scope_chain[idx].mark_referenced(slot);
+                    // Slot lookup via current_scope.
+                    let entry_exists = state
+                        .current_scope
+                        .as_ref()
+                        .and_then(|s| s.lookup(resolver_level, slot))
+                        .is_some();
+                    let slot_scheme = state
+                        .current_scope
+                        .as_ref()
+                        .and_then(|s| s.lookup(resolver_level, slot))
+                        .and_then(|e| e.type_scheme.get().cloned());
+                    if entry_exists {
+                        let dep_def_span = state
+                            .current_scope
+                            .as_ref()
+                            .and_then(|s| s.lookup(resolver_level, slot))
+                            .and_then(|e| e.definition_span.clone());
+                        if let Some(ref s) = state.current_scope {
+                            if let Some(entry) = s.lookup(resolver_level, slot) {
+                                entry
+                                    .referenced
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                         // Check narrowing_map using VarAddr as key.
                         if let Some(narrowed) = state.narrowing_map.get(addr) {
@@ -1750,10 +1721,15 @@ async fn infer_var_ref(
                         ),
                         node.span.clone(),
                     );
-                        for (depth, frame) in state.scope_chain.iter().enumerate() {
-                            let slot_count = frame.len();
+                        // Walk the scope chain via parent pointers for diagnostics.
+                        let mut depth = 0u32;
+                        let mut walk = state.current_scope.clone();
+                        while let Some(ref scope) = walk {
+                            let slot_count = scope.len();
                             diag = diag
                                 .with_note(format!("scope depth {}: {} slots", depth, slot_count));
+                            walk = scope.parent().cloned();
+                            depth += 1;
                         }
                         errors.push(diag);
                         None
@@ -1761,13 +1737,9 @@ async fn infer_var_ref(
                 }
             } // close match addr
         } else {
-            // No resolver address for this VarRef — resolver bug.
             errors.push(Diagnostic::error(
-                "resolver-miss",
-                format!(
-                    "VarRef '{}' has no resolution — resolver did not resolve this reference",
-                    name
-                ),
+                "unresolved-variable",
+                format!("unresolved variable: '{}'", name),
                 node.span.clone(),
             ));
             None
@@ -1940,8 +1912,12 @@ async fn apply_cont_call_func(
     // Read from VarRef node's resolution OnceLock.
     let effect_perform_meta = if let SurfaceExpression::VarRef { resolution, .. } = &func_node.expr
     {
-        if let Some(Some(crate::ast::VarAddr::EffectPerform { slot })) = resolution.get() {
-            Some((0, slot.to_string()))
+        if let Some(Some(crate::ast::VarAddr::EffectPerform {
+            class_decl_id,
+            method_slot,
+        })) = resolution.get()
+        {
+            Some((*class_decl_id, method_slot.to_string()))
         } else {
             None
         }
@@ -3052,11 +3028,11 @@ async fn infer_fn_push_cont(
             return_ann,
             params,
             body,
-            ref scope_frame,
+            ref scope,
             ..
         } => {
-            if let Some(sf) = scope_frame.get() {
-                state.scope_chain.push(Arc::clone(sf));
+            if let Some(sf) = scope.get() {
+                state.current_scope = Some(Arc::clone(sf));
             }
             (return_ann, params.as_slice(), body)
         }
@@ -3193,7 +3169,7 @@ async fn infer_fn_push_cont(
     // Taking it here prevents leaking into nested fn expressions in the body.
     let expected_params: Option<Vec<TypeValue>> = state.expected_fn_params.take();
 
-    // Fn param types will be written to ScopeFrame in a future commit.
+    // Fn param types are written to SymbolTable at the resolver-assigned slot.
     let mut param_types: Vec<(Option<String>, TypeValue)> = Vec::new();
     let mut typed_variadics: Vec<(String, TypeValue)> = Vec::new();
     let mut rest: Option<Box<(String, TypeValue)>> = None;
@@ -3294,8 +3270,8 @@ async fn infer_fn_push_cont(
             .get()
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
-        // Write param type scheme into the Fn's ScopeFrame at the resolver-assigned slot.
-        if let Some(sf) = state.scope_chain.last() {
+        // Write param type scheme into the Fn's SymbolTable at the resolver-assigned slot.
+        if let Some(ref sf) = state.current_scope {
             sf.set_type_scheme(slot as u32, Arc::clone(&param_ty));
         }
         param_slot_idx += 1;
@@ -3525,9 +3501,9 @@ async fn setup_match_arm_env(
     errors: &mut Vec<Diagnostic>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<(TypeValue, Vec<typecheck_narrow::Narrowing>)> {
-    // Push match arm ScopeFrame if present (case arms with bindings).
-    if let Some(sf) = arm.scope_frame.get() {
-        state.scope_chain.push(Arc::clone(sf));
+    // Push match arm SymbolTable if present (case arms with bindings).
+    if let Some(sf) = arm.scope.get() {
+        state.current_scope = Some(Arc::clone(sf));
     }
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
@@ -3542,7 +3518,11 @@ async fn setup_match_arm_env(
             &mut local_stack,
         ))
         .await;
-        typecheck_narrow::extract_narrowings(guard, &state.type_name_to_id, &state.scope_chain)
+        typecheck_narrow::extract_narrowings(
+            guard,
+            &state.type_name_to_id,
+            state.current_scope.as_ref().unwrap(),
+        )
     } else {
         Vec::new()
     };
@@ -3604,10 +3584,7 @@ async fn setup_match_arm_env(
                 }
             }
             // Dict pattern — narrow the scrutinee by excluding the matched shape.
-            crate::ast::SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            crate::ast::SurfaceExpression::Dict { entries, scope: _ } => {
                 let key_names: Vec<String> = entries
                     .iter()
                     .filter_map(|e| {
@@ -3920,7 +3897,7 @@ async fn run_match_exhaustiveness_check(
     }
 }
 
-// CaseArm env setup removed — will be re-implemented using ScopeFrame.
+// CaseArm env setup removed — implemented via SymbolTable.
 
 // ===== Inline helper: TypeAssert mismatch computation =====
 
@@ -4186,10 +4163,7 @@ fn collect_dependencies(
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::StringLiteral { .. } => {}
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 for entry in entries {
                     if let Some(ref key) = entry.node.key {
                         worklist.push((key, Arc::clone(&locals)));
@@ -4628,17 +4602,11 @@ async fn build_tycon_def_for_entry(
     {
         // Extract the inner Dict entries, unwrapping ReprDecl if present
         let inner_entries: &[Spanned<SurfaceEntry>] = match &inner.expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => entries,
+            SurfaceExpression::Dict { entries, scope: _ } => entries,
             SurfaceExpression::ReprDecl {
                 inner: repr_inner, ..
             } => match &repr_inner.expr {
-                SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } => entries,
+                SurfaceExpression::Dict { entries, scope: _ } => entries,
                 _ => &[],
             },
             _ => &[],
@@ -4810,12 +4778,13 @@ async fn build_tycon_def_for_entry(
             .or_insert(tycon_def);
 
         // Wire type declarations into type_stage_scope
-        if state.type_stage_scope.is_empty() {
+        if state.type_stage_data.scope.is_empty() {
             state
-                .type_stage_scope
+                .type_stage_data
+                .scope
                 .push(std::collections::HashMap::new());
         }
-        state.type_stage_scope[0]
+        state.type_stage_data.scope[0]
             .entry(key_name.to_string())
             .or_insert_with(|| {
                 make_typevalue_nominal(state.type_name_to_id.get(key_name).copied().unwrap_or(0))
@@ -4845,9 +4814,38 @@ async fn build_tycon_def_for_entry(
 /// - `errors` is the accumulated vector of type errors (inference is best-effort)
 ///
 /// Called by:
-/// - `LetrecGroupPassZero` handler (terminal dict expressions in the CEK machine)
+/// - `process_dict_in_scope` (terminal and intermediate dict expressions)
+/// Process a Dict expression with scope management: enter the Dict's SymbolTable scope,
+/// run letrec group inference, then exit (pop to parent). This is the single code path
+/// for all dict processing — both standalone dicts and intermediate dicts in Sequential bodies.
+async fn process_dict_in_scope(
+    entries: &[Spanned<SurfaceEntry>],
+    scope: &std::sync::OnceLock<Arc<crate::symbol_table::SymbolTable>>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+    errors: &mut Vec<Diagnostic>,
+) -> TypeValue {
+    if let Some(sf) = scope.get() {
+        state.current_scope = Some(Arc::clone(sf));
+    }
+    let body_slot_base_pre: Option<u32> = entries
+        .first()
+        .and_then(|e| e.node.assigned_slot.get().copied());
+    let (record_type, _, mut dict_errs) =
+        typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
+    errors.append(&mut dict_errs);
+    state.current_scope = state
+        .current_scope
+        .as_ref()
+        .and_then(|s| s.parent().cloned());
+    record_type
+}
+
+/// HM letrec inference for a dict's entries.
+///
+/// Called by:
+/// - `process_dict_in_scope` (the single code path for all dict scope management)
 /// - `process_document` (top-level dict expressions in a document)
-/// - `run_typecheck`'s Sequential arm (intermediate dict bodies in multi-body functions)
 /// - Recursively for nested Dict values within the SCC per-entry loop
 pub(crate) async fn typecheck_letrec_group(
     entries: &[Spanned<SurfaceEntry>],
@@ -5554,7 +5552,7 @@ pub(crate) async fn typecheck_letrec_group(
                     );
 
                     state.constraints = saved_constraints;
-                    let _ = scheme; // schemes will be written to ScopeFrame in a future commit
+                    let _ = scheme; // schemes are written to SymbolTable via set_type_scheme
                 }
             }
         }
@@ -5567,8 +5565,8 @@ pub(crate) async fn typecheck_letrec_group(
             if let Some(slot) = entry_slots[idx] {
                 if let Some(ty) = field_types.get(name) {
                     schemes.insert(name.clone(), Arc::clone(ty));
-                    // Write type scheme into the current ScopeFrame at the resolver-assigned slot.
-                    if let Some(sf) = state.scope_chain.last() {
+                    // Write type scheme into the current SymbolTable at the resolver-assigned slot.
+                    if let Some(ref sf) = state.current_scope {
                         sf.set_type_scheme(slot, Arc::clone(ty));
                     }
                 }
@@ -5659,7 +5657,7 @@ mod tests {
             body,
             desugared: false,
             resolved_return_annotation: crate::ast::TypeAnnotation::new(),
-            scope_frame: std::sync::OnceLock::new(),
+            scope: std::sync::OnceLock::new(),
         })
     }
 

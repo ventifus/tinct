@@ -6,8 +6,9 @@ use crate::ast::{
     CoreClause, CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode, ANNOTATION_KEY_DEFAULT,
 };
 use crate::error::{ArityBound, Diagnostic};
+use crate::symbol_table::SymbolTable;
 use crate::type_tags::*;
-use crate::value::{EvalFrame, HashableValue, Thunk, Value, TYPE_ID_DICT};
+use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 use indexmap::IndexMap;
 
 // Import eval function and context from eval module
@@ -62,23 +63,22 @@ pub(crate) async fn eval_call_core(
     func_expr: &Spanned<CoreExpr>,
     args: &[Arc<Spanned<CoreExpr>>],
     named_args: &[Spanned<CoreNamedArg>],
-    caller_env_id: u32,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
-    caller_frame: &Arc<EvalFrame>,
+    caller_scope: &Arc<SymbolTable>,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let func_thunk = eval_core_expr(func_expr, caller_frame, ctx).await?;
+    let func_thunk = eval_core_expr(func_expr, caller_scope, ctx).await?;
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (Arc<Thunk> directly).
-    // Use the caller's EvalFrame so that Dispatch variable
+    // Use the caller's SymbolTable so that Dispatch variable
     // references inside argument expressions resolve against the call site's scope.
     let pos_args: Vec<Arc<Thunk>> = args
         .iter()
         .map(|arg| {
             Arc::new(Thunk::core_expr(
                 Arc::clone(arg),
-                Arc::clone(caller_frame),
+                Arc::clone(caller_scope),
                 Arc::clone(ctx),
                 arg.span.clone(),
             ))
@@ -93,7 +93,7 @@ pub(crate) async fn eval_call_core(
         for na in named_args {
             let t = Arc::new(Thunk::core_expr(
                 Arc::clone(&na.node.value),
-                Arc::clone(caller_frame),
+                Arc::clone(caller_scope),
                 Arc::clone(ctx),
                 na.node.value.span.clone(),
             ));
@@ -116,10 +116,9 @@ pub(crate) async fn eval_call_core(
         thunk_span,
         crate::value::FnCallSpec {
             call_span: call_span.clone(),
-            caller_env_id,
             ctx: Arc::clone(ctx),
             original_call,
-            caller_evidence: std::sync::Arc::clone(&caller_frame.group),
+            scope: Arc::clone(caller_scope),
         },
     )))
 }
@@ -128,26 +127,25 @@ pub(crate) async fn eval_call_core(
 ///
 /// `clauses` is the full clause list from `Value::Function.clauses`.
 /// `invoke_function` iterates clauses via `try_clause` to find the first matching one.
-/// `definition_scope` is the definition-site scope captured at function-definition time.
+/// `definition_scope` is the definition-site SymbolTable captured at function-definition time.
 pub struct CallContext<'a> {
     pub clauses: &'a Arc<Vec<CoreClause>>,
-    /// Definition-site scope: the accumulated group at the point the function was defined.
-    /// All outer-scope names resolve through Dispatch addresses into this scope.
-    pub definition_scope: Arc<Vec<Arc<Thunk>>>,
+    /// Definition-site scope: the SymbolTable captured at the point the function was defined.
+    pub definition_scope: Arc<SymbolTable>,
+    /// Caller-site scope: used for evidence collection (typeclass instance dispatch).
+    pub caller_scope: Arc<SymbolTable>,
     pub positional: &'a [Arc<Thunk>],
     pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
     /// Call site span — `name` field carries the function label for blame tracking.
     pub call_span: Span,
     pub ctx: &'a Arc<EvalContext>,
-    pub caller_evidence: crate::value::Scope,
     /// Type closure: maps type parameter names to concrete TypeValues at this call site.
-    /// Populated from CoreExpr::Call.type_instantiation at dispatch time.
     pub type_instantiation: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 }
 
 /// Try to match a single function clause against the provided arguments.
 ///
-/// Returns `Ok(Some(frame))` when the clause matches — the frame is ready for the body.
+/// Returns `Ok(Some(scope))` when the clause matches — the scope is ready for the body.
 /// Returns `Ok(None)` when the clause does not match (wrong arity, type guard, pattern, or guard fails).
 /// Returns `Err(...)` on a hard evaluation error during type guard or pattern materialization.
 ///
@@ -163,17 +161,17 @@ pub struct CallContext<'a> {
 /// 4. **Guard expression**: if `clause.guard.is_some()`, bind args and evaluate the guard in
 ///    the bound frame. Falsy guard → `Ok(None)`. Returns the bound frame directly when the
 ///    guard passes, skipping the redundant bind in step 5.
-/// 5. **All checks pass**: call `bind_args_thunks` and return the resulting frame.
+/// 5. **All checks pass**: call `bind_args_thunks` and return the resulting scope.
 pub(crate) async fn try_clause(
     clause: &CoreClause,
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    definition_scope: Arc<Vec<Arc<Thunk>>>,
+    definition_scope: Arc<SymbolTable>,
+    caller_scope: &Arc<SymbolTable>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-    caller_evidence: crate::value::Scope,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<Option<Arc<EvalFrame>>, Box<crate::error::Diagnostic>> {
+) -> Result<Option<Arc<SymbolTable>>, Box<crate::error::Diagnostic>> {
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
     let params: Vec<Param> = clause
@@ -278,11 +276,11 @@ pub(crate) async fn try_clause(
     // (fn clauses have lowered_pattern = None; only match arm clauses set it). If a fn clause
     // ever carries a lowered_pattern, evaluate it as a structural pattern against args[0].
     if let Some(lowered_pattern) = &clause.lowered_pattern {
-        // Build a pre-arm frame with the definition_scope so pin addresses resolve.
-        let pre_frame = Arc::new(EvalFrame::for_function_call(
+        // Build a pre-arm scope with the definition_scope as parent so pin addresses resolve.
+        let pre_frame = Arc::new(SymbolTable::new_call_frame(
             Arc::clone(&definition_scope),
-            vec![],
-            crate::value::empty_scope(),
+            None,
+            None,
         ));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
@@ -349,11 +347,16 @@ pub(crate) async fn try_clause(
                     })
                 })
                 .collect();
-            let bound_frame = EvalFrame::for_function_call(
-                Arc::clone(&definition_scope),
-                params_final,
-                caller_evidence.clone(),
-            );
+            // Build SymbolTable for the pattern-bound call frame.
+            let mut bound_st =
+                SymbolTable::new_call_frame(Arc::clone(&definition_scope), None, None);
+            for p in params.iter() {
+                bound_st.insert(p.name.clone(), p.slot, None);
+            }
+            let bound_frame = Arc::new(bound_st);
+            for (i, thunk) in params_final.iter().enumerate() {
+                bound_frame.set_value(i as u32, Arc::clone(thunk));
+            }
 
             // Step 4 (guard) with pattern-bound frame.
             if let Some(guard_expr) = &clause.guard {
@@ -363,7 +366,7 @@ pub(crate) async fn try_clause(
                     &guard_value,
                     ctx,
                     call_span,
-                    Arc::clone(&bound_frame.group),
+                    Arc::clone(&bound_frame),
                 ))
                 .await?
                 {
@@ -383,9 +386,9 @@ pub(crate) async fn try_clause(
             args,
             named,
             Arc::clone(&definition_scope),
+            caller_scope,
             ctx,
             call_span,
-            caller_evidence.clone(),
             type_inst.clone(),
         )
         .await
@@ -399,7 +402,7 @@ pub(crate) async fn try_clause(
             &guard_value,
             ctx,
             call_span,
-            Arc::clone(&bound_frame.group),
+            Arc::clone(&bound_frame),
         ))
         .await?
         {
@@ -415,9 +418,9 @@ pub(crate) async fn try_clause(
         args,
         named,
         definition_scope,
+        caller_scope,
         ctx,
         call_span,
-        caller_evidence,
         type_inst,
     )
     .await
@@ -451,23 +454,23 @@ pub async fn invoke_function(
     )))
 }
 
-/// TCO variant of `invoke_function` that returns the body expression and call EvalFrame
+/// TCO variant of `invoke_function` that returns the body expression and call SymbolTable
 /// directly instead of creating a thunk. This allows the caller to reuse the current
 /// continuation frame instead of pushing a new Memoize continuation.
 ///
-/// Returns `(body_expr, call_frame)` so the caller can construct `Action::EvalCore`.
+/// Returns `(body_expr, call_scope)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> Result<(Arc<Spanned<CoreExpr>>, Arc<EvalFrame>), Box<crate::error::Diagnostic>> {
+) -> Result<(Arc<Spanned<CoreExpr>>, Arc<SymbolTable>), Box<crate::error::Diagnostic>> {
     for clause in ctx.clauses.iter() {
         let result = try_clause(
             clause,
             ctx.positional,
             ctx.named,
             Arc::clone(&ctx.definition_scope),
+            &ctx.caller_scope,
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_evidence.clone(),
             ctx.type_instantiation.clone(),
         )
         .await?;
@@ -495,9 +498,9 @@ pub(crate) async fn invoke_function_tco(
             ctx.positional,
             ctx.named,
             Arc::clone(&ctx.definition_scope),
+            &ctx.caller_scope,
             ctx.ctx,
             &ctx.call_span,
-            ctx.caller_evidence.clone(),
             ctx.type_instantiation.clone(),
         )
         .await
@@ -591,21 +594,21 @@ pub(crate) async fn invoke_function_tco(
     Err(err.into())
 }
 
-/// Validate function arguments, build a call-frame EvalFrame, and return it.
+/// Validate function arguments, build a call-frame SymbolTable, and return it.
 ///
 /// Handles arity validation, default params, variadic params, and system-injected
-/// named args. The returned EvalFrame carries the bound params
-/// for use with `Thunk::core_expr` and `EvalFrame`-based variable lookup.
+/// named args. The returned SymbolTable carries the bound params
+/// for use with `Thunk::core_expr` and SymbolTable-based variable lookup.
 pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    definition_scope: Arc<Vec<Arc<Thunk>>>,
+    definition_scope: Arc<SymbolTable>,
+    caller_scope: &Arc<SymbolTable>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-    caller_evidence: crate::value::Scope,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<Arc<EvalFrame>, Box<crate::error::Diagnostic>> {
+) -> Result<Arc<SymbolTable>, Box<crate::error::Diagnostic>> {
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
     // Untyped rest has variadic=true and resolved_type=None (or Unknown).
@@ -708,8 +711,7 @@ pub(crate) async fn bind_args_thunks(
     }
 
     // Build param slots as a Vec<Arc<Thunk>> indexed by param.slot.
-    // Params are appended to the group after definition_scope entries.
-    // EvalFrame::for_function_call(definition_scope, params) extends the group with params.
+    // Each slot is inserted into the call-frame SymbolTable at the end.
     let slot_count = params.len();
     let mut param_slots: Vec<Option<Arc<Thunk>>> = vec![None; slot_count];
 
@@ -736,7 +738,7 @@ pub(crate) async fn bind_args_thunks(
                     .expect("lowering always succeeds");
                 let default_thunk = Arc::new(Thunk::core_expr(
                     Arc::new(core_spanned),
-                    EvalFrame::empty(),
+                    SymbolTable::empty(),
                     Arc::clone(ctx),
                     call_span.clone(),
                 ));
@@ -751,7 +753,7 @@ pub(crate) async fn bind_args_thunks(
                 .expect("lowering always succeeds");
             let default_thunk = Arc::new(Thunk::core_expr(
                 Arc::new(core_spanned),
-                EvalFrame::empty(),
+                SymbolTable::empty(),
                 Arc::clone(ctx),
                 call_span.clone(),
             ));
@@ -902,12 +904,22 @@ pub(crate) async fn bind_args_thunks(
         .map(|opt| opt.expect("param slot invariant violated: unfilled slot after arity check"))
         .collect();
 
-    Ok(EvalFrame::for_function_call_with_type_inst(
-        definition_scope,
-        params_vec,
-        caller_evidence,
-        type_inst,
-    ))
+    // Build the call-frame SymbolTable: parent = definition_scope, params as entries.
+    let type_inst_opt = if type_inst.is_empty() {
+        None
+    } else {
+        Some(type_inst)
+    };
+    let caller_evidence = caller_scope.collect_caller_evidence();
+    let mut st = SymbolTable::new_call_frame(definition_scope, caller_evidence, type_inst_opt);
+    for p in params {
+        st.insert(p.name.clone(), p.slot, None);
+    }
+    let st = Arc::new(st);
+    for (i, thunk) in params_vec.into_iter().enumerate() {
+        st.set_value(i as u32, thunk);
+    }
+    Ok(st)
 }
 
 /// Extract the default value node from a param's annotation, if present.

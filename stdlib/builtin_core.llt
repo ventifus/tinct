@@ -190,11 +190,11 @@
   builtin-bytes-length:      [fn@Integer [let b@Bytes] ...]
   # builtin-merge: implemented in tinct prelude and loader/test-loader (using builder API).
   # builtin-append: implemented in tinct prelude (derived from builtin-merge).
-  builtin-dict-get:           [fn@[bind: [c k v]  return: v  constraint: [$Indexable c k v]] [let k@k xs@c] ...]
+  builtin-dict-get:           [fn@Any [let k@Any xs@Dict] ...]
   builtin-has-key?:          [fn@[or 0 1] [let k@Any xs@Dict] ...]
   builtin-get-by-field:      [fn@Any      [let field@String k@Any xs@Dict] ...]
   builtin-dict-has-nth?:     [fn@[or 0 1] [let d@Dict n@Integer] ...]
-  builtin-dict-nth:          [fn@[bind: [v]  return: v  constraint: [$Indexed c v]] [let d@Dict n@Integer] ...]
+  builtin-dict-nth:          [fn@Any [let d@Dict n@Integer] ...]
   builtin-dict-has-key-nth?: [fn@[or 0 1] [let d@Dict n@Integer] ...]
   builtin-dict-key-nth:      [fn@Any      [let d@Dict n@Integer] ...]
   builtin-dict-has-kv-nth?:  [fn@[or 0 1] [let d@Dict n@Integer] ...]
@@ -236,8 +236,8 @@
 
   # ── Capability ─────────────────────────────────────────────────────────────
   # cap-env-has?: true (1) if the named capability key is present in the env scope.
-  # env: Scope — the accumulated scope passed to builtin-eval.
-  builtin-cap-env-has?:  [fn@[or 0 1] [let name@String env@Scope] ...]
+  # env: SymbolTable — the accumulated scope passed to builtin-eval.
+  builtin-cap-env-has?:  [fn@[or 0 1] [let name@String env@SymbolTable] ...]
 
   # ── I/O ───────────────────────────────────────────────────────────────────
   builtin-narrow:        [fn@DirCap  [let cap@DirCap path@String] ...]
@@ -255,22 +255,22 @@
   # expand: expand declarations in a desugared Program (type decls, class decls, etc.).
   builtin-expand:         [fn@Program  [let prog@Program] ...]
   # resolve: resolve VarRef de Bruijn coords in a document against a scope.
-  # scope: Scope — opaque scope with name-to-slot mapping for all visible names.
+  # scope: SymbolTable — opaque scope with name-to-slot mapping for all visible names.
   # Returns {doc, diagnostics, unreferenced}.
   # diagnostics: error-level diagnostics only (undefined variables).
-  builtin-resolve:        [fn@[doc: Document  diagnostics: Diagnostics  unreferenced: Dict] [let doc@Document scope@Scope] ...]
+  builtin-resolve:        [fn@[doc: Document  diagnostics: Diagnostics  unreferenced: Dict] [let doc@Document scope@SymbolTable] ...]
   # lower: lower a resolved+typechecked Document to a CoreDocument.
   # Must be called after builtin-typecheck-doc and before builtin-eval.
   builtin-lower:          [fn@CoreDocument [let typed@Document] ...]
   # eval: evaluate a lowered CoreDocument with a scope.
-  # scope: Scope — opaque scope with slots and name mapping.
-  # Returns a Scope containing the accumulated scope after evaluation.
-  builtin-eval:           [fn@Scope    [let lowered@CoreDocument scope@Scope] ...]
+  # scope: SymbolTable — opaque scope with slots and name mapping.
+  # Returns {table: SymbolTable, diagnostics: Diagnostics} after evaluation.
+  builtin-eval:           [fn@[table: SymbolTable  diagnostics: Diagnostics]  [let lowered@CoreDocument scope@SymbolTable] ...]
   # typecheck-doc: type-check a single resolved document against a TypeContext.
   # Required third arg: doc-env Dict — provides eval-stage scope for type-stage expressions.
   # Returns {doc, diagnostics}.
   # tc: the TypeContext carrying accumulated type-stage state for this document.
-  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@Scope] ...]
+  builtin-typecheck-doc:  [fn@[doc: Document  diagnostics: Diagnostics] [let doc@Document tc@TypeContext doc-env@SymbolTable] ...]
   # lint-pipeline-docs: cross-document pipeline stage lint.
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
@@ -397,7 +397,7 @@
   Expression:        [type repr: 28]
   CoreDocument:      [type repr: 38]
   TypeContext:       [type repr: 37]
-  Scope:             [type repr: 39]
+  SymbolTable:       [type repr: 39]
   BuilderHandle:     [type repr: 6]
 
   # ── Callable typeclass ────────────────────────────────────────────────────
@@ -406,8 +406,8 @@
   [instance Callable [let k@Fn]:      []]
   [instance Callable [let k@Builtin]: []]
 
-  # ── Scope operations ──────────────────────────────────────────────────────
-  builtin-empty-scope:       [fn@Scope   [let] ...]
-  builtin-scope-extend:      [fn@Scope   [let scope@Scope additions@Dict] ...]
-  builtin-scope-exports:     [fn@Dict    [let scope@Scope] ...]
+  # ── SymbolTable operations ─────────────────────────────────────────────────
+  builtin-empty-symbol-table:    [fn@SymbolTable  [let] ...]
+  builtin-symbol-table-extend:   [fn@SymbolTable  [let scope@SymbolTable additions@Dict] ...]
+  builtin-symbol-table-get:      [fn               [let scope@SymbolTable name@String] ...]
 ]

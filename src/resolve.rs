@@ -3,30 +3,36 @@
 //! The resolver walks the AST and assigns VarAddr values to static variable references
 //! before evaluation begins:
 //!
-//! - `Dispatch(depth, slot)` — reference to `accumulated_group[slot]`. Slot is an
-//!   ABSOLUTE cumulative index: root-scope entries occupy slots 0..N-1 (from
-//!   `enter_scope_from_frame`), document dict entries follow at cumulative offsets assigned
-//!   by `walk_surface_document_with_offset`, and function/match-arm parameters are appended
-//!   after definition_scope entries. Cross-dict references within a document use Dispatch with
-//!   the absolute slot — no runtime frame traversal needed.
-//! - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
+//! - `Dispatch(depth, slot)` — per-frame relative slot lookup.
+//!   `depth` is the number of SymbolTable parent links to walk (0 = current frame).
+//!   `slot` is the entry index within that frame (0-based per frame).
+//! - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
+//!   resolved at runtime via the evidence map on the caller's SymbolTable.
 //!
 //! **Invariants:**
 //! - Must run exactly once per AST (write-once OnceLock).
 //! - Must run after desugaring (sees $_ as Fn nodes, not VarRef("_")).
 //! - Must run before typechecking and evaluation (both consumers of resolved coords).
-//!
-//! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
     node_id, DotKey, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
     SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::Diagnostic;
+use crate::symbol_table::SymbolTable;
 use std::sync::Arc;
 
-// ============================================================================
-// runtime-v2: SurfaceProgram resolver — produces ResolutionTable
+/// Sentinel slot value stored in SymbolTable entries that represent EffectPerform
+/// typeclass method bindings. When `resolve_name` encounters an entry with this
+/// slot, it consults `effect_perform_addrs` for the actual VarAddr.
+const EFFECT_SENTINEL: u32 = u32::MAX;
+
+/// Result of variable resolution.
+pub struct ResolveResult {
+    pub table: ResolutionTable,
+    pub diagnostics: Vec<Diagnostic>,
+    pub unreferenced: Vec<String>,
+}
 
 /// Extract binding variable names from a `[let name1 name2 ...]` node.
 /// Excludes `_` (wildcard) from the result — `_` is not a binding.
@@ -50,179 +56,110 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
     }
 }
 
-
 struct SurfaceResolver {
-    /// Each scope frame maps name → VarAddr.
-    scopes: Vec<indexmap::IndexMap<String, VarAddr>>,
+    /// Current scope in the SymbolTable parent chain.
+    current_scope: Option<Arc<SymbolTable>>,
     table: ResolutionTable,
     diagnostics: Vec<Diagnostic>,
-    /// Names from the env-dict (name-set) that were referenced during this document's walk.
-    /// Used to compute unreferenced env names returned by resolve_surface_document_with_env_dict.
-    referenced_env_names: std::collections::HashSet<String>,
-    /// Depth of the env-dict scope in the scope stack (set by resolve_surface_document_with_env_dict).
-    /// When set, only names resolved at this depth are recorded in referenced_env_names.
-    env_scope_depth: Option<usize>,
-    /// Tracks the cumulative base slot for the next `SurfaceExpression::Dict` letrec scope.
-    ///
-    /// At runtime, `eval_dict_core` builds `extended_group = outer_frame.group ++ letrec_slots`,
-    /// placing the dict's entries at indices `outer_frame.group.len()..outer_frame.group.len()+N`.
-    /// The resolver must assign LGM(outer_frame.group.len()+i) to entry i — NOT LGM(i) — so that
-    /// `LGM(slot)` resolves to `frame.group[slot]` which is the correct thunk.
-    ///
-    /// This field tracks the value that `outer_frame.group.len()` will have at the eval_dict_core
-    /// call site for the next nested dict. Updated rules:
-    /// - Document level: set to `cumulative_offset` before walking each document dict node
-    ///   (see `walk_surface_document_with_offset`).
-    /// - Dict arm (`SurfaceExpression::Dict`): save, use as base, advance by `static_keys.len()`
-    ///   before walking values (so nested dicts see the right base), restore on exit.
-    /// - Sequential arm (fn intermediate dict bodies): set to `sequential_offset + body_key_count`
-    ///   before walking each body's values.
-    /// - Fn arm (`SurfaceExpression::Fn`): save, reset to 0 (fn call frame has `group = []`),
-    ///   restore on exit.
-    accumulated_dict_offset: u32,
+    /// Maps method_name -> EffectPerform VarAddr for typeclass method calls.
+    /// Entries are inserted when class/instance pairs are discovered within a dict.
+    /// The corresponding SymbolTable entry uses EFFECT_SENTINEL as its slot.
+    effect_perform_addrs: std::collections::HashMap<String, VarAddr>,
+    /// The initial (outermost) scope passed by the caller, used for unreferenced tracking.
+    initial_scope: Option<Arc<SymbolTable>>,
+    /// Names from the initial scope that were referenced during resolution.
+    referenced_initial_names: std::collections::HashSet<String>,
 }
 
 impl SurfaceResolver {
-    fn new() -> Self {
+    fn new(initial_scope: &Arc<SymbolTable>) -> Self {
         Self {
-            scopes: Vec::new(),
+            current_scope: Some(Arc::clone(initial_scope)),
             table: ResolutionTable::new(),
             diagnostics: Vec::new(),
-            referenced_env_names: std::collections::HashSet::new(),
-            env_scope_depth: None,
-            accumulated_dict_offset: 0,
+            effect_perform_addrs: std::collections::HashMap::new(),
+            initial_scope: Some(Arc::clone(initial_scope)),
+            referenced_initial_names: std::collections::HashSet::new(),
         }
     }
 
-    /// Inject EffectPerform addresses for class methods into the current topmost scope.
-    /// Used when the resolver is seeded with class information from previously-resolved
-    /// files — the class method names must be findable through the normal scope chain.
-    fn inject_class_methods(&mut self, methods: &std::collections::HashMap<String, u64>) {
-        if let Some(scope) = self.scopes.last_mut() {
-            for (method_name, _class_id) in methods {
-                let should_inject = match scope.get(method_name) {
-                    None => true,
-                    Some(VarAddr::EffectPerform { .. }) => true,
-                    _ => false,
-                };
-                if should_inject {
-                    scope.insert(
-                        method_name.clone(),
-                        VarAddr::EffectPerform {
-                            slot: 0, // placeholder — will be resolved to actual slot at lookup time
-                        },
-                    );
-                }
-            }
+    /// Enter a scope with contiguous 0-based slots for the given names.
+    /// Returns the Arc<SymbolTable> for setting on AST nodes.
+    fn enter_scope(&mut self, names: &[String]) -> Arc<SymbolTable> {
+        let parent = self.current_scope.take();
+        let mut st = SymbolTable::new(parent);
+        for (i, name) in names.iter().enumerate() {
+            st.insert(name.clone(), i as u32, None);
         }
-    }
-
-    /// Enter a letrec dict scope with a slot offset.
-    /// Each key gets `Dispatch(0, offset + i)` as its VarAddr.
-    /// Used by walk_surface_document to assign cumulative Dispatch indices to sequential
-    /// dict scopes so that cross-document references don't collide with prior dicts.
-    fn enter_scope_with_offset(&mut self, keys: &[String], offset: u32) {
-        let mut scope: indexmap::IndexMap<String, VarAddr> =
-            indexmap::IndexMap::with_capacity(keys.len());
-        for (i, key) in keys.iter().enumerate() {
-            // depth=0 is a placeholder; resolve_name overwrites depth with the actual
-            // scope-stack traversal distance when the name is looked up.
-            scope.insert(key.clone(), VarAddr::Dispatch(0, offset + i as u32));
-        }
-        self.scopes.push(scope);
+        let arc = Arc::new(st);
+        self.current_scope = Some(Arc::clone(&arc));
+        arc
     }
 
     /// Enter a scope with pre-computed (name, slot) pairs.
-    ///
-    /// Unlike `enter_scope_with_offset` which assigns contiguous slots from a base offset,
-    /// this method accepts explicit slot positions for each name. Used when entries get
-    /// uniform sequential slot assignment (all entries, not just static-key ones), so
-    /// static key names may have non-contiguous slot positions.
-    fn enter_scope_with_slot_pairs(&mut self, pairs: &[(String, u32)]) {
-        let mut scope: indexmap::IndexMap<String, VarAddr> =
-            indexmap::IndexMap::with_capacity(pairs.len());
+    /// Slots must be contiguous 0-based to match IndexMap insertion order.
+    fn enter_scope_with_slots(&mut self, pairs: &[(String, u32)]) -> Arc<SymbolTable> {
+        let parent = self.current_scope.take();
+        let mut st = SymbolTable::new(parent);
         for (name, slot) in pairs {
-            scope.insert(name.clone(), VarAddr::Dispatch(0, *slot));
+            st.insert(name.clone(), *slot, None);
         }
-        self.scopes.push(scope);
-    }
-
-    /// Enter a function parameter scope: each param gets `Dispatch(0, slot)` as its VarAddr.
-    /// Params are assigned slots starting at accumulated_dict_offset (the definition_scope size).
-    /// Advances accumulated_dict_offset by params.len() so body dict entries start after params.
-    fn enter_param_scope(&mut self, params: &[String]) {
-        let mut scope = indexmap::IndexMap::with_capacity(params.len());
-        for (i, name) in params.iter().enumerate() {
-            let slot = self.accumulated_dict_offset + i as u32;
-            scope.insert(name.clone(), VarAddr::Dispatch(0, slot));
-        }
-        self.scopes.push(scope);
-        self.accumulated_dict_offset += params.len() as u32;
-    }
-
-    /// Seed scope from an external frame (initial_frames from the loader).
-    ///
-    /// External frames carry u32 slot indices into the root group (accumulated_group).
-    /// Root-scope names (builtins and capabilities) are assigned `Dispatch(0, slot)` —
-    /// they occupy the first slots of the accumulated_group at runtime. Document dict entries
-    /// follow at cumulative slot offsets above the root-scope slots.
-    fn enter_scope_from_frame(&mut self, frame: &indexmap::IndexMap<String, u32>) {
-        let converted: indexmap::IndexMap<String, VarAddr> = frame
-            .iter()
-            // depth=0 placeholder; resolve_name overwrites depth with traversal offset at lookup.
-            .map(|(k, &slot)| (k.clone(), VarAddr::Dispatch(0, slot)))
-            .collect();
-        self.scopes.push(converted);
+        let arc = Arc::new(st);
+        self.current_scope = Some(Arc::clone(&arc));
+        arc
     }
 
     fn exit_scope(&mut self) {
-        self.scopes.pop().expect("scopes is empty");
+        let scope = self.current_scope.take().expect("scope stack underflow");
+        self.current_scope = scope.parent().cloned();
     }
 
-    /// Resolve `name` in the current scope stack, returning its `VarAddr`.
+    /// Resolve `name` in the current scope chain, returning its `VarAddr`.
     ///
     /// All variable addressing uses exactly two variants:
-    /// - `Dispatch(depth, slot)` — absolute cumulative slot in the accumulated_group.
-    ///   Root-scope entries occupy slots 0..N-1; document dict entries follow at cumulative
-    ///   offsets; function/match-arm parameters are appended after definition_scope entries.
-    ///   Cross-dict references (a name from dict_i referenced in dict_j where j>i)
-    ///   resolve directly to Dispatch(depth, slot) because walk_surface_document assigns cumulative
-    ///   slots via enter_scope_with_offset, making each slot unique across the document.
-    /// - `EffectPerform { slot }` — typeclass method call; resolved at runtime via slot lookup.
-    ///
-    /// If a name crosses a fn boundary, it is added to the current function's capture list
-    /// (if not already present) with its original Dispatch/Parameter address. The VarRef
-    /// itself still receives the Dispatch address — the evaluator handles cross-fn-boundary
-    /// access via the definition-site group carried by function values.
+    /// - `Dispatch(depth, slot)` — per-frame relative slot lookup.
+    ///   `depth` is the number of SymbolTable parent links to walk.
+    ///   `slot` is the entry index within that frame.
+    /// - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
+    ///   resolved at runtime via the evidence map.
     fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
-        // Search from innermost scope outward.
-        let scopes_len = self.scopes.len();
-        let found = self
-            .scopes
-            .iter()
-            .rev()
-            .enumerate()
-            .find_map(|(offset, scope)| {
-                scope.get(name).map(|addr| {
-                    let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
-                    (frame_abs_idx, offset as u32, addr.clone())
-                })
-            });
+        let scope = self.current_scope.as_ref()?;
+        let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
 
-        let (match_depth, traversal_offset, addr) = found?;
-        // Inject the correct depth into Dispatch entries. The stored depth=0 is a
-        // placeholder written at scope-construction time; the actual traversal offset is only
-        // known at lookup time (here). The evaluator ignores depth and uses slot directly.
-        let addr = match addr {
-            VarAddr::Dispatch(_, slot) => VarAddr::Dispatch(traversal_offset, slot),
-            other => other,
-        };
+        let mut depth = 0u32;
+        let mut current: &SymbolTable = scope.as_ref();
+        let mut result: Option<(u32, u32, bool, bool)> = None; // depth, slot, is_effect, is_initial
 
-        if self.env_scope_depth.map_or(false, |d| match_depth == d) {
-            self.referenced_env_names.insert(name.to_string());
+        loop {
+            if let Some(entry) = current.entries().get(name) {
+                let is_initial =
+                    initial_ptr.map_or(false, |ip| std::ptr::eq(current as *const SymbolTable, ip));
+                let is_effect = entry.slot == EFFECT_SENTINEL;
+                if !is_effect {
+                    entry
+                        .referenced
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                result = Some((depth, entry.slot, is_effect, is_initial));
+                break;
+            }
+            match current.parent() {
+                Some(p) => {
+                    current = p.as_ref();
+                    depth += 1;
+                }
+                None => break,
+            }
         }
 
-        Some(addr)
+        let (depth, slot, is_effect, is_initial) = result?;
+        if is_initial {
+            self.referenced_initial_names.insert(name.to_string());
+        }
+        if is_effect {
+            return self.effect_perform_addrs.get(name).cloned();
+        }
+        Some(VarAddr::Dispatch(depth, slot))
     }
 
     /// Resolve `name` using leading-dot semantics: find the **second** occurrence of `name`
@@ -234,45 +171,50 @@ impl SurfaceResolver {
     /// - Find the first binding of `name` anywhere in the scope chain (innermost wins).
     /// - Skip it and search outward for the next binding of `name`.
     /// - Return `None` if there is no second binding — caller emits "undefined variable".
-    ///
-    /// This is strictly more correct than the old "skip nearest Dict scope" heuristic:
-    ///   - Works even when `name` is not in the nearest Dict (no over-skipping).
-    ///   - No special cases: if there is only one binding, `.name` is an error.
-    ///   - Composable: a dispatcher that chains via `.method` naturally reaches the
-    ///     prelude's copy regardless of how many scope levels separate them.
-    ///
     fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
-        let scopes_len = self.scopes.len();
+        let scope = self.current_scope.as_ref()?;
+        let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
+
+        let mut depth = 0u32;
+        let mut current: &SymbolTable = scope.as_ref();
         let mut found_first = false;
-        let found = self
-            .scopes
-            .iter()
-            .rev()
-            .enumerate()
-            .find_map(|(offset, scope)| {
+        let mut result: Option<(u32, u32, bool, bool)> = None;
+
+        loop {
+            if current.entries().contains_key(name) {
                 if !found_first {
-                    if scope.contains_key(name) {
-                        found_first = true;
+                    found_first = true;
+                } else {
+                    let entry = current.entries().get(name).unwrap();
+                    let is_initial = initial_ptr
+                        .map_or(false, |ip| std::ptr::eq(current as *const SymbolTable, ip));
+                    let is_effect = entry.slot == EFFECT_SENTINEL;
+                    if !is_effect {
+                        entry
+                            .referenced
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    return None;
+                    result = Some((depth, entry.slot, is_effect, is_initial));
+                    break;
                 }
-                scope.get(name).map(|addr| {
-                    let frame_abs_idx = scopes_len.saturating_sub(1 + offset);
-                    (frame_abs_idx, offset as u32, addr.clone())
-                })
-            });
-
-        let (match_depth, traversal_offset, addr) = found?;
-        let addr = match addr {
-            VarAddr::Dispatch(_, slot) => VarAddr::Dispatch(traversal_offset, slot),
-            other => other,
-        };
-
-        if self.env_scope_depth.map_or(false, |d| match_depth == d) {
-            self.referenced_env_names.insert(name.to_string());
+            }
+            match current.parent() {
+                Some(p) => {
+                    current = p.as_ref();
+                    depth += 1;
+                }
+                None => break,
+            }
         }
 
-        Some(addr)
+        let (depth, slot, is_effect, is_initial) = result?;
+        if is_initial {
+            self.referenced_initial_names.insert(name.to_string());
+        }
+        if is_effect {
+            return self.effect_perform_addrs.get(name).cloned();
+        }
+        Some(VarAddr::Dispatch(depth, slot))
     }
 
     fn walk_surface_node(&mut self, arc: &Arc<SurfaceNode>) {
@@ -297,114 +239,16 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 // Walk key expressions in outer scope.
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
-                        let is_static =
-                            matches!(&key.expr, SurfaceExpression::VarRef { escaped: false, .. });
-                        if is_static {}
                         self.walk_surface_node(key);
-                        if is_static {}
                     }
                 }
 
-                let base_offset = self.accumulated_dict_offset;
-
-                // Uniform slot assignment: every entry gets a real sequential slot.
-                // Assign slots BEFORE entering scope so we can collect the actual
-                // (name, slot) pairs for static-key entries. Static keys may have
-                // non-contiguous slot positions when non-static entries are interspersed.
-                let mut scope_pairs: Vec<(String, u32)> = Vec::new();
-                {
-                    let mut slot_idx: u32 = 0;
-                    for entry in entries.iter() {
-                        // Collect static key name → actual slot for scope entry.
-                        if let Some(key) = &entry.node.key {
-                            match &key.expr {
-                                SurfaceExpression::StringLiteral { content, .. } => {
-                                    scope_pairs.push((content.clone(), base_offset + slot_idx));
-                                }
-                                SurfaceExpression::VarRef {
-                                    name,
-                                    escaped: false,
-                                    ..
-                                } => {
-                                    scope_pairs.push((name.clone(), base_offset + slot_idx));
-                                }
-                                _ => {}
-                            }
-                        }
-                        // First write wins: shared AST nodes may be visited multiple times.
-                        let _ = entry.node.assigned_slot.set(base_offset + slot_idx);
-                        slot_idx += 1;
-                        // InstanceDecl method slots: advance slot_idx past method bindings
-                        // so subsequent entries get the correct slot.
-                        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } =
-                                decl.as_ref()
-                            {
-                                for (_pattern, method_entries) in arms {
-                                    for me in method_entries {
-                                        let method_name =
-                                            me.node.key.as_ref().and_then(|k| match &k.expr {
-                                                SurfaceExpression::StringLiteral {
-                                                    content,
-                                                    ..
-                                                } => Some(content.clone()),
-                                                SurfaceExpression::VarRef { name, .. } => {
-                                                    Some(name.clone())
-                                                }
-                                                _ => None,
-                                            });
-                                        if let Some(name) = method_name {
-                                            if !scope_pairs.iter().any(|(n, _)| n == &name) {
-                                                scope_pairs.push((name, base_offset + slot_idx));
-                                            }
-                                            let _ =
-                                                me.node.assigned_slot.set(base_offset + slot_idx);
-                                            slot_idx += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Enter the dict's letrec scope with actual slot positions.
-                    //
-                    // At runtime, eval_dict_core builds extended_group = outer_frame.group
-                    // ++ letrec_slots, placing ALL entries (not just static-key ones) at
-                    // sequential indices. The resolver assigns Dispatch(_, slot) using the
-                    // actual slot position of each static-key entry so that LGM(slot) →
-                    // frame.group[slot] resolves to the correct thunk.
-                    self.enter_scope_with_slot_pairs(&scope_pairs);
-                    // Set ScopeFrame on the Dict AST node after entering scope.
-                    if let SurfaceExpression::Dict { scope_frame, .. } = &arc.expr {
-                        let _ = scope_frame.set(std::sync::Arc::new(crate::ast::ScopeFrame::new(scope_pairs.len())));
-                    }
-                    // Advance accumulated_dict_offset by the total slot count (all entries
-                    // + instance method slots) so nested dicts use the correct base.
-                    self.accumulated_dict_offset = base_offset + slot_idx;
-                }
-
-                // Phase 1b: two-pass scan for typeclass method injection.
-                //
-                // Pass 1: assign class_ids to all ClassDecl nodes (including nested ones
+                // Phase 1b: assign class_ids to all ClassDecl nodes (including nested ones
                 // inside namespace dicts like `File: [Readable: [class ...]]`).
-                //
-                // Pass 2: scan for InstanceDecl entries (named or anonymous), resolve
-                // each instance's class_name to find the ClassDecl, and inject the
-                // class's method names into the current scope as EffectPerform addresses.
-                //
-                // Method injection is INSTANCE-driven: the instance provides evidence
-                // that the methods are callable from this scope. The class only needs to
-                // be visible from the instance's scope — the caller sees the instance.
-
-                // Pass 1: assign class_ids to ClassDecl entries.
                 for entry in entries.iter() {
                     if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                         if let crate::ast::SurfaceDeclaration::ClassDecl {
@@ -441,30 +285,57 @@ impl SurfaceResolver {
                     }
                 }
 
-                // Pass 2: scan for InstanceDecl entries and inject method names.
+                // Build the SymbolTable for this dict's letrec scope.
+                // Slots are per-frame relative (0-based). Only named entries get scope slots.
+                let parent = self.current_scope.take();
+                let mut st = SymbolTable::new(parent);
+                let mut scope_slot = 0u32;
+                let mut overall_slot = 0u32;
                 for entry in entries.iter() {
+                    if let Some(key) = &entry.node.key {
+                        match &key.expr {
+                            SurfaceExpression::StringLiteral { content, .. } => {
+                                st.insert(content.clone(), scope_slot, None);
+                                scope_slot += 1;
+                            }
+                            SurfaceExpression::VarRef {
+                                name,
+                                escaped: false,
+                                ..
+                            } => {
+                                st.insert(name.clone(), scope_slot, None);
+                                scope_slot += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    // First write wins: shared AST nodes may be visited multiple times.
+                    let _ = entry.node.assigned_slot.set(overall_slot);
+                    overall_slot += 1;
+                    // InstanceDecl method slots: advance past method bindings.
                     if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                        if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, .. } =
+                        if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } =
                             decl.as_ref()
                         {
-                            if let Some((_class_id, methods)) =
-                                find_class_decl_in_entries(class_name, entries)
-                            {
-                                if let Some(scope) = self.scopes.last_mut() {
-                                    for method_name in methods {
-                                        let should_inject = match scope.get(&method_name) {
-                                            None => true,
-                                            Some(VarAddr::EffectPerform { .. }) => true,
-                                            _ => false,
-                                        };
-                                        if should_inject {
-                                            scope.insert(
-                                                method_name.clone(),
-                                                VarAddr::EffectPerform {
-                                                    slot: 0, // placeholder — actual slot assigned by enter_scope_with_offset
-                                                },
-                                            );
+                            for (_pattern, method_entries) in arms {
+                                for me in method_entries {
+                                    let method_name =
+                                        me.node.key.as_ref().and_then(|k| match &k.expr {
+                                            SurfaceExpression::StringLiteral {
+                                                content, ..
+                                            } => Some(content.clone()),
+                                            SurfaceExpression::VarRef { name, .. } => {
+                                                Some(name.clone())
+                                            }
+                                            _ => None,
+                                        });
+                                    if let Some(name) = method_name {
+                                        if !st.entries().contains_key(&name) {
+                                            st.insert(name.clone(), scope_slot, None);
+                                            scope_slot += 1;
                                         }
+                                        let _ = me.node.assigned_slot.set(overall_slot);
+                                        overall_slot += 1;
                                     }
                                 }
                             }
@@ -472,11 +343,47 @@ impl SurfaceResolver {
                     }
                 }
 
+                // Phase 2: inject EffectPerform for typeclass methods.
+                // Scan InstanceDecl entries, resolve each instance's class_name to find
+                // the ClassDecl, and inject the class's method names as EffectPerform sentinels.
+                for entry in entries.iter() {
+                    if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                        if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, .. } =
+                            decl.as_ref()
+                        {
+                            if let Some((class_id, methods)) =
+                                find_class_decl_in_entries(class_name, entries)
+                            {
+                                for (method_slot, method_name) in methods.iter().enumerate() {
+                                    let should_inject = st
+                                        .entries()
+                                        .get(method_name)
+                                        .map_or(true, |e| e.slot == EFFECT_SENTINEL);
+                                    if should_inject {
+                                        st.insert(method_name.clone(), EFFECT_SENTINEL, None);
+                                        self.effect_perform_addrs.insert(
+                                            method_name.clone(),
+                                            VarAddr::EffectPerform {
+                                                class_decl_id: class_id,
+                                                method_slot: method_slot as u32,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Arc the SymbolTable and set on AST node + current_scope.
+                let st_arc = Arc::new(st);
+                if let SurfaceExpression::Dict { scope, .. } = &arc.expr {
+                    let _ = scope.set(Arc::clone(&st_arc));
+                }
+                self.current_scope = Some(st_arc);
+
                 // Walk key annotations INSIDE the letrec scope so that annotation
                 // values can reference the dict's own entries (forward letrec refs).
-                // E.g., `Int@[as-type: [fn [let t] t]  supertype: TypeNode.Bytes]: []`
-                // — the annotation lambda `[fn [let t] t]` needs `t` resolved, and
-                // `TypeNode.Bytes` needs `TypeNode` which is in this dict's scope.
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
                         if let SurfaceExpression::VarRef {
@@ -492,9 +399,6 @@ impl SurfaceResolver {
                     self.walk_surface_node(&entry.node.value);
                 }
                 self.exit_scope();
-                // Restore accumulated_dict_offset after exiting this dict's scope.
-                // Sibling dicts (same level as this one) use the same base_offset.
-                self.accumulated_dict_offset = base_offset;
             }
 
             SurfaceExpression::Fn {
@@ -511,16 +415,14 @@ impl SurfaceResolver {
 
                 let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
                 // Set resolved dispatch slots on param nodes for lowerer use.
-                // Must happen BEFORE enter_param_scope so accumulated_dict_offset is correct.
+                // Slots are per-frame relative (0-based).
                 for (i, p) in params.iter().enumerate() {
-                    p.node
-                        .resolved_dispatch_slot
-                        .set(self.accumulated_dict_offset + i as u32);
+                    p.node.resolved_dispatch_slot.set(i as u32);
                 }
-                self.enter_param_scope(&param_names);
-                // Set ScopeFrame on the Fn AST node after entering param scope.
-                if let SurfaceExpression::Fn { scope_frame, .. } = &arc.expr {
-                    let _ = scope_frame.set(std::sync::Arc::new(crate::ast::ScopeFrame::new(param_names.len())));
+                let scope_arc = self.enter_scope(&param_names);
+                // Set SymbolTable on the Fn AST node.
+                if let SurfaceExpression::Fn { scope, .. } = &arc.expr {
+                    let _ = scope.set(scope_arc);
                 }
 
                 self.walk_surface_node(body);
@@ -530,177 +432,29 @@ impl SurfaceResolver {
 
             SurfaceExpression::Sequential(exprs) => {
                 let mut injected = 0usize;
-                // Cumulative LGM slot offset for sequential scope injection within this
-                // Sequential expression. Mirrors the same mechanism in walk_surface_document:
-                // each body's sequential scope uses LGM slots starting at this offset so
-                // that LetrecChainStep's accumulated group has non-overlapping indices.
-                //
-                // Body 0 starts at offset 0; body 1 starts at body-0's key count; etc.
-                let mut sequential_offset: u32 = 0;
                 for (i, e) in exprs.iter().enumerate() {
                     let is_last = i == exprs.len() - 1;
 
                     if !is_last {
-                        if let SurfaceExpression::Dict {
-                            entries,
-                            scope_frame: _,
-                        } = &e.expr
-                        {
-                            for entry in entries {
-                                if let Some(key) = &entry.node.key {
-                                    let is_static = matches!(
-                                        &key.expr,
-                                        SurfaceExpression::VarRef { escaped: false, .. }
-                                    );
-                                    if is_static {}
-                                    self.walk_surface_node(key);
-                                    if is_static {}
+                        // Intermediate body: walk it as a dict node (which creates its own
+                        // letrec scope via the Dict arm), then inject a sequential scope
+                        // for subsequent bodies.
+                        self.walk_surface_node(e);
+                        // After walking, read the scope from the Dict AST node (if it was
+                        // a dict) and create a sequential scope with the same named entries.
+                        if let SurfaceExpression::Dict { scope, .. } = &e.expr {
+                            if let Some(dict_st) = scope.get() {
+                                let pairs: Vec<(String, u32)> = dict_st
+                                    .entries()
+                                    .iter()
+                                    .filter(|(_, e)| e.slot != EFFECT_SENTINEL)
+                                    .map(|(name, entry)| (name.clone(), entry.slot))
+                                    .collect();
+                                if !pairs.is_empty() {
+                                    self.enter_scope_with_slots(&pairs);
+                                    injected += 1;
                                 }
                             }
-
-                            // Uniform slot assignment: assign sequential slots to ALL
-                            // entries and collect (name, slot) pairs for static-key
-                            // entries (same approach as the Dict arm).
-                            let mut scope_pairs: Vec<(String, u32)> = Vec::new();
-                            let total_slots;
-                            {
-                                let mut slot_idx: u32 = 0;
-                                for entry in entries.iter() {
-                                    if let Some(key) = &entry.node.key {
-                                        match &key.expr {
-                                            SurfaceExpression::StringLiteral {
-                                                content, ..
-                                            } => {
-                                                scope_pairs.push((
-                                                    content.clone(),
-                                                    sequential_offset + slot_idx,
-                                                ));
-                                            }
-                                            SurfaceExpression::VarRef {
-                                                name,
-                                                escaped: false,
-                                                ..
-                                            } => {
-                                                scope_pairs.push((
-                                                    name.clone(),
-                                                    sequential_offset + slot_idx,
-                                                ));
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    let _ =
-                                        entry.node.assigned_slot.set(sequential_offset + slot_idx);
-                                    slot_idx += 1;
-                                    if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                                        if let crate::ast::SurfaceDeclaration::InstanceDecl {
-                                            arms,
-                                            ..
-                                        } = decl.as_ref()
-                                        {
-                                            for (_pattern, method_entries) in arms {
-                                                for me in method_entries {
-                                                    let method_name =
-                                                        me.node.key.as_ref().and_then(|k| match &k
-                                                            .expr
-                                                        {
-                                                            SurfaceExpression::StringLiteral {
-                                                                content,
-                                                                ..
-                                                            } => Some(content.clone()),
-                                                            SurfaceExpression::VarRef {
-                                                                name,
-                                                                ..
-                                                            } => Some(name.clone()),
-                                                            _ => None,
-                                                        });
-                                                    if let Some(name) = method_name {
-                                                        if !scope_pairs
-                                                            .iter()
-                                                            .any(|(n, _)| n == &name)
-                                                        {
-                                                            scope_pairs.push((
-                                                                name,
-                                                                sequential_offset + slot_idx,
-                                                            ));
-                                                        }
-                                                        let _ = me
-                                                            .node
-                                                            .assigned_slot
-                                                            .set(sequential_offset + slot_idx);
-                                                        slot_idx += 1;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                total_slots = slot_idx;
-                            }
-
-                            if scope_pairs.is_empty() {
-                                // No static keys: no scope injection needed. Walk values normally.
-                                for entry in entries {
-                                    self.walk_surface_node(&entry.node.value);
-                                }
-                                // Still advance sequential_offset by total slots so nested
-                                // dicts in subsequent bodies use the correct base.
-                                sequential_offset += total_slots;
-                            } else {
-                                // Enter the per-body letrec scope with actual slot positions.
-                                self.enter_scope_with_slot_pairs(&scope_pairs);
-
-                                // Walk key annotations inside the letrec scope
-                                // (same as the Dict arm — annotations can reference siblings).
-                                for entry in entries {
-                                    if let Some(key) = &entry.node.key {
-                                        if let SurfaceExpression::VarRef {
-                                            annotation: Some(ann),
-                                            ..
-                                        } = &key.expr
-                                        {
-                                            self.walk_surface_annotation(ann);
-                                        }
-                                    }
-                                }
-
-                                // Walk each entry's VALUE.
-                                // Set accumulated_dict_offset to sequential_offset + total_slots
-                                // so that any nested dict literals inside this body's values see
-                                // the correct base offset for their own letrec scopes.
-                                let saved_seq_dict_offset = self.accumulated_dict_offset;
-                                self.accumulated_dict_offset = sequential_offset + total_slots;
-
-                                for entry in entries {
-                                    self.walk_surface_node(&entry.node.value);
-                                }
-
-                                // Exit the per-body letrec scope and restore offset.
-                                self.exit_scope();
-                                self.accumulated_dict_offset = saved_seq_dict_offset;
-
-                                // Enter the Sequential scope (injected) so subsequent
-                                // bodies can reference this body's bindings.
-                                // Use the same slot pairs so name→slot mapping is consistent.
-                                self.enter_scope_with_slot_pairs(&scope_pairs);
-                                sequential_offset += total_slots;
-                                injected += 1;
-                            }
-                        } else if let Some((pairs, total)) = surface_node_slot_pairs(e) {
-                            // Non-dict node that nonetheless produces static keys
-                            // (currently none, but keep the original fallback so the
-                            // scope injection path stays correct for future cases).
-                            self.walk_surface_node(e);
-                            if !pairs.is_empty() {
-                                self.enter_scope_with_slot_pairs(&pairs);
-                                sequential_offset += total;
-                                injected += 1;
-                            } else {
-                                sequential_offset += total;
-                            }
-                        } else {
-                            // Non-dict, non-key-producing intermediate body: walk normally.
-                            self.walk_surface_node(e);
                         }
                     } else {
                         // Final expression: walk normally.
@@ -782,11 +536,9 @@ impl SurfaceResolver {
                     let has_bindings = !bound_names.is_empty();
 
                     if has_bindings {
-                        self.enter_param_scope(&bound_names);
-                        // Set ScopeFrame on the MatchArm after entering param scope for bindings.
-                        let _ = arm
-                            .scope_frame
-                            .set(std::sync::Arc::new(crate::ast::ScopeFrame::new(bound_names.len())));
+                        let scope_arc = self.enter_scope(&bound_names);
+                        // Set SymbolTable on the MatchArm.
+                        let _ = arm.scope.set(scope_arc);
                     }
 
                     self.walk_surface_node(&arm.pattern);
@@ -871,10 +623,7 @@ impl SurfaceResolver {
     /// documents or paths where the expander has not yet run).
     fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
         match &body.expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 // Multi-constructor union. Each entry is one constructor:
                 //   - Named constructor: `Constructor@[annotation]: [fields]`
                 //     The KEY holds the constructor name and annotation; the VALUE is
@@ -918,10 +667,7 @@ impl SurfaceResolver {
             // Bracket form: `[Dict@[as-type: ...] fields: ...]` or `[Int@[...]]`
             // The parser wraps annotated constructors in a bracket (a single-entry Dict).
             // Recurse through it to find the actual VarRef or Call inside.
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 for entry in entries {
                     self.walk_ctor_node(&entry.node.value);
                 }
@@ -1000,14 +746,11 @@ impl SurfaceResolver {
         }
     }
 
-    /// Walk a document, assigning cumulative LGM slots to each dict's entries.
+    /// Walk a document, creating per-frame 0-based scopes for each dict.
     ///
-    /// Each intermediate dict's entries are assigned absolute cumulative LGM slots so that
-    /// cross-dict references within the document resolve directly to LGM(absolute_slot) without
-    /// any runtime frame traversal. The cumulative offset starts at `initial_offset` (the number
-    /// of root-scope entries already assigned by the caller) and increases by each dict's key count.
-    ///
-    fn walk_surface_document_with_offset(&mut self, doc: &SurfaceDocument, initial_offset: u32) {
+    /// Each intermediate dict expression's named entries become scope bindings
+    /// for subsequent expressions within the same document (sequential scope injection).
+    fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
         let mut injected = 0usize;
         let items: Vec<&SurfaceItem> = doc.items.iter().collect();
         let expr_count = items
@@ -1015,39 +758,27 @@ impl SurfaceResolver {
             .filter(|i| matches!(i, SurfaceItem::Expr(_)))
             .count();
         let mut expr_idx = 0usize;
-        // Cumulative LGM slot offset: starts at initial_offset (root-scope entries already
-        // assigned), increases by each dict's key count. Ensures absolute slot uniqueness
-        // across the document's accumulated_group.
-        let mut cumulative_offset: u32 = initial_offset;
 
         for item in &items {
             match item {
                 SurfaceItem::Expr(node) => {
                     let is_last_expr = expr_idx == expr_count - 1;
-                    // Sync accumulated_dict_offset to the current cumulative offset so that
-                    // when the Dict arm of walk_surface_expr processes this document dict, it
-                    // uses cumulative_offset as the base for LGM slot assignment. At runtime,
-                    // eval_dict_core is called with outer_frame.group containing exactly
-                    // cumulative_offset entries (root entries + prior document dict thunks), so
-                    // the dict's entries land at indices cumulative_offset..cumulative_offset+N.
-                    self.accumulated_dict_offset = cumulative_offset;
                     self.walk_surface_node(node);
-                    // accumulated_dict_offset is restored to cumulative_offset by the Dict arm's
-                    // save/restore logic after it exits the dict's letrec scope.
                     if !is_last_expr {
-                        // Use slot pairs from the Dict arm's walk (assigned_slot already
-                        // set) so that scope name→slot mapping matches the actual slot
-                        // positions, and cumulative_offset advances by total slots (all
-                        // entries, not just static keys).
-                        if let Some((pairs, total)) = surface_node_slot_pairs(node) {
-                            if !pairs.is_empty() {
-                                // Document-level sequential intermediate dict scope.
-                                self.enter_scope_with_slot_pairs(&pairs);
-                                cumulative_offset += total;
-                                injected += 1;
-                            } else {
-                                // No static keys but entries exist: advance offset anyway.
-                                cumulative_offset += total;
+                        // After walking, read the scope from the Dict AST node and
+                        // create a sequential scope with the same named entries.
+                        if let SurfaceExpression::Dict { scope, .. } = &node.expr {
+                            if let Some(dict_st) = scope.get() {
+                                let pairs: Vec<(String, u32)> = dict_st
+                                    .entries()
+                                    .iter()
+                                    .filter(|(_, e)| e.slot != EFFECT_SENTINEL)
+                                    .map(|(name, entry)| (name.clone(), entry.slot))
+                                    .collect();
+                                if !pairs.is_empty() {
+                                    self.enter_scope_with_slots(&pairs);
+                                    injected += 1;
+                                }
                             }
                         }
                     }
@@ -1065,299 +796,55 @@ impl SurfaceResolver {
         }
     }
 
-    fn finish(self) -> ResolutionTable {
-        self.table
-    }
-
-    fn finish_with_errors(self) -> (ResolutionTable, Vec<Diagnostic>) {
-        (self.table, self.diagnostics)
+    fn finish(self) -> ResolveResult {
+        let initial_scope = self.initial_scope.as_ref();
+        let unreferenced: Vec<String> = match initial_scope {
+            Some(scope) => scope
+                .entries()
+                .keys()
+                .filter(|name| !self.referenced_initial_names.contains(*name))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        ResolveResult {
+            table: self.table,
+            diagnostics: self.diagnostics,
+            unreferenced,
+        }
     }
 }
 
-/// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
+/// Resolve all VarRef nodes in a SurfaceDocument.
 ///
-/// This is the runtime-v2 entry point for variable resolution. The SurfaceProgram
-/// is unchanged (immutable); all resolution data is captured in the returned table.
+/// `scope` is the initial scope containing all pre-existing bindings (builtins,
+/// capabilities, env-dict names, etc.). The resolver creates new SymbolTable frames
+/// on top of this scope for each dict, fn, and match arm encountered during the walk.
 ///
-/// The resolver models the same scope-chain semantics as `resolve_file()` and the
-/// evaluator: each intermediate dict expression's static keys become scope bindings
-/// for subsequent expressions within the same document.
-/// Resolve a single SurfaceDocument in-place, writing de Bruijn coordinates directly to
-/// the inline `Resolution` OnceLocks on each VarRef node.
-///
-/// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
-/// Names not found in the scope stack have their OnceLock left unset (None) and are
-/// returned as `Diagnostic` entries with `kind = "resolve-error"`. Only expression-position
-/// VarRefs are reported — annotation type names, static dict keys, LetDecl binding names,
-/// and class/instance method-name keys are suppressed (not runtime variable references).
-///
-/// Returns `(ResolutionTable, diagnostics)` where:
-/// - `diagnostics`: unified bag of resolve diagnostics (errors only).
-///   - `kind = "resolve-error"`, `level = Err`: undefined-variable VarRefs in expression position.
-pub fn resolve_surface_document_inplace(
-    doc: &crate::ast::SurfaceDocument,
-    initial_frames: &[indexmap::IndexMap<String, u32>],
-) -> (ResolutionTable, Vec<Diagnostic>) {
-    let mut resolver = SurfaceResolver::new();
-
-    // Seed from initial_frames (outermost first).
-    // The frames contain LGM slot indices into the accumulated_group; their slots are the
-    // root-scope entries (builtins and capabilities). Compute initial_offset = total root
-    // slots so document dict entries start at the right cumulative index.
-    let initial_offset: u32 = initial_frames
-        .iter()
-        .flat_map(|f| f.values())
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
-    for frame in initial_frames {
-        resolver.enter_scope_from_frame(frame);
-    }
-
-    resolver.walk_surface_document_with_offset(doc, initial_offset);
-
-    // Exit seeded scopes
-    for _ in initial_frames {
-        resolver.exit_scope();
-    }
-
-    resolver.finish_with_errors()
-}
-
-/// Resolve a SurfaceDocument seeded with an env-dict name list.
-///
-/// This is the resolver entry point for the env-dict protocol (`builtin-eval` / T-1775).
-/// Both this function and `resolve_surface_document_inplace` use `Dispatch(depth, slot)`
-/// for all names. Env-dict names occupy the first `env_names.len()` Dispatch slots; document
-/// dict entries follow at cumulative slots starting at `env_names.len()`.
-///
-/// At runtime, `eval_core_document_exprs` starts accumulated_group with the env-dict thunks
-/// (slots 0..env_names.len()-1), then extends with each dict's entries at cumulative slots.
-/// `Dispatch(depth, slot)` resolves to `group[slot]` directly — no frame traversal.
-///
-/// `env_names`: ordered list of in-scope names from the env-dict (insertion order from
-/// the name-set passed to `builtin-resolve`).  The i-th name gets `Dispatch(0, root_group_len + i)`.
-///
-/// Returns `(ResolutionTable, diagnostics, unreferenced)`.  New frames (produced by the
-/// document's own declarations) are discarded — callers accumulate bindings via the exports
-/// dict returned by `builtin-eval`, not by querying resolver frames.
-///
-/// The third return value (`unreferenced`) lists env-dict names that were never referenced
-/// by any VarRef during the document's resolution walk. Callers (e.g., `loader.llt`) use
-/// this to emit domain-specific warnings (e.g., abandoned pipeline input).
-///
-/// `root_group_len`: the number of root-scope entries (builtins + capabilities) in
-/// the runtime accumulated_group. Env-dict entries start at this offset so their
-/// Dispatch(0, root_group_len + i) slots match the runtime group ordering.
-pub fn resolve_surface_document_with_env_dict(
-    doc: &crate::ast::SurfaceDocument,
-    env_names: &[String],
-    root_group_len: u32,
-) -> (ResolutionTable, Vec<Diagnostic>, Vec<String>) {
-    let mut resolver = SurfaceResolver::new();
-
-    // Seed with Dispatch(0, root_group_len + i) for the i-th env-dict name.
-    // This matches the runtime ordering: accumulated_group = [root_group, env_dict_thunks, ...]
-    // so env-dict name i is at position root_group_len + i.
-    //
-    // Leading-dot (`.name`) uses "second occurrence" semantics — it finds the first
-    // binding of `name` and skips it, returning the next one. This is independent of
-    // scope kind and works correctly for env-dict names.
-    //
-    // Enter env-dict scope with offset starting at root_group_len.
-    // Env-dict name i gets LGM(root_group_len + i) to match the runtime accumulated_group
-    // where env-dict thunks follow root_group entries.
-    resolver.enter_scope_with_offset(env_names, root_group_len);
-    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
-
-    // Walk the document with cumulative offset starting after root_group + env-dict slots.
-    // Document dict entries start at LGM(root_group_len + env_names.len()) so they don't
-    // collide with root_group slots or env-dict slots in the accumulated_group.
-    let initial_offset = root_group_len + env_names.len() as u32;
-    // walk_surface_document_with_offset is called for its side effects on
-    // resolver.referenced_env_names; the returned scope frames are not needed here.
-    resolver.walk_surface_document_with_offset(doc, initial_offset);
-
-    // Compute unreferenced env names: names from env_names that were never resolved
-    // by any VarRef during the walk. Callers use this for domain-specific warnings.
-    let unreferenced: Vec<String> = env_names
-        .iter()
-        .filter(|n| !resolver.referenced_env_names.contains(*n))
-        .cloned()
-        .collect();
-
-    // Exit the seeded scope.
-    resolver.exit_scope();
-
-    let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced)
-}
-
-/// Like `resolve_surface_document_with_env_dict`, but seeds the resolver with additional
-/// scope frames before the env-dict scope. Each seed frame maps names to their actual
-/// slot positions in the runtime accumulated group (root_group primitives, capabilities,
-/// or other pre-env entries). The names in the seed frames are provided by the caller
-/// and have no intrinsic meaning to the resolver — the resolver treats them as ordinary
-/// scope entries at their given slots.
-///
-/// Used by `builtin-resolve` to include root_group entries in the resolver's scope at
-/// their correct runtime slots, while keeping env-dict names at their own offset
-/// starting at `root_group_len`.
-pub fn resolve_surface_document_with_seed_frames(
-    doc: &crate::ast::SurfaceDocument,
-    seed_frames: &[indexmap::IndexMap<String, u32>],
-    env_names: &[String],
-    root_group_len: u32,
-) -> (ResolutionTable, Vec<Diagnostic>, Vec<String>) {
-    let mut resolver = SurfaceResolver::new();
-
-    for frame in seed_frames {
-        resolver.enter_scope_from_frame(frame);
-    }
-
-    resolver.enter_scope_with_offset(env_names, root_group_len);
-    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
-
-    let initial_offset = root_group_len + env_names.len() as u32;
-    resolver.walk_surface_document_with_offset(doc, initial_offset);
-
-    let unreferenced: Vec<String> = env_names
-        .iter()
-        .filter(|n| !resolver.referenced_env_names.contains(*n))
-        .cloned()
-        .collect();
-
-    for _ in seed_frames {
-        resolver.exit_scope();
-    }
-    resolver.exit_scope();
-
-    let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced)
-}
-
-/// Variant of `resolve_surface_document_with_seed_frames` that injects
-/// `VarAddr::EffectPerform` addresses for typeclass method names into the scope chain.
-///
-/// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after the
-/// type checker has processed all `ClassDecl` entries in scope. These are injected into the
-/// env-names scope so `resolve_name` finds them through the normal scope chain search.
-///
-/// Callers that do not have class information should use
-/// `resolve_surface_document_with_seed_frames` instead.
-pub fn resolve_surface_document_with_seed_frames_and_classes(
-    doc: &crate::ast::SurfaceDocument,
-    seed_frames: &[indexmap::IndexMap<String, u32>],
-    env_names: &[String],
-    root_group_len: u32,
-    class_methods: std::collections::HashMap<String, u64>,
-) -> (ResolutionTable, Vec<crate::error::Diagnostic>, Vec<String>) {
-    let mut resolver = SurfaceResolver::new();
-
-    for frame in seed_frames {
-        resolver.enter_scope_from_frame(frame);
-    }
-
-    resolver.enter_scope_with_offset(env_names, root_group_len);
-    resolver.inject_class_methods(&class_methods);
-    resolver.env_scope_depth = Some(resolver.scopes.len() - 1);
-
-    let initial_offset = root_group_len + env_names.len() as u32;
-    resolver.walk_surface_document_with_offset(doc, initial_offset);
-
-    let unreferenced: Vec<String> = env_names
-        .iter()
-        .filter(|n| !resolver.referenced_env_names.contains(*n))
-        .cloned()
-        .collect();
-
-    for _ in seed_frames {
-        resolver.exit_scope();
-    }
-    resolver.exit_scope();
-
-    let (table, diagnostics) = resolver.finish_with_errors();
-    (table, diagnostics, unreferenced)
-}
-
-/// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
-///
-/// Accepts `initial_frames` from prior resolver runs as input to establish outer scopes.
-/// Pass `&[]` when there is no outer scope (e.g., standalone eval, tests).
-///
-pub fn resolve_surface_program(
-    program: &SurfaceProgram,
-    initial_frames: &[indexmap::IndexMap<String, u32>],
-) -> ResolutionTable {
-    let mut resolver = SurfaceResolver::new();
-
-    // Compute initial_offset = total root-scope slots (builtins + capabilities).
-    // Document dict entries start at this offset in the accumulated_group.
-    let initial_offset: u32 = initial_frames
-        .iter()
-        .flat_map(|f| f.values())
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
-
-    // Seed from initial_frames (outermost first)
-    for frame in initial_frames {
-        resolver.enter_scope_from_frame(frame);
-    }
-
-    for doc_spanned in &program.documents {
-        let doc = &doc_spanned.node;
-        resolver.walk_surface_document_with_offset(doc, initial_offset);
-    }
-
-    // Exit seeded scopes
-    for _ in initial_frames {
-        resolver.exit_scope();
-    }
-
+/// Returns a `ResolveResult` containing:
+/// - `table`: resolution table mapping node IDs to VarAddr values.
+/// - `diagnostics`: resolve errors (undefined variables).
+/// - `unreferenced`: names from `scope` that were never referenced.
+pub fn resolve_document(doc: &SurfaceDocument, scope: &Arc<SymbolTable>) -> ResolveResult {
+    let mut resolver = SurfaceResolver::new(scope);
+    resolver.walk_surface_document(doc);
     resolver.finish()
 }
 
-/// Variant of `resolve_surface_program` that injects `VarAddr::EffectPerform` addresses
-/// for typeclass method names into the scope chain.
+/// Resolve all VarRef nodes in a SurfaceProgram.
 ///
-/// `class_methods` maps `method_name → class_decl_id` — derived from `Env.classes` after
-/// the type checker has processed all `ClassDecl` entries in scope. These are injected
-/// directly into the topmost seed scope so that `resolve_name` finds them through the
-/// normal scope chain search.
+/// `scope` is the initial scope containing all pre-existing bindings.
+/// Each document in the program is walked sequentially.
 ///
-/// Callers that do not have class information should use `resolve_surface_program` instead.
-pub fn resolve_surface_program_with_classes(
-    program: &SurfaceProgram,
-    initial_frames: &[indexmap::IndexMap<String, u32>],
-    class_methods: std::collections::HashMap<String, u64>,
-) -> ResolutionTable {
-    let mut resolver = SurfaceResolver::new();
-
-    let initial_offset: u32 = initial_frames
-        .iter()
-        .flat_map(|f| f.values())
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0);
-
-    for frame in initial_frames {
-        resolver.enter_scope_from_frame(frame);
-    }
-    resolver.inject_class_methods(&class_methods);
-
+/// Returns a `ResolveResult` containing:
+/// - `table`: resolution table mapping node IDs to VarAddr values.
+/// - `diagnostics`: resolve errors (undefined variables).
+/// - `unreferenced`: names from `scope` that were never referenced.
+pub fn resolve_program(program: &SurfaceProgram, scope: &Arc<SymbolTable>) -> ResolveResult {
+    let mut resolver = SurfaceResolver::new(scope);
     for doc_spanned in &program.documents {
-        let doc = &doc_spanned.node;
-        resolver.walk_surface_document_with_offset(doc, initial_offset);
+        resolver.walk_surface_document(&doc_spanned.node);
     }
-
-    for _ in initial_frames {
-        resolver.exit_scope();
-    }
-
     resolver.finish()
 }
 
@@ -1383,10 +870,7 @@ pub fn collect_document_produced_keys(
     };
     let span = expr_node.span.clone();
     match &expr_node.expr {
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => (surface_dict_static_keys(entries), span),
+        SurfaceExpression::Dict { entries, scope: _ } => (surface_dict_static_keys(entries), span),
         _ => (Vec::new(), span),
     }
 }
@@ -1495,10 +979,7 @@ fn collect_var_accesses_node(
             *dynamic_use = true;
         }
         // Recurse into child expressions
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => {
+        SurfaceExpression::Dict { entries, scope: _ } => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
                     collect_var_accesses_node(key, var_name, accesses, dynamic_use);
@@ -1698,109 +1179,9 @@ pub(crate) fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec
     keys
 }
 
-/// Count the total number of slots consumed by entries in a dict.
-///
-/// Every entry gets one slot, plus InstanceDecl method keys each get an additional slot.
-/// This is the total group-vec growth for uniform slot assignment.
-fn surface_dict_total_slots(entries: &[Spanned<SurfaceEntry>]) -> u32 {
-    let mut count: u32 = 0;
-    for entry in entries {
-        count += 1;
-        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
-                for (_pattern, method_entries) in arms {
-                    for me in method_entries {
-                        let has_key = me.node.key.as_ref().map_or(false, |k| {
-                            matches!(
-                                &k.expr,
-                                SurfaceExpression::StringLiteral { .. }
-                                    | SurfaceExpression::VarRef { .. }
-                            )
-                        });
-                        if has_key {
-                            count += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    count
-}
-
-/// Extract static string-keyed names from an Arc<SurfaceNode> if it is a Dict.
-/// Compute (name, assigned_slot) pairs and total slot count from a Dict node.
-///
-/// Returns `None` for non-Dict nodes. The pairs contain only static-key entries
-/// (entries with StringLiteral or unescaped VarRef keys) mapped to their actual
-/// assigned_slot values. The total is the full slot count (all entries + instance methods).
-///
-/// Requires that assigned_slot has already been set on entries (i.e., the Dict arm's
-/// walk has already run).
-fn surface_node_slot_pairs(node: &Arc<SurfaceNode>) -> Option<(Vec<(String, u32)>, u32)> {
-    if let SurfaceExpression::Dict {
-        entries,
-        scope_frame: _,
-    } = &node.expr
-    {
-        let total = surface_dict_total_slots(entries);
-        let mut pairs = Vec::new();
-        for entry in entries {
-            if let Some(&slot) = entry.node.assigned_slot.get() {
-                if let Some(key) = &entry.node.key {
-                    match &key.expr {
-                        SurfaceExpression::StringLiteral { content, .. } => {
-                            pairs.push((content.clone(), slot));
-                        }
-                        SurfaceExpression::VarRef {
-                            name,
-                            escaped: false,
-                            ..
-                        } => {
-                            pairs.push((name.clone(), slot));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            // InstanceDecl method slots
-            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
-                    for (_pattern, method_entries) in arms {
-                        for me in method_entries {
-                            if let Some(&slot) = me.node.assigned_slot.get() {
-                                let method_name =
-                                    me.node.key.as_ref().and_then(|k| match &k.expr {
-                                        SurfaceExpression::StringLiteral { content, .. } => {
-                                            Some(content.clone())
-                                        }
-                                        SurfaceExpression::VarRef { name, .. } => {
-                                            Some(name.clone())
-                                        }
-                                        _ => None,
-                                    });
-                                if let Some(name) = method_name {
-                                    if !pairs.iter().any(|(n, _)| n == &name) {
-                                        pairs.push((name, slot));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Some((pairs, total))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    // All prior tests used resolve_file(), Expr, File, and ast_convert::surface_program_to_file()
-    // which were deleted in the runtime-v2 migration. Tests now use resolve_surface_program()
-    // with the SurfaceProgram/SurfaceNode AST directly.
+    // Tests use resolve_program() with the SurfaceProgram/SurfaceNode AST directly.
     use super::*;
     use crate::ast::{node_id, NodeId, SurfaceExpression};
 
@@ -1814,8 +1195,9 @@ mod tests {
         let program = crate::desugar::desugar_surface_program(&output.program);
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
-        let table = resolve_surface_program(&program, &[]);
-        (program, table)
+        let scope = SymbolTable::empty();
+        let result = resolve_program(&program, &scope);
+        (program, result.table)
     }
 
     /// Collect all Arc<SurfaceNode> whose expr is VarRef with the given name.
@@ -1852,10 +1234,7 @@ mod tests {
             SurfaceExpression::VarRef { name: n, .. } if n == name => {
                 out.push((node_id(arc), Arc::clone(arc)));
             }
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
                         collect_varrefs_in_node(key, name, out);
@@ -2010,9 +1389,7 @@ mod tests {
     /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
     /// and $n in the body resolves to the case arm's scope as Dispatch(0, 0).
     ///
-    /// Case arm bindings use enter_param_scope so they resolve to Dispatch(0, slot),
-    /// where slot = accumulated_dict_offset + i. At runtime, arm bindings are appended
-    /// to the group after definition_scope entries.
+    /// Case arm bindings get per-frame 0-based slots in their own SymbolTable frame.
     #[test]
     fn match_arm_pattern_binding() {
         // Bare lowercase names in match arm patterns are now Pin (not Variable).
@@ -2028,7 +1405,7 @@ mod tests {
         assert_eq!(
             addr,
             &VarAddr::Dispatch(0, 0),
-            "n is the first (and only) binding — Dispatch(0, 0) via enter_param_scope"
+            "n is the first (and only) binding — Dispatch(0, 0) in its SymbolTable frame"
         );
     }
 
@@ -2036,8 +1413,7 @@ mod tests {
     /// Bare lowercase names in match arm patterns are now Pin (not Variable).
     /// To bind a variable, use [case [let n] pattern body] form.
     ///
-    /// Case arm bindings resolve to Dispatch(0, accumulated_dict_offset + i).
-    /// The arm body accesses `n` via the group which holds the bound thunk from pattern matching.
+    /// Case arm bindings resolve to Dispatch(0, slot) where slot is per-frame 0-based.
     #[test]
     fn match_arm_guard_sees_pattern_bindings() {
         // `n:` in match arm position creates a Pin pattern, not a variable binding.
@@ -2056,11 +1432,11 @@ mod tests {
             let addr = table
                 .get(id)
                 .expect("$n should be resolved via case arm [let n]");
-            // The case arm scope introduces n as Dispatch(0, 0) via enter_param_scope
+            // The case arm scope introduces n as Dispatch(0, 0) in its SymbolTable frame
             assert_eq!(
                 addr,
                 &VarAddr::Dispatch(0, 0),
-                "n is Dispatch(0, 0) via enter_param_scope"
+                "n is Dispatch(0, 0) in its SymbolTable frame"
             );
         }
     }
@@ -2142,15 +1518,20 @@ mod tests {
     // --- B-600: Unreferenced env-name tracking ---
 
     /// Helper: parse, desugar, and resolve via the env-dict protocol,
-    /// returning the unreferenced env names (third return value).
+    /// returning the unreferenced env names.
     fn resolve_with_env_dict(src: &str, env_names: &[String]) -> Vec<String> {
         let output = crate::parser::parse(src, test_file(src)).expect("parse failed");
         let program = crate::desugar::desugar_program_full(&output.program);
         let program = crate::expand::expand_program(&program);
         let doc = &program.documents[0].node;
-        let (_table, _diagnostics, unreferenced) =
-            resolve_surface_document_with_env_dict(doc, env_names, 0);
-        unreferenced
+        // Build scope from env_names with 0-based contiguous slots.
+        let mut st = SymbolTable::new(None);
+        for (i, name) in env_names.iter().enumerate() {
+            st.insert(name.clone(), i as u32, None);
+        }
+        let scope = Arc::new(st);
+        let result = resolve_document(doc, &scope);
+        result.unreferenced
     }
 
     /// When some env names are unused, they appear in the unreferenced list.
@@ -2307,19 +1688,15 @@ mod tests {
         );
     }
 
-    // --- B-586: Nested dict LGM slot alignment ---
+    // --- B-586: Nested dict per-frame slot alignment ---
 
-    /// A nested dict literal (dict as value of an outer dict entry) must use
-    /// `accumulated_dict_offset` as its LGM base, not 0.
+    /// A nested dict literal (dict as value of an outer dict entry) uses
+    /// per-frame 0-based slots in its own SymbolTable frame.
     ///
-    /// With no initial frame (offset=0): `[x: 1  inner: [ref: $x]]`.
-    ///   Outer dict: x→LGM(0), inner→LGM(1). accumulated_dict_offset advances to 2.
-    ///   Inner dict: ref→LGM(2). $x in ref's value → LGM(0) (outer dict scope).
-    ///
-    /// At runtime with empty root group (as in unit tests, R=0):
-    ///   outer eval_dict_core: group.len()=0, extended=[x_t, inner_t]. x at 0 ✓.
-    ///   inner eval_dict_core: group.len()=2, extended=[x_t, inner_t, ref_t]. ref at 2 ✓.
-    ///   $x → LGM(0) → group[0] = x_t ✓.
+    /// With no initial scope: `[x: 1  inner: [ref: $x]]`.
+    ///   Outer dict scope: x→slot 0, inner→slot 1.
+    ///   Inner dict scope: ref→slot 0 (own frame).
+    ///   $x from inner dict → Dispatch(1, 0) — depth 1, slot 0.
     #[test]
     fn nested_dict_lgm_offset_zero_base() {
         // With no initial frames, base offset = 0.
@@ -2342,46 +1719,51 @@ mod tests {
         // (Already verified above — the same VarRef node is found.)
     }
 
-    /// Nested dict with a non-zero initial frame offset.
+    /// Nested dict with a non-zero initial scope.
     ///
-    /// Simulates the case where R root entries exist (e.g., builtins) before the document
-    /// dict. With initial frame [{builtin-dict-get: 0}] (R=1): outer dict has offset 1.
-    ///   Outer dict: x→Dispatch(0,1), inner→Dispatch(0,2). accumulated_dict_offset advances to 3.
-    ///   Inner dict: ref→Dispatch(0,3). $x → Dispatch(1, 1).
-    ///
-    /// Before the fix, the Dict arm used enter_scope(&keys, Dict) with offset=0, giving
-    ///   x→Dispatch(0,0), inner→Dispatch(0,1), ref→Dispatch(0,0). Dispatch(0,0) → group[0] = builtin-dict-get (wrong!).
+    /// Simulates the case where root entries exist (e.g., builtins) before the document
+    /// dict. With per-frame 0-based slots, the outer dict's entries get slots 0, 1 in
+    /// their own frame, and the root scope is a separate parent frame.
+    ///   Outer dict: x→slot 0, inner→slot 1 (per-frame).
+    ///   Inner dict: ref→slot 0 (per-frame).
+    ///   $x from inner dict → Dispatch(1, 0) — depth 1 to outer dict frame, slot 0.
     #[test]
     fn nested_dict_lgm_offset_nonzero_base() {
-        // Seed with one initial frame entry to simulate R=1 root entries.
+        // Seed with one root-scope entry to simulate builtins.
         let output =
             crate::parser::parse("[x: 1  inner: [ref: $x]]", test_file("")).expect("parse");
         let program = crate::desugar::desugar_surface_program(&output.program);
         let doc = &program.documents[0].node;
 
-        // Simulate R=1: one root-scope entry named "builtin-dict-get" at slot 0.
-        let mut root_frame: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
-        root_frame.insert("builtin-dict-get".to_string(), 0u32);
-        let (table, _diags) = resolve_surface_document_inplace(doc, &[root_frame]);
+        // Build root scope with one entry.
+        let mut root_st = SymbolTable::new(None);
+        root_st.insert("builtin-dict-get".to_string(), 0, None);
+        let scope = Arc::new(root_st);
+        let result = resolve_document(doc, &scope);
 
-        // Outer dict: x at Dispatch(_, 1), inner at Dispatch(_, 2) (offset=1 from root frame).
+        // With per-frame 0-based slots:
+        // Outer dict scope: x→0, inner→1
+        // Inner dict scope: ref→0
+        // $x from inner dict: depth 1 (inner→outer), slot 0
         let x_refs = find_varref_nodes(&program, "x");
         assert!(!x_refs.is_empty(), "expected VarRef for $x");
         let (x_id, _) = &x_refs[0];
-        let x_addr = table.get(x_id).expect("$x should be resolved");
+        let x_addr = result.table.get(x_id).expect("$x should be resolved");
         assert_eq!(
             x_addr,
-            &VarAddr::Dispatch(1, 1),
-            "$x must be Dispatch(1, 1) — x is in the outer dict (one scope up from the reference site)"
+            &VarAddr::Dispatch(1, 0),
+            "$x must be Dispatch(1, 0) — x is slot 0 in the outer dict frame, one scope up"
         );
     }
 
     /// Nested dict inside a fn body intermediate dict value.
     ///
     /// `[fn [let x] [a: $x  nested: [c: $x]] ...]`
-    /// Param x gets slot 0 (accumulated_dict_offset=0 at fn entry).
-    /// Body dict entries start after params: a→Dispatch(0,1), nested→Dispatch(0,2).
-    /// Inner dict: c→Dispatch(0,3). All $x refs have slot=0 but varying depth.
+    /// With per-frame 0-based slots:
+    ///   Fn param scope: x→slot 0.
+    ///   Body dict scope: a→slot 0, nested→slot 1 (separate frame).
+    ///   Inner dict scope: c→slot 0 (separate frame).
+    /// All $x refs have slot=0 (the fn param's slot) but varying depth.
     #[test]
     fn nested_dict_inside_fn_body_dict() {
         let (program, table) = parse_and_resolve("[fn [let x] [a: $x  nested: [c: $x]] a]");

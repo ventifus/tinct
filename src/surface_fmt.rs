@@ -15,7 +15,25 @@ use crate::ast::{CoreExpr, Param, Spanned};
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
+use crate::symbol_table::SymbolTable;
 use crate::value::{HashableValue, Thunk, Value};
+
+/// Create a child SymbolTable scope with additional names.
+fn scope_with_names(
+    parent: &Arc<SymbolTable>,
+    names: impl IntoIterator<Item = String>,
+) -> Arc<SymbolTable> {
+    let mut table = SymbolTable::new(Some(Arc::clone(parent)));
+    for (i, name) in names.into_iter().enumerate() {
+        table.insert(name, i as u32, None);
+    }
+    Arc::new(table)
+}
+
+/// Check if a name is in scope (known binding — param, stdlib, or enclosing dict).
+fn name_in_scope(scope: &Arc<SymbolTable>, name: &str) -> bool {
+    scope.lookup_by_name(name).is_some()
+}
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -154,17 +172,17 @@ pub fn fmt_fn(
     body: &Arc<Spanned<CoreExpr>>,
     ctx: &Arc<EvalContext>,
 ) -> Result<String, String> {
-    // Build initial param scope from the top-level parameters.
-    let param_scope: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    // Build initial scope from stdlib builtins + top-level parameters.
+    let base_scope = {
+        let builtins = crate::builtins_core::core_builtins();
+        let builtin_names = builtins.iter().map(|def| def.name.to_string());
+        scope_with_names(&SymbolTable::empty(), builtin_names)
+    };
+    let scope = scope_with_names(&base_scope, params.iter().map(|p| p.name.clone()));
 
-    // Step 1: Collect all free (non-stdlib, non-param-bound) variable names.
-    // Build a minimal stdlib name set from the FlatEnv root (env_id=0) slot names.
-    let stdlib_name_set: HashSet<String> = crate::builtins_core::core_builtins()
-        .iter()
-        .map(|def| def.name.to_string())
-        .collect();
+    // Step 1: Collect all free (not in scope) variable names.
     let mut free_vars: HashSet<String> = HashSet::new();
-    collect_free_vars(&body.node, &param_scope, &stdlib_name_set, &mut free_vars);
+    collect_free_vars(&body.node, &scope, &mut free_vars);
 
     // Step 2: Build substitution map: name → SCN string.
     // Value::Function no longer stores a closure environment (removed in T-1558), so no
@@ -197,7 +215,7 @@ pub fn fmt_fn(
     }
 
     // Step 4: Serialize the body with substitutions and renames applied.
-    let body_str = core_expr_to_tinct(&body.node, &param_scope, &substitutions, &rename_map, ctx)?;
+    let body_str = core_expr_to_tinct(&body.node, &scope, &substitutions, &rename_map, ctx)?;
 
     // Serialize the (possibly renamed) parameter list.
     let params_str: Vec<String> = params
@@ -289,16 +307,10 @@ fn extract_identifiers(text: &str) -> HashSet<&str> {
 // CoreExpr traversal helpers
 // ────────────────────────────────────────────────────────────────────────────────
 
-/// Walk a `CoreExpr` and collect names that are free references to user-env bindings:
-/// not in `param_scope` and not in `stdlib_names`.
+/// Walk a `CoreExpr` and collect names that are free references — not found in `scope`.
 ///
-/// `param_scope` grows as we descend into `Fn` bodies and `Match` arms.
-fn collect_free_vars(
-    expr: &CoreExpr,
-    param_scope: &HashSet<String>,
-    stdlib_names: &HashSet<String>,
-    out: &mut HashSet<String>,
-) {
+/// The scope grows as we descend into `Fn` bodies, `Dict` entries, and `Sequential` expressions.
+fn collect_free_vars(expr: &CoreExpr, scope: &Arc<SymbolTable>, out: &mut HashSet<String>) {
     match expr {
         // Leaves — no variable references
         CoreExpr::Int { .. }
@@ -312,49 +324,58 @@ fn collect_free_vars(
         // Variant: tag is a literal, payload may contain variable references.
         CoreExpr::Variant { payload, .. } => {
             if let Some(inner) = payload {
-                collect_free_vars(&inner.node, param_scope, stdlib_names, out);
+                collect_free_vars(&inner.node, scope, out);
             }
         }
 
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
-            if !param_scope.contains(name.as_str()) && !stdlib_names.contains(name.as_str()) {
+            if !name_in_scope(scope, name) {
                 out.insert(name.clone());
             }
         }
 
         // Field access: recurse into target expression
         CoreExpr::Field { target, .. } => {
-            collect_free_vars(&target.node, param_scope, stdlib_names, out);
+            collect_free_vars(&target.node, scope, out);
         }
 
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
         CoreExpr::Sequential { exprs, .. } => {
-            // Mirror the resolver's sequential scope injection (resolve.rs:118-134):
+            // Mirror the resolver's sequential scope injection:
             // after each intermediate expression, collect any static dict keys it introduces
-            // and add them to param_scope for subsequent expressions.
-            let mut seq_scope = param_scope.clone();
+            // and extend the scope for subsequent expressions.
+            let mut seq_scope = Arc::clone(scope);
             for (i, e) in exprs.iter().enumerate() {
-                collect_free_vars(&e.node, &seq_scope, stdlib_names, out);
+                collect_free_vars(&e.node, &seq_scope, out);
                 // After all but the last expression, inject static dict keys into scope.
                 if i + 1 < exprs.len() {
                     if let CoreExpr::Dict { entries, .. } = &e.node {
-                        for entry in entries {
-                            if let Some(key) = &entry.node.key {
-                                if core_expr_is_static_key(&key.node) {
-                                    if let CoreExpr::Str { value: name, .. } = &key.node {
-                                        seq_scope.insert(name.clone());
-                                    // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                                    } else if let CoreExpr::Var {
-                                        name,
-                                        annotation: Some(_),
-                                        ..
-                                    } = &key.node
-                                    {
-                                        seq_scope.insert(name.clone());
+                        let new_names: Vec<String> = entries
+                            .iter()
+                            .filter_map(|entry| {
+                                entry.node.key.as_ref().and_then(|key| {
+                                    if core_expr_is_static_key(&key.node) {
+                                        if let CoreExpr::Str { value: name, .. } = &key.node {
+                                            Some(name.clone())
+                                        } else if let CoreExpr::Var {
+                                            name,
+                                            annotation: Some(_),
+                                            ..
+                                        } = &key.node
+                                        {
+                                            Some(name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
                                     }
-                                }
-                            }
+                                })
+                            })
+                            .collect();
+                        if !new_names.is_empty() {
+                            seq_scope = scope_with_names(&seq_scope, new_names);
                         }
                     }
                 }
@@ -362,36 +383,44 @@ fn collect_free_vars(
         }
 
         CoreExpr::Dict { entries, .. } => {
-            // Mirror the resolver's dict letrec scoping (resolve.rs:83-97, eval_dict.rs:66-68):
+            // Mirror the resolver's dict letrec scoping:
             // all static key names are bound within the dict scope and visible to all entry
-            // values (letrec, enabling mutual recursion). Collect static keys first, then
-            // extend param_scope before recursing into values so we do not treat dict-local
-            // variable references as free.
-            let mut dict_scope = param_scope.clone();
-            for entry in entries {
-                if let Some(key) = &entry.node.key {
-                    if core_expr_is_static_key(&key.node) {
-                        if let CoreExpr::Str { value: name, .. } = &key.node {
-                            dict_scope.insert(name.clone());
-                        // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                        } else if let CoreExpr::Var {
-                            name,
-                            annotation: Some(_),
-                            ..
-                        } = &key.node
-                        {
-                            dict_scope.insert(name.clone());
+            // values (letrec, enabling mutual recursion).
+            let dict_key_names: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| {
+                    entry.node.key.as_ref().and_then(|key| {
+                        if core_expr_is_static_key(&key.node) {
+                            if let CoreExpr::Str { value: name, .. } = &key.node {
+                                Some(name.clone())
+                            } else if let CoreExpr::Var {
+                                name,
+                                annotation: Some(_),
+                                ..
+                            } = &key.node
+                            {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
-                    }
-                }
-            }
-            // Keys are evaluated in the parent scope (key isolation invariant — keys must not
-            // see sibling bindings). Values are evaluated in the letrec dict_scope.
+                    })
+                })
+                .collect();
+            let dict_scope = if dict_key_names.is_empty() {
+                Arc::clone(scope)
+            } else {
+                scope_with_names(scope, dict_key_names)
+            };
+            // Keys are evaluated in the parent scope (key isolation invariant).
+            // Values are evaluated in the letrec dict_scope.
             for entry in entries {
                 if let Some(key) = &entry.node.key {
-                    collect_free_vars(&key.node, param_scope, stdlib_names, out);
+                    collect_free_vars(&key.node, scope, out);
                 }
-                collect_free_vars(&entry.node.value.node, &dict_scope, stdlib_names, out);
+                collect_free_vars(&entry.node.value.node, &dict_scope, out);
             }
         }
 
@@ -401,73 +430,65 @@ fn collect_free_vars(
             named_args,
             ..
         } => {
-            collect_free_vars(&func.node, param_scope, stdlib_names, out);
+            collect_free_vars(&func.node, scope, out);
             for arg in args {
-                collect_free_vars(&arg.node, param_scope, stdlib_names, out);
+                collect_free_vars(&arg.node, scope, out);
             }
             for named_arg in named_args {
-                collect_free_vars(&named_arg.node.value.node, param_scope, stdlib_names, out);
+                collect_free_vars(&named_arg.node.value.node, scope, out);
             }
         }
 
         CoreExpr::Fn { clauses, .. } => {
-            // Extend param scope with each clause's params before recursing into body.
+            // Extend scope with each clause's params before recursing into body.
             for clause in clauses {
-                let mut inner_scope = param_scope.clone();
-                for p in &clause.params {
-                    inner_scope.insert(p.node.name.clone());
-                }
-                collect_free_vars(&clause.body.node, &inner_scope, stdlib_names, out);
+                let inner_scope =
+                    scope_with_names(scope, clause.params.iter().map(|p| p.node.name.clone()));
+                collect_free_vars(&clause.body.node, &inner_scope, out);
             }
         }
 
         CoreExpr::TypeAssert { expr, .. } => {
-            collect_free_vars(&expr.node, param_scope, stdlib_names, out);
+            collect_free_vars(&expr.node, scope, out);
         }
 
         CoreExpr::Match {
             scrutinee, arms, ..
         } => {
-            collect_free_vars(&scrutinee.node, param_scope, stdlib_names, out);
+            collect_free_vars(&scrutinee.node, scope, out);
             for arm in arms {
-                // T-1750: patterns are now SurfaceNode and introduce no bindings
-                // (only [case [let ...]] introduces bindings)
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars(&guard.node, param_scope, stdlib_names, out);
+                    collect_free_vars(&guard.node, scope, out);
                 }
-                collect_free_vars(&arm.body.node, param_scope, stdlib_names, out);
+                collect_free_vars(&arm.body.node, scope, out);
             }
         }
 
         // Quote is opaque AST data — do not substitute into it.
         // Only recurse into nested Unquote/UnquoteSplice sub-expressions.
         CoreExpr::Quote { expr: inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, 1, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&inner.node, 1, scope, out);
         }
 
         CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
-            // Unquote outside Quote is a no-op in the surface language; recurse normally.
-            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
+            collect_free_vars(&inner.node, scope, out);
         }
 
         CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for binding in bindings {
-                collect_free_vars(&binding.node, param_scope, stdlib_names, out);
+                collect_free_vars(&binding.node, scope, out);
             }
         }
 
-        // ReprDecl: metadata wrapper — recurse into inner dict and optional is: predicate.
         CoreExpr::ReprDecl { is_pred, inner, .. } => {
-            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
+            collect_free_vars(&inner.node, scope, out);
             if let Some(pred) = is_pred {
-                collect_free_vars(&pred.node, param_scope, stdlib_names, out);
+                collect_free_vars(&pred.node, scope, out);
             }
         }
 
-        // TypeDecl: type-identity wrapper — recurse into inner (Dict or ReprDecl).
-        // The type_name is a literal string; no variable references.
         CoreExpr::TypeDecl { inner, .. } => {
-            collect_free_vars(&inner.node, param_scope, stdlib_names, out);
+            collect_free_vars(&inner.node, scope, out);
         }
     }
 }
@@ -477,20 +498,19 @@ fn collect_free_vars(
 fn collect_free_vars_in_quote(
     expr: &CoreExpr,
     depth: usize,
-    param_scope: &HashSet<String>,
-    stdlib_names: &HashSet<String>,
+    scope: &Arc<SymbolTable>,
     out: &mut HashSet<String>,
 ) {
     match expr {
         CoreExpr::Quote { expr: inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth + 1, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&inner.node, depth + 1, scope, out);
         }
         CoreExpr::Unquote { expr: inner, .. } | CoreExpr::UnquoteSplice { expr: inner, .. } => {
             if depth == 1 {
                 // Returning to evaluation context — recurse normally
-                collect_free_vars(&inner.node, param_scope, stdlib_names, out);
+                collect_free_vars(&inner.node, scope, out);
             } else {
-                collect_free_vars_in_quote(&inner.node, depth - 1, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&inner.node, depth - 1, scope, out);
             }
         }
         // All other nodes inside Quote: don't substitute (opaque AST), but recurse
@@ -501,81 +521,75 @@ fn collect_free_vars_in_quote(
             named_args,
             ..
         } => {
-            collect_free_vars_in_quote(&func.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&func.node, depth, scope, out);
             for arg in args {
-                collect_free_vars_in_quote(&arg.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&arg.node, depth, scope, out);
             }
             for named_arg in named_args {
                 collect_free_vars_in_quote(
                     &named_arg.node.value.node,
                     depth,
-                    param_scope,
-                    stdlib_names,
+                    scope,
                     out,
                 );
             }
         }
         CoreExpr::Fn { clauses, .. } => {
             for clause in clauses {
-                collect_free_vars_in_quote(&clause.body.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&clause.body.node, depth, scope, out);
             }
         }
         CoreExpr::Dict { entries, .. } => {
             for entry in entries {
                 if let Some(key) = &entry.node.key {
-                    collect_free_vars_in_quote(&key.node, depth, param_scope, stdlib_names, out);
+                    collect_free_vars_in_quote(&key.node, depth, scope, out);
                 }
                 collect_free_vars_in_quote(
                     &entry.node.value.node,
                     depth,
-                    param_scope,
-                    stdlib_names,
+                    scope,
                     out,
                 );
             }
         }
         CoreExpr::Sequential { exprs, .. } => {
             for e in exprs {
-                collect_free_vars_in_quote(&e.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&e.node, depth, scope, out);
             }
         }
         CoreExpr::Match { scrutinee, arms, .. } => {
-            collect_free_vars_in_quote(&scrutinee.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&scrutinee.node, depth, scope, out);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_free_vars_in_quote(&guard.node, depth, param_scope, stdlib_names, out);
+                    collect_free_vars_in_quote(&guard.node, depth, scope, out);
                 }
-                collect_free_vars_in_quote(&arm.body.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&arm.body.node, depth, scope, out);
             }
         }
         CoreExpr::TypeAssert { expr, .. } => {
-            collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&expr.node, depth, scope, out);
         }
         CoreExpr::PatternDecl { bindings, .. } | CoreExpr::LetDecl { bindings, .. } => {
             for b in bindings {
-                collect_free_vars_in_quote(&b.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&b.node, depth, scope, out);
             }
         }
-        // Variant: tag is a literal, payload may contain variable references.
         CoreExpr::Variant { payload, .. } => {
             if let Some(inner) = payload {
-                collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&inner.node, depth, scope, out);
             }
         }
-        // Field access: recurse into target expression
         CoreExpr::Field { target, .. } => {
-            collect_free_vars_in_quote(&target.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&target.node, depth, scope, out);
         }
-        // ReprDecl: recurse into inner dict and optional is: predicate even inside quotes.
         CoreExpr::ReprDecl { is_pred, inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&inner.node, depth, scope, out);
             if let Some(pred) = is_pred {
-                collect_free_vars_in_quote(&pred.node, depth, param_scope, stdlib_names, out);
+                collect_free_vars_in_quote(&pred.node, depth, scope, out);
             }
         }
-        // TypeDecl: recurse into inner (Dict or ReprDecl) inside quotes.
         CoreExpr::TypeDecl { inner, .. } => {
-            collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_names, out);
+            collect_free_vars_in_quote(&inner.node, depth, scope, out);
         }
         // Leaves — nothing to do even inside quotes
         CoreExpr::Int { .. }
@@ -591,13 +605,13 @@ fn collect_free_vars_in_quote(
 
 /// Convert a `CoreExpr` to tinct source text, applying substitutions and renames.
 ///
-/// - `param_scope`: names bound by enclosing `Fn` params or match arm patterns (leave as-is)
+/// - `scope`: SymbolTable with names in scope (params, stdlib, enclosing bindings)
 /// - `substitutions`: map from captured variable name to its pre-computed SCN string
 /// - `rename_map`: map from original param name to alpha-renamed gensym name
 /// - `ctx`: evaluation context (for nested function serialization)
 fn core_expr_to_tinct(
     expr: &CoreExpr,
-    param_scope: &HashSet<String>,
+    scope: &Arc<SymbolTable>,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,
@@ -620,8 +634,8 @@ fn core_expr_to_tinct(
 
         // Variable references — apply substitution or rename
         CoreExpr::Var { name, .. } => {
-            if param_scope.contains(name.as_str()) {
-                // Bound by an enclosing param — apply rename if needed, otherwise leave
+            if name_in_scope(scope, name) {
+                // Bound by an enclosing scope — apply rename if needed, otherwise leave
                 Ok(rename_map
                     .get(name)
                     .cloned()
@@ -641,7 +655,7 @@ fn core_expr_to_tinct(
         // Field access: format as `target.key`
         CoreExpr::Field { target, key, .. } => {
             let target_str =
-                core_expr_to_tinct(&target.node, param_scope, substitutions, rename_map, ctx)?;
+                core_expr_to_tinct(&target.node, scope, substitutions, rename_map, ctx)?;
             Ok(format!("{}.{}", target_str, key))
         }
 
@@ -652,7 +666,7 @@ fn core_expr_to_tinct(
         // earlier dict expressions without treating them as free variables that need
         // substitution. Mirrors the resolver's sequential scope injection (resolve.rs:118-134).
         CoreExpr::Sequential { exprs, .. } => {
-            let mut seq_scope = param_scope.clone();
+            let mut seq_scope = Arc::clone(scope);
             let mut parts = Vec::with_capacity(exprs.len());
             for (i, e) in exprs.iter().enumerate() {
                 parts.push(core_expr_to_tinct(
@@ -666,22 +680,31 @@ fn core_expr_to_tinct(
                 // so subsequent expressions do not substitute these names.
                 if i + 1 < exprs.len() {
                     if let CoreExpr::Dict { entries, .. } = &e.node {
-                        for entry in entries {
-                            if let Some(key) = &entry.node.key {
-                                if core_expr_is_static_key(&key.node) {
-                                    if let CoreExpr::Str { value: name, .. } = &key.node {
-                                        seq_scope.insert(name.clone());
-                                    // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                                    } else if let CoreExpr::Var {
-                                        name,
-                                        annotation: Some(_),
-                                        ..
-                                    } = &key.node
-                                    {
-                                        seq_scope.insert(name.clone());
+                        let new_names: Vec<String> = entries
+                            .iter()
+                            .filter_map(|entry| {
+                                entry.node.key.as_ref().and_then(|key| {
+                                    if core_expr_is_static_key(&key.node) {
+                                        if let CoreExpr::Str { value: name, .. } = &key.node {
+                                            Some(name.clone())
+                                        } else if let CoreExpr::Var {
+                                            name,
+                                            annotation: Some(_),
+                                            ..
+                                        } = &key.node
+                                        {
+                                            Some(name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
                                     }
-                                }
-                            }
+                                })
+                            })
+                            .collect();
+                        if !new_names.is_empty() {
+                            seq_scope = scope_with_names(&seq_scope, new_names);
                         }
                     }
                 }
@@ -696,25 +719,35 @@ fn core_expr_to_tinct(
         // This prevents dict-local variable references from being treated as free variables
         // and incorrectly replaced by substitution.
         CoreExpr::Dict { entries, .. } => {
-            // Collect static key names first to build the letrec dict scope.
-            let mut dict_scope = param_scope.clone();
-            for entry in entries {
-                if let Some(key) = &entry.node.key {
-                    if core_expr_is_static_key(&key.node) {
-                        if let CoreExpr::Str { value: name, .. } = &key.node {
-                            dict_scope.insert(name.clone());
-                        // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                        } else if let CoreExpr::Var {
-                            name,
-                            annotation: Some(_),
-                            ..
-                        } = &key.node
-                        {
-                            dict_scope.insert(name.clone());
+            // Collect static key names to build the letrec dict scope.
+            let dict_key_names: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| {
+                    entry.node.key.as_ref().and_then(|key| {
+                        if core_expr_is_static_key(&key.node) {
+                            if let CoreExpr::Str { value: name, .. } = &key.node {
+                                Some(name.clone())
+                            } else if let CoreExpr::Var {
+                                name,
+                                annotation: Some(_),
+                                ..
+                            } = &key.node
+                            {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
-                    }
-                }
-            }
+                    })
+                })
+                .collect();
+            let dict_scope = if dict_key_names.is_empty() {
+                Arc::clone(scope)
+            } else {
+                scope_with_names(scope, dict_key_names)
+            };
             let mut out = String::from("[");
             for (i, entry) in entries.iter().enumerate() {
                 if i > 0 {
@@ -723,7 +756,7 @@ fn core_expr_to_tinct(
                 if let Some(key) = &entry.node.key {
                     // Keys use parent scope (key isolation invariant).
                     let key_str =
-                        core_expr_to_tinct(&key.node, param_scope, substitutions, rename_map, ctx)?;
+                        core_expr_to_tinct(&key.node, scope, substitutions, rename_map, ctx)?;
                     out.push_str(&key_str);
                     out.push(':');
                     out.push(' ');
@@ -749,13 +782,12 @@ fn core_expr_to_tinct(
             named_args,
             ..
         } => {
-            let func_str =
-                core_expr_to_tinct(&func.node, param_scope, substitutions, rename_map, ctx)?;
+            let func_str = core_expr_to_tinct(&func.node, scope, substitutions, rename_map, ctx)?;
             let mut parts = vec![func_str];
             for arg in args {
                 parts.push(core_expr_to_tinct(
                     &arg.node,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -764,7 +796,7 @@ fn core_expr_to_tinct(
             for named_arg in named_args {
                 let val_str = core_expr_to_tinct(
                     &named_arg.node.value.node,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -791,10 +823,7 @@ fn core_expr_to_tinct(
             let clause = clauses.first().expect("Fn must have at least one clause");
             let params = &clause.params;
             let body = &clause.body;
-            let mut inner_scope = param_scope.clone();
-            for p in params {
-                inner_scope.insert(p.node.name.clone());
-            }
+            let inner_scope = scope_with_names(scope, params.iter().map(|p| p.node.name.clone()));
 
             // Check capture avoidance for inner params against the outer substitutions.
             // Uses structural identifier extraction (not substring containment) to avoid
@@ -837,7 +866,7 @@ fn core_expr_to_tinct(
         // TypeAssert: pass through to the inner expression — the type annotation is
         // not emitted in SCN (the consumer re-checks types in their own context).
         CoreExpr::TypeAssert { expr, .. } => {
-            core_expr_to_tinct(&expr.node, param_scope, substitutions, rename_map, ctx)
+            core_expr_to_tinct(&expr.node, scope, substitutions, rename_map, ctx)
         }
 
         // Match: `[match scrutinee arm ...]`
@@ -845,7 +874,7 @@ fn core_expr_to_tinct(
             scrutinee, arms, ..
         } => {
             let scrutinee_str =
-                core_expr_to_tinct(&scrutinee.node, param_scope, substitutions, rename_map, ctx)?;
+                core_expr_to_tinct(&scrutinee.node, scope, substitutions, rename_map, ctx)?;
             let mut arm_parts: Vec<String> = Vec::with_capacity(arms.len());
             for arm in arms {
                 let is_case_arm = !arm.params.is_empty();
@@ -855,42 +884,24 @@ fn core_expr_to_tinct(
                         arm.params.iter().map(|p| p.node.name.clone()).collect();
                     let let_str = format!("[let {}]", params_str.join(" "));
                     let pattern_str = match &arm.lowered_pattern {
-                        Some(pat) => core_expr_to_tinct(
-                            &pat.node,
-                            param_scope,
-                            substitutions,
-                            rename_map,
-                            ctx,
-                        )?,
+                        Some(pat) => {
+                            core_expr_to_tinct(&pat.node, scope, substitutions, rename_map, ctx)?
+                        }
                         None => "_".to_string(),
                     };
-                    let body_str = core_expr_to_tinct(
-                        &arm.body.node,
-                        param_scope,
-                        substitutions,
-                        rename_map,
-                        ctx,
-                    )?;
+                    let body_str =
+                        core_expr_to_tinct(&arm.body.node, scope, substitutions, rename_map, ctx)?;
                     arm_parts.push(format!("[case {} {} {}]", let_str, pattern_str, body_str));
                 } else {
                     // Keyed arm: `pattern: body`
                     let key_str = match &arm.lowered_pattern {
-                        Some(pat) => core_expr_to_tinct(
-                            &pat.node,
-                            param_scope,
-                            substitutions,
-                            rename_map,
-                            ctx,
-                        )?,
+                        Some(pat) => {
+                            core_expr_to_tinct(&pat.node, scope, substitutions, rename_map, ctx)?
+                        }
                         None => "...".to_string(),
                     };
-                    let body_str = core_expr_to_tinct(
-                        &arm.body.node,
-                        param_scope,
-                        substitutions,
-                        rename_map,
-                        ctx,
-                    )?;
+                    let body_str =
+                        core_expr_to_tinct(&arm.body.node, scope, substitutions, rename_map, ctx)?;
                     arm_parts.push(format!("{}: {}", key_str, body_str));
                 }
             }
@@ -904,26 +915,18 @@ fn core_expr_to_tinct(
         // Quote: emit as-is — we do not substitute inside quotes.
         // Unquote sub-expressions ARE emitted with substitution applied.
         CoreExpr::Quote { expr: inner, .. } => {
-            let inner_str = core_expr_to_tinct_in_quote(
-                &inner.node,
-                1,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
+            let inner_str =
+                core_expr_to_tinct_in_quote(&inner.node, 1, scope, substitutions, rename_map, ctx)?;
             Ok(format!("(quote {})", inner_str))
         }
 
         CoreExpr::Unquote { expr: inner, .. } => {
-            let inner_str =
-                core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+            let inner_str = core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)?;
             Ok(format!("(unquote {})", inner_str))
         }
 
         CoreExpr::UnquoteSplice { expr: inner, .. } => {
-            let inner_str =
-                core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+            let inner_str = core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)?;
             Ok(format!("(unquote-splice {})", inner_str))
         }
 
@@ -932,7 +935,7 @@ fn core_expr_to_tinct(
             for b in bindings {
                 parts.push(core_expr_to_tinct(
                     &b.node,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -946,7 +949,7 @@ fn core_expr_to_tinct(
             for b in bindings {
                 parts.push(core_expr_to_tinct(
                     &b.node,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -968,7 +971,7 @@ fn core_expr_to_tinct(
                 crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env);
             if let Some(inner) = payload {
                 let inner_str =
-                    core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+                    core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)?;
                 Ok(format!("[{} {}]", qualified_tag, inner_str))
             } else {
                 Ok(qualified_tag)
@@ -992,13 +995,13 @@ fn core_expr_to_tinct(
         // ReprDecl: transparent for serialization — emit the inner constructor dict.
         // The repr: metadata is evaluator-only and has no tinct source representation.
         CoreExpr::ReprDecl { inner, .. } => {
-            core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)
+            core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)
         }
 
         // TypeDecl: transparent for serialization — emit the inner constructor dict.
         // The type identity mechanism is evaluator-only (stored in ctx.type_identity_registry).
         CoreExpr::TypeDecl { inner, .. } => {
-            core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)
+            core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)
         }
     }
 }
@@ -1009,7 +1012,7 @@ fn core_expr_to_tinct(
 fn core_expr_to_tinct_in_quote(
     expr: &CoreExpr,
     depth: usize,
-    param_scope: &HashSet<String>,
+    scope: &Arc<SymbolTable>,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,
@@ -1019,7 +1022,7 @@ fn core_expr_to_tinct_in_quote(
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth + 1,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1028,14 +1031,13 @@ fn core_expr_to_tinct_in_quote(
         }
         CoreExpr::Unquote { expr: inner, .. } => {
             if depth == 1 {
-                let s =
-                    core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+                let s = core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)?;
                 Ok(format!("(unquote {})", s))
             } else {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
                     depth - 1,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1045,14 +1047,13 @@ fn core_expr_to_tinct_in_quote(
         }
         CoreExpr::UnquoteSplice { expr: inner, .. } => {
             if depth == 1 {
-                let s =
-                    core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+                let s = core_expr_to_tinct(&inner.node, scope, substitutions, rename_map, ctx)?;
                 Ok(format!("(unquote-splice {})", s))
             } else {
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
                     depth - 1,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1061,7 +1062,7 @@ fn core_expr_to_tinct_in_quote(
             }
         }
         // Inside quotes: emit as-is, recurse to find nested unquotes
-        other => core_expr_to_tinct_raw(other, depth, param_scope, substitutions, rename_map, ctx),
+        other => core_expr_to_tinct_raw(other, depth, scope, substitutions, rename_map, ctx),
     }
 }
 
@@ -1070,7 +1071,7 @@ fn core_expr_to_tinct_in_quote(
 fn core_expr_to_tinct_raw(
     expr: &CoreExpr,
     depth: usize,
-    param_scope: &HashSet<String>,
+    scope: &Arc<SymbolTable>,
     substitutions: &HashMap<String, String>,
     rename_map: &HashMap<String, String>,
     ctx: &Arc<EvalContext>,
@@ -1094,7 +1095,7 @@ fn core_expr_to_tinct_raw(
             let target_str = core_expr_to_tinct_in_quote(
                 &target.node,
                 depth,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1108,7 +1109,7 @@ fn core_expr_to_tinct_raw(
                 parts.push(core_expr_to_tinct_in_quote(
                     &e.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1126,7 +1127,7 @@ fn core_expr_to_tinct_raw(
                     let ks = core_expr_to_tinct_in_quote(
                         &key.node,
                         depth,
-                        param_scope,
+                        scope,
                         substitutions,
                         rename_map,
                         ctx,
@@ -1138,7 +1139,7 @@ fn core_expr_to_tinct_raw(
                 let vs = core_expr_to_tinct_in_quote(
                     &entry.node.value.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1157,7 +1158,7 @@ fn core_expr_to_tinct_raw(
             let fs = core_expr_to_tinct_in_quote(
                 &func.node,
                 depth,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1167,7 +1168,7 @@ fn core_expr_to_tinct_raw(
                 parts.push(core_expr_to_tinct_in_quote(
                     &arg.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1177,7 +1178,7 @@ fn core_expr_to_tinct_raw(
                 let vs = core_expr_to_tinct_in_quote(
                     &named_arg.node.value.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1202,7 +1203,7 @@ fn core_expr_to_tinct_raw(
             let bs = core_expr_to_tinct_in_quote(
                 &clause.body.node,
                 depth,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1210,21 +1211,16 @@ fn core_expr_to_tinct_raw(
             let ps: Vec<String> = clause.params.iter().map(|p| p.node.name.clone()).collect();
             Ok(format!("[fn [let {}] {}]", ps.join(" "), bs))
         }
-        CoreExpr::TypeAssert { expr, .. } => core_expr_to_tinct_in_quote(
-            &expr.node,
-            depth,
-            param_scope,
-            substitutions,
-            rename_map,
-            ctx,
-        ),
+        CoreExpr::TypeAssert { expr, .. } => {
+            core_expr_to_tinct_in_quote(&expr.node, depth, scope, substitutions, rename_map, ctx)
+        }
         CoreExpr::Match {
             scrutinee, arms, ..
         } => {
             let ss = core_expr_to_tinct_in_quote(
                 &scrutinee.node,
                 depth,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1241,7 +1237,7 @@ fn core_expr_to_tinct_raw(
                         Some(pat) => core_expr_to_tinct_in_quote(
                             &pat.node,
                             depth,
-                            param_scope,
+                            scope,
                             substitutions,
                             rename_map,
                             ctx,
@@ -1251,7 +1247,7 @@ fn core_expr_to_tinct_raw(
                     let body_str = core_expr_to_tinct_in_quote(
                         &arm.body.node,
                         depth,
-                        param_scope,
+                        scope,
                         substitutions,
                         rename_map,
                         ctx,
@@ -1263,7 +1259,7 @@ fn core_expr_to_tinct_raw(
                         Some(pat) => core_expr_to_tinct_in_quote(
                             &pat.node,
                             depth,
-                            param_scope,
+                            scope,
                             substitutions,
                             rename_map,
                             ctx,
@@ -1273,7 +1269,7 @@ fn core_expr_to_tinct_raw(
                     let body_str = core_expr_to_tinct_in_quote(
                         &arm.body.node,
                         depth,
-                        param_scope,
+                        scope,
                         substitutions,
                         rename_map,
                         ctx,
@@ -1287,7 +1283,7 @@ fn core_expr_to_tinct_raw(
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth + 1,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1301,7 +1297,7 @@ fn core_expr_to_tinct_raw(
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth - 1,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1312,7 +1308,7 @@ fn core_expr_to_tinct_raw(
             let s = core_expr_to_tinct_in_quote(
                 &inner.node,
                 depth - 1,
-                param_scope,
+                scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1325,7 +1321,7 @@ fn core_expr_to_tinct_raw(
                 parts.push(core_expr_to_tinct_in_quote(
                     &b.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1339,7 +1335,7 @@ fn core_expr_to_tinct_raw(
                 parts.push(core_expr_to_tinct_in_quote(
                     &b.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1363,7 +1359,7 @@ fn core_expr_to_tinct_raw(
                 let s = core_expr_to_tinct_in_quote(
                     &inner.node,
                     depth,
-                    param_scope,
+                    scope,
                     substitutions,
                     rename_map,
                     ctx,
@@ -1389,24 +1385,14 @@ fn core_expr_to_tinct_raw(
         }
 
         // ReprDecl: transparent in quote context — emit the inner constructor dict.
-        CoreExpr::ReprDecl { inner, .. } => core_expr_to_tinct_in_quote(
-            &inner.node,
-            depth,
-            param_scope,
-            substitutions,
-            rename_map,
-            ctx,
-        ),
+        CoreExpr::ReprDecl { inner, .. } => {
+            core_expr_to_tinct_in_quote(&inner.node, depth, scope, substitutions, rename_map, ctx)
+        }
 
         // TypeDecl: transparent in quote context — emit the inner constructor dict.
-        CoreExpr::TypeDecl { inner, .. } => core_expr_to_tinct_in_quote(
-            &inner.node,
-            depth,
-            param_scope,
-            substitutions,
-            rename_map,
-            ctx,
-        ),
+        CoreExpr::TypeDecl { inner, .. } => {
+            core_expr_to_tinct_in_quote(&inner.node, depth, scope, substitutions, rename_map, ctx)
+        }
     }
 }
 
@@ -1692,7 +1678,7 @@ impl Value {
                     None => format!("Type({})", self.type_decl_id_of()),
                 }
             )),
-            Value::Scope { .. } => Err(format!(
+            Value::SymbolTable { .. } => Err(format!(
                 "no tinct representation for {}",
                 match ctx {
                     Some(c) => c.type_display_name(self.type_decl_id_of()),

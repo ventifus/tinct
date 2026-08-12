@@ -3,8 +3,6 @@
 
 [
   # ── AST and evaluation ─────────────────────────────────────────────────────
-  # eval-types: evaluate only type-stage documents, returning a Program.
-  builtin-eval-types:        [fn@Program  [let prog@Program] ...]
   # eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
   builtin-eval-macro-ast:    [fn@Any      [let ast@Dict] ...]
 
@@ -64,5 +62,5 @@
   builtin-span-of:           [fn@Dict    [let x@Any] ...]
   builtin-sequential:        [fn@Any     [let x@Any] ...]
 
-  # Scope operations moved to builtin_core.llt (loader programs need them).
+  # SymbolTable operations moved to builtin_core.llt (loader programs need them).
 ]

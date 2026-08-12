@@ -21,9 +21,10 @@ use crate::eval::{
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
+use crate::symbol_table::SymbolTable;
 use crate::type_infer::{make_typevalue_nominal, make_typevalue_unknown};
 use crate::value::{
-    string_val, EvalFrame, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
+    string_val, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
 };
 
 tokio::task_local! {
@@ -106,12 +107,12 @@ impl Drop for ProfilingSpanGuard {
     }
 }
 
-/// Type alias for the optional default expression + EvalFrame pair carried by
+/// Type alias for the optional default expression + scope pair carried by
 /// guarded thunks. Matches value.rs GuardDefault, enabling lossless round-trip
 /// through UnevaluatedState::Guarded.
 type GuardDefault = (
     Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-    u32, // env_id (retained for GuardDefault compatibility with value.rs)
+    Arc<SymbolTable>,
 );
 
 /// Attach materialization span and origin frame to an error.
@@ -158,14 +159,11 @@ pub(crate) struct MemoizeData {
 }
 
 /// Payload for Cont::PendingCallDispatch. Boxed to keep the Cont enum ≤96 bytes.
-///
-/// args/named use Arc<Thunk>; caller_env_id is u32 for macro env injection.
 pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
     pub(crate) call_span: Span,
-    pub(crate) caller_env_id: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
@@ -175,7 +173,7 @@ pub(crate) struct PendingCallDispatchData {
     /// Span of the function thunk — where the callee value was defined.
     /// Used as the primary span in not-a-function errors ("defined at").
     pub(crate) func_span: Span,
-    pub(crate) caller_evidence: crate::value::Scope,
+    pub(crate) scope: Arc<SymbolTable>,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -206,8 +204,8 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) check: crate::ast::TypeAssertCheck,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
-    /// EvalFrame for evaluating default: fallback expressions.
-    pub(crate) frame: Arc<EvalFrame>,
+    /// SymbolTable scope for evaluating default: fallback expressions.
+    pub(crate) scope: Arc<SymbolTable>,
     pub(crate) ctx: Arc<EvalContext>,
     /// Pipeline blame for `--- expects: @Type` contract assertions.
     /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set during expects annotation resolution).
@@ -216,21 +214,18 @@ pub(crate) struct TypeAssertCheckData {
 }
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
-///
-/// args/named use Arc<Thunk>; caller_env_id is u32 for macro env injection.
 pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk: Arc<Thunk>,
     pub(crate) def: crate::value::BuiltinDef,
     pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<IndexMap<String, Arc<Thunk>>>,
     pub(crate) call_span: Span,
-    pub(crate) caller_env_id: u32,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) arg_idx: usize,
-    pub(crate) caller_evidence: crate::value::Scope,
+    pub(crate) scope: Arc<SymbolTable>,
 }
 
 /// Payload for Cont::LetrecChainStep. Boxed to keep the Cont enum ≤96 bytes.
@@ -241,8 +236,8 @@ pub(crate) struct LetrecChainStepData {
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
-    /// EvalFrame for variable lookup in subsequent expressions.
-    pub(crate) frame: Arc<EvalFrame>,
+    /// SymbolTable scope for variable lookup in subsequent expressions.
+    pub(crate) scope: Arc<SymbolTable>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
 }
@@ -259,8 +254,8 @@ pub(crate) struct VariantUnpackForLetrecChainData {
     /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
-    /// EvalFrame for variable lookup in subsequent expressions.
-    pub(crate) frame: Arc<EvalFrame>,
+    /// SymbolTable scope for variable lookup in subsequent expressions.
+    pub(crate) scope: Arc<SymbolTable>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
     /// Span of the current expression (for error reporting)
@@ -274,8 +269,8 @@ pub(crate) struct MatchDispatchData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// EvalFrame for arm body evaluation.
-    pub(crate) frame: Arc<EvalFrame>,
+    /// SymbolTable scope for arm body evaluation.
+    pub(crate) scope: Arc<SymbolTable>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
 }
@@ -287,13 +282,13 @@ pub(crate) struct MatchGuardCheckData {
     /// Arc to the original CoreExpr::Match node. The arms vec is extracted on demand
     /// to avoid cloning the whole vec per continuation frame.
     pub(crate) match_expr: Arc<Spanned<CoreExpr>>,
-    /// EvalFrame for arm body and guard evaluation (the case arm's call frame).
-    pub(crate) frame: Arc<EvalFrame>,
-    /// Original parent frame from MatchDispatch — used when the guard fails to continue
-    /// to the next arm in the correct scope. Distinct from `frame` (the arm frame) because
-    /// the arm frame contains the arm's bound variables and must not be propagated to
+    /// SymbolTable scope for arm body and guard evaluation (the case arm's scope).
+    pub(crate) scope: Arc<SymbolTable>,
+    /// Original parent scope from MatchDispatch — used when the guard fails to continue
+    /// to the next arm in the correct scope. Distinct from `scope` (the arm scope) because
+    /// the arm scope contains the arm's bound variables and must not be propagated to
     /// sibling arms on guard failure (B-724/B-732).
-    pub(crate) parent_frame: Arc<EvalFrame>,
+    pub(crate) parent_scope: Arc<SymbolTable>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
     /// The scrutinee value (needed for predicate invocation and fallback)
@@ -463,8 +458,8 @@ pub(crate) enum Action {
     /// default-fallback (apply_cont).
     EvalCore {
         expr: Arc<Spanned<CoreExpr>>,
-        /// EvalFrame for variable lookup.
-        frame: Arc<EvalFrame>,
+        /// SymbolTable scope for variable lookup.
+        scope: Arc<SymbolTable>,
         ctx: Arc<EvalContext>,
     },
 }
@@ -569,9 +564,8 @@ pub(crate) fn apply_predicate_to_subject(
     subject: Value,
     pred_span: Span,
     subj_span: Span,
-    caller_env_id: u32,
     ctx: &Arc<EvalContext>,
-    caller_evidence: crate::value::Scope,
+    scope: Arc<SymbolTable>,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::value(subject, subj_span));
     let pred_thunk = Arc::new(Thunk::value(predicate, pred_span.clone()));
@@ -582,7 +576,6 @@ pub(crate) fn apply_predicate_to_subject(
         pred_span.clone(),
         crate::value::FnCallSpec {
             call_span: pred_span.clone(),
-            caller_env_id,
             ctx: Arc::clone(ctx),
             original_call: Arc::new(Spanned {
                 node: CoreExpr::Int {
@@ -591,7 +584,7 @@ pub(crate) fn apply_predicate_to_subject(
                 },
                 span: pred_span,
             }),
-            caller_evidence,
+            scope,
         },
     ))
 }
@@ -717,9 +710,8 @@ async fn dispatch_state(
             args,
             named,
             call_span,
-            caller_env_id: builtin_caller_env,
             ctx: thunk_ctx,
-            caller_evidence,
+            scope: builtin_scope,
         } => {
             // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
             // EvalStackGuard ensures pop on all exit paths; disarmed when delegating to a
@@ -751,13 +743,12 @@ async fn dispatch_state(
                         args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
                         call_span: call_span.clone(),
-                        caller_env_id: builtin_caller_env,
                         ctx: thunk_ctx,
                         origin,
                         thunk_span: thunk_span.clone(),
                         mat_span: None,
                         arg_idx,
-                        caller_evidence: caller_evidence.clone(),
+                        scope: Arc::clone(&builtin_scope),
                     })));
                     // BuiltinForceArg continuation inherits eval_stack pop responsibility
                     eval_stack_guard.disarm();
@@ -791,13 +782,12 @@ async fn dispatch_state(
                     args: args.take().expect("args set above"),
                     named: named.take().expect("named set above"),
                     call_span: call_span.clone(),
-                    caller_env_id: builtin_caller_env,
                     ctx: thunk_ctx,
                     origin,
                     thunk_span: thunk_span.clone(),
                     mat_span: None,
                     arg_idx,
-                    caller_evidence,
+                    scope: builtin_scope,
                 })));
                 // BuiltinForceArg continuation inherits eval_stack pop responsibility
                 eval_stack_guard.disarm();
@@ -814,13 +804,8 @@ async fn dispatch_state(
                 args: args.take().expect("args set above"),
                 named: named.take().expect("named set above"),
                 call_span: call_span.clone(),
-                caller_env_id: if def.needs_caller_env {
-                    Some(builtin_caller_env)
-                } else {
-                    None
-                },
                 ctx: Arc::clone(&thunk_ctx),
-                caller_evidence: caller_evidence.clone(),
+                scope: builtin_scope,
             };
 
             match (def.func)(builtin_args).await.map_err(|mut e| {
@@ -860,10 +845,9 @@ async fn dispatch_state(
             args,
             named,
             call_span,
-            caller_env_id,
             ctx: thunk_ctx,
             original_call,
-            caller_evidence,
+            scope: fn_scope,
         } => {
             // func is Arc<Thunk> directly — no arena lookup needed.
             let func_thunk = func;
@@ -892,7 +876,6 @@ async fn dispatch_state(
                     args,
                     named,
                     call_span: call_span.clone(),
-                    caller_env_id,
                     ctx: thunk_ctx,
                     origin,
                     thunk_span: thunk_span.clone(),
@@ -900,7 +883,7 @@ async fn dispatch_state(
                     original_call,
                     tail_hint,
                     func_span,
-                    caller_evidence,
+                    scope: fn_scope,
                 },
             )));
             eval_stack_guard.disarm();
@@ -959,7 +942,7 @@ async fn dispatch_state(
 
         UnevaluatedState::CoreExpr {
             expr: core_expr,
-            frame,
+            scope,
             ctx: thunk_ctx,
         } => {
             // CoreExpr thunk — created by invoke_function from Value::Function.body.
@@ -989,7 +972,7 @@ async fn dispatch_state(
                     let core_spanned = crate::lower::lower(default_node, &display_names)
                         .take(&thunk_ctx.runtime_diagnostics)
                         .expect("lowering always succeeds");
-                    match eval_core_expr(&core_spanned, &frame, &thunk_ctx).await {
+                    match eval_core_expr(&core_spanned, &scope, &thunk_ctx).await {
                         Ok(default_thunk) => default_thunk,
                         Err(e) => {
                             let decorated = attach_materialization_context(
@@ -1003,7 +986,7 @@ async fn dispatch_state(
                         }
                     }
                 } else {
-                    match eval_core_expr(inner, &frame, &thunk_ctx).await {
+                    match eval_core_expr(inner, &scope, &thunk_ctx).await {
                         Ok(t) => t,
                         Err(e) => {
                             let decorated = attach_materialization_context(
@@ -1028,7 +1011,7 @@ async fn dispatch_state(
                     check: check.clone(),
                     expr_span: core_expr.span.clone(),
                     thunk_span: inner_span,
-                    frame: Arc::clone(&frame),
+                    scope: Arc::clone(&scope),
                     ctx: Arc::clone(&thunk_ctx),
                     pipeline_blame: pipeline_blame.clone(),
                 })));
@@ -1069,7 +1052,7 @@ async fn dispatch_state(
                     crate::eval_materialize::LetrecChainStepData {
                         idx: 0,
                         letrec_chain_expr: Arc::clone(&core_expr),
-                        frame: Arc::clone(&frame),
+                        scope: Arc::clone(&scope),
                         ctx: Arc::clone(&thunk_ctx),
                         seq_span: core_expr.span.clone(),
                     },
@@ -1078,7 +1061,7 @@ async fn dispatch_state(
                 // Evaluate the first expression
                 return Action::EvalCore {
                     expr: Arc::clone(first_expr),
-                    frame,
+                    scope,
                     ctx: thunk_ctx,
                 };
             }
@@ -1090,7 +1073,7 @@ async fn dispatch_state(
             } = &core_expr.node
             {
                 // Evaluate the scrutinee first
-                let scrutinee_thunk = match eval_core_expr(scrutinee, &frame, &thunk_ctx).await {
+                let scrutinee_thunk = match eval_core_expr(scrutinee, &scope, &thunk_ctx).await {
                     Ok(t) => t,
                     Err(e) => {
                         let decorated = attach_materialization_context(
@@ -1118,7 +1101,7 @@ async fn dispatch_state(
                     crate::eval_materialize::MatchDispatchData {
                         arm_idx: 0,
                         match_expr: Arc::clone(&core_expr),
-                        frame: Arc::clone(&frame),
+                        scope: Arc::clone(&scope),
                         ctx: Arc::clone(&thunk_ctx),
                         match_span: core_expr.span.clone(),
                     },
@@ -1131,7 +1114,7 @@ async fn dispatch_state(
                 };
             }
 
-            match eval_core_expr(&core_expr, &frame, &thunk_ctx).await {
+            match eval_core_expr(&core_expr, &scope, &thunk_ctx).await {
                 Ok(result_thunk) => {
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
@@ -1251,7 +1234,6 @@ pub(crate) async fn apply_cont(
                 args,
                 named,
                 call_span,
-                caller_env_id,
                 ctx: thunk_ctx,
                 origin,
                 thunk_span,
@@ -1259,7 +1241,7 @@ pub(crate) async fn apply_cont(
                 original_call,
                 tail_hint,
                 func_span,
-                caller_evidence,
+                scope: call_scope,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1375,7 +1357,7 @@ pub(crate) async fn apply_cont(
                                     args = Some(args_vec);
 
                                     // Inject implicit named args: ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span.
-                                    // ᴍᴀᴄʀᴏ∷env is the call-site FlatEnv id (Value::Int(caller_env_id)).
+                                    // ᴍᴀᴄʀᴏ∷env is the call-site scope (Value::SymbolTable).
                                     // ᴍᴀᴄʀᴏ∷span is the call-site span dict.
                                     // Both are injected via BIND-SYSTEM (eval_call.rs:249) which
                                     // skips '∷'-named args from normal validation.
@@ -1385,13 +1367,9 @@ pub(crate) async fn apply_cont(
                                     named_map.insert(
                                         MACRO_CALL_ENV_NAME.to_string(),
                                         Arc::new(Thunk::value(
-                                            Value::Int {
-                                                n: caller_env_id as i64,
-                                                type_val: Some(
-                                                    crate::type_infer::make_typevalue_nominal(
-                                                        TYPE_ID_INT,
-                                                    ),
-                                                ),
+                                            Value::SymbolTable {
+                                                table: Arc::clone(&call_scope),
+                                                type_val: None,
                                             },
                                             call_span.clone(),
                                         )),
@@ -1457,18 +1435,18 @@ pub(crate) async fn apply_cont(
                                     let call_ctx = CallContext {
                                         clauses: &clauses,
                                         definition_scope: Arc::clone(&definition_scope),
+                                        caller_scope: Arc::clone(&call_scope),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        caller_evidence: caller_evidence.clone(),
                                         type_instantiation: call_type_inst.clone(),
                                     };
                                     invoke_function_tco(&call_ctx).await
                                 };
 
                                 match invoke_result.map_err(&decorate) {
-                                    Ok((body_expr, new_frame)) => {
+                                    Ok((body_expr, new_scope)) => {
                                         // TCO abandonment: this thunk stays InProgress and will be dropped
                                         // when this continuation is consumed (strong_count==1 guarantees no
                                         // other references exist). The result flows directly to the caller's
@@ -1476,7 +1454,7 @@ pub(crate) async fn apply_cont(
                                         // materialization.
                                         Action::EvalCore {
                                             expr: body_expr,
-                                            frame: new_frame,
+                                            scope: new_scope,
                                             ctx: thunk_ctx,
                                         }
                                     }
@@ -1496,11 +1474,11 @@ pub(crate) async fn apply_cont(
                                     let call_ctx = CallContext {
                                         clauses: &clauses,
                                         definition_scope: Arc::clone(&definition_scope),
+                                        caller_scope: Arc::clone(&call_scope),
                                         positional: args.as_deref().expect("args set above"),
                                         named: named.as_ref().expect("named set above").as_deref(),
                                         call_span: call_span.clone(),
                                         ctx: &thunk_ctx,
-                                        caller_evidence: caller_evidence.clone(),
                                         type_instantiation: call_type_inst,
                                     };
                                     invoke_function(&call_ctx).await
@@ -1586,9 +1564,8 @@ pub(crate) async fn apply_cont(
                                     args: args.take().expect("args set above"),
                                     named: named.take().expect("named set above").map(|b| *b),
                                     call_span: call_span.clone(),
-                                    caller_env_id,
                                     ctx: thunk_ctx,
-                                    caller_evidence: caller_evidence.clone(),
+                                    scope: Arc::clone(&call_scope),
                                 });
                                 return Action::Materialize { thunk, mat_span };
                             }
@@ -1603,13 +1580,8 @@ pub(crate) async fn apply_cont(
                                         .as_deref()
                                         .cloned(),
                                     call_span: call_span.clone(),
-                                    caller_env_id: if def.needs_caller_env {
-                                        Some(caller_env_id)
-                                    } else {
-                                        None
-                                    },
                                     ctx: Arc::clone(&thunk_ctx),
-                                    caller_evidence: caller_evidence.clone(),
+                                    scope: Arc::clone(&call_scope),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
                                     e.set_arity_callee(Some(def.name.into()));
@@ -1800,7 +1772,7 @@ pub(crate) async fn apply_cont(
                                         guard_eval_stack.disarm();
                                         return Action::EvalCore {
                                             expr: Arc::clone(&default_expr),
-                                            frame: EvalFrame::empty(),
+                                            scope: SymbolTable::empty(),
                                             ctx: guard_ctx,
                                         };
                                     }
@@ -1825,7 +1797,7 @@ pub(crate) async fn apply_cont(
                                 guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
-                                    frame: EvalFrame::empty(),
+                                    scope: SymbolTable::empty(),
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1881,7 +1853,7 @@ pub(crate) async fn apply_cont(
                                 guard_eval_stack.disarm();
                                 return Action::EvalCore {
                                     expr: Arc::clone(&default_expr),
-                                    frame: EvalFrame::empty(),
+                                    scope: SymbolTable::empty(),
                                     ctx: guard_ctx,
                                 };
                             }
@@ -1932,13 +1904,12 @@ pub(crate) async fn apply_cont(
                 args,
                 named,
                 call_span,
-                caller_env_id: builtin_caller_env,
                 ctx: thunk_ctx,
                 origin,
                 thunk_span,
                 mat_span,
                 arg_idx,
-                caller_evidence,
+                scope: builtin_scope,
             } = *data;
             // Inherited guard: BuiltinForceArg inherits the eval_stack entry
             // pushed by force_step(PendingBuiltin). Auto-pops on all exit paths;
@@ -1982,13 +1953,12 @@ pub(crate) async fn apply_cont(
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
                                 call_span: call_span.clone(),
-                                caller_env_id: builtin_caller_env,
                                 ctx: thunk_ctx,
                                 origin,
                                 thunk_span: thunk_span.clone(),
                                 mat_span: mat_span.clone(),
                                 arg_idx: next_idx,
-                                caller_evidence: caller_evidence.clone(),
+                                scope: Arc::clone(&builtin_scope),
                             })));
                             // Next BuiltinForceArg inherits eval_stack pop responsibility
                             eval_stack_guard.disarm();
@@ -2019,13 +1989,12 @@ pub(crate) async fn apply_cont(
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span: call_span.clone(),
-                            caller_env_id: builtin_caller_env,
                             ctx: thunk_ctx,
                             origin,
                             thunk_span: thunk_span.clone(),
                             mat_span: mat_span.clone(),
                             arg_idx: next_idx,
-                            caller_evidence: caller_evidence.clone(),
+                            scope: Arc::clone(&builtin_scope),
                         })));
                         // Next BuiltinForceArg inherits eval_stack pop responsibility
                         eval_stack_guard.disarm();
@@ -2042,13 +2011,8 @@ pub(crate) async fn apply_cont(
                         args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
                         call_span: call_span.clone(),
-                        caller_env_id: if def.needs_caller_env {
-                            Some(builtin_caller_env)
-                        } else {
-                            None
-                        },
                         ctx: Arc::clone(&thunk_ctx),
-                        caller_evidence: caller_evidence.clone(),
+                        scope: builtin_scope,
                     };
                     match (def.func)(builtin_args)
                         .await
@@ -2091,7 +2055,7 @@ pub(crate) async fn apply_cont(
                 check,
                 expr_span,
                 thunk_span,
-                frame,
+                scope,
                 ctx,
                 pipeline_blame,
             } = *data;
@@ -2214,7 +2178,7 @@ pub(crate) async fn apply_cont(
                             .expect("lowering always succeeds");
                         Action::EvalCore {
                             expr: Arc::new(core_spanned),
-                            frame: Arc::clone(&frame),
+                            scope: Arc::clone(&scope),
                             ctx: Arc::clone(&ctx),
                         }
                     } else {
@@ -2257,7 +2221,7 @@ pub(crate) async fn apply_cont(
                                                 .expect("lowering always succeeds");
                                         return Action::EvalCore {
                                             expr: Arc::new(core_spanned),
-                                            frame: Arc::clone(&frame),
+                                            scope: Arc::clone(&scope),
                                             ctx: Arc::clone(&ctx),
                                         };
                                     }
@@ -2285,7 +2249,7 @@ pub(crate) async fn apply_cont(
                                 .expect("lowering always succeeds");
                             Action::EvalCore {
                                 expr: Arc::new(core_spanned),
-                                frame: Arc::clone(&frame),
+                                scope: Arc::clone(&scope),
                                 ctx: Arc::clone(&ctx),
                             }
                         } else {
@@ -2318,7 +2282,7 @@ pub(crate) async fn apply_cont(
             let LetrecChainStepData {
                 idx,
                 letrec_chain_expr,
-                frame,
+                scope,
                 ctx,
                 seq_span,
             } = *data;
@@ -2410,7 +2374,7 @@ pub(crate) async fn apply_cont(
                                         static_key_set: key_set,
                                         next_idx,
                                         letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                                        frame: Arc::clone(&frame),
+                                        scope: Arc::clone(&scope),
                                         ctx: Arc::clone(&ctx),
                                         seq_span: seq_span.clone(),
                                         current_expr_span: current_expr.span.clone(),
@@ -2435,54 +2399,46 @@ pub(crate) async fn apply_cont(
                             }
                         };
 
-                        // Propagate the intermediate body's string-key thunks into the
-                        // frame's group so subsequent expressions can resolve
-                        // Dispatch(depth, slot) references to this body's bindings.
-                        // The resolver assigns Dispatch slots to sequential intermediate bodies'
-                        // entries in insertion order (step 7 of the Sequential handler in
-                        // resolve.rs). Appending the dict's string-key thunks (in insertion
-                        // order) to the accumulated group preserves that slot alignment.
-                        let new_thunks: Vec<std::sync::Arc<crate::value::Thunk>> = map
+                        // Propagate the intermediate body's string-key thunks into a
+                        // child scope so subsequent expressions can resolve variable
+                        // references to this body's bindings.
+                        let named_entries: indexmap::IndexMap<String, Arc<Thunk>> = map
                             .iter()
                             .filter_map(|(k, v)| {
-                                if matches!(k, crate::value::HashableValue::Str(_)) {
-                                    Some(std::sync::Arc::clone(v))
+                                if let HashableValue::Str(name) = k {
+                                    Some((name.to_string(), Arc::clone(v)))
                                 } else {
                                     None
                                 }
                             })
                             .collect();
-                        let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: crate::value::scope_extend(&frame.group, new_thunks),
-                            caller_evidence: frame.caller_evidence.clone(),
-                            type_inst: frame.type_inst.clone(),
-                        });
+                        let updated_scope = scope.extend(named_entries);
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            frame: Arc::clone(&updated_frame),
+                            scope: Arc::clone(&updated_scope),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
-                            frame: updated_frame,
+                            scope: updated_scope,
                             ctx,
                         }
                     } else {
-                        // No static keys — continue with same frame.
+                        // No static keys — continue with same scope.
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            frame: Arc::clone(&frame),
+                            scope: Arc::clone(&scope),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
-                            frame,
+                            scope,
                             ctx,
                         }
                     }
@@ -2494,7 +2450,7 @@ pub(crate) async fn apply_cont(
                 static_key_set,
                 next_idx,
                 letrec_chain_expr,
-                frame,
+                scope,
                 ctx,
                 seq_span,
                 current_expr_span,
@@ -2532,44 +2488,40 @@ pub(crate) async fn apply_cont(
                     // this, subsequent LGM references would resolve to wrong thunks.
                     let next_expr = &exprs[next_idx];
                     if !static_key_set.is_empty() {
-                        let new_thunks: Vec<std::sync::Arc<crate::value::Thunk>> = payload_map
+                        let named_entries: indexmap::IndexMap<String, Arc<Thunk>> = payload_map
                             .iter()
                             .filter_map(|(k, v)| {
-                                if matches!(k, crate::value::HashableValue::Str(_)) {
-                                    Some(std::sync::Arc::clone(v))
+                                if let HashableValue::Str(name) = k {
+                                    Some((name.to_string(), Arc::clone(v)))
                                 } else {
                                     None
                                 }
                             })
                             .collect();
-                        let updated_frame = std::sync::Arc::new(crate::value::EvalFrame {
-                            group: crate::value::scope_extend(&frame.group, new_thunks),
-                            caller_evidence: frame.caller_evidence.clone(),
-                            type_inst: frame.type_inst.clone(),
-                        });
+                        let updated_scope = scope.extend(named_entries);
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            frame: Arc::clone(&updated_frame),
+                            scope: Arc::clone(&updated_scope),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
-                            frame: updated_frame,
+                            scope: updated_scope,
                             ctx,
                         }
                     } else {
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            frame: Arc::clone(&frame),
+                            scope: Arc::clone(&scope),
                             ctx: Arc::clone(&ctx),
                             seq_span,
                         })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
-                            frame,
+                            scope,
                             ctx,
                         }
                     }
@@ -2580,7 +2532,7 @@ pub(crate) async fn apply_cont(
             let MatchDispatchData {
                 arm_idx,
                 match_expr,
-                frame,
+                scope,
                 ctx,
                 match_span,
             } = *data;
@@ -2605,17 +2557,10 @@ pub(crate) async fn apply_cont(
                         // the arm. With definition_scope-based evaluation, match arm
                         // bodies resolve outer names through Dispatch into this scope
                         // directly — no closure conversion needed.
-                        let arm_definition_scope = Arc::clone(&frame.group);
-
-                        // pre_arm_frame: definition scope from enclosing frame, params empty.
-                        // Used as pctx.frame in structural pattern matching so that
-                        // pin variables (external names resolved to Dispatch slots
-                        // in the pattern) can be looked up via the definition scope.
-                        let pre_arm_frame = std::sync::Arc::new(EvalFrame::for_function_call(
-                            Arc::clone(&arm_definition_scope),
-                            vec![],
-                            crate::value::empty_scope(),
-                        ));
+                        // pre_arm_scope: enclosing scope used for structural pattern matching
+                        // so that pin variables (external names resolved to Dispatch slots
+                        // in the pattern) can be looked up.
+                        let pre_arm_scope = Arc::clone(&scope);
 
                         let lowered_pattern = arm
                             .lowered_pattern
@@ -2661,7 +2606,7 @@ pub(crate) async fn apply_cont(
                                 &binding_map,
                                 &scrutinee_value,
                                 match_span.clone(),
-                                &pre_arm_frame,
+                                &pre_arm_scope,
                                 &ctx,
                             )
                             .await
@@ -2688,26 +2633,24 @@ pub(crate) async fn apply_cont(
                             guard_bindings
                         };
 
-                        // Build the arm EvalFrame with definition scope and pattern bindings.
-                        //
-                        // All arms use EvalFrame::for_function_call with the enclosing
-                        // frame's group as the definition scope. Outer names resolve
-                        // through Dispatch into this scope directly.
+                        // Build the arm SymbolTable scope with pattern bindings.
+                        // The arm scope has the enclosing scope as parent so outer names
+                        // resolve through parent chain traversal.
+                        let mut arm_scope_inner = SymbolTable::new(Some(Arc::clone(&scope)));
                         let mut sorted = arm_bindings;
                         sorted.sort_unstable_by_key(|(slot, _)| *slot);
-                        let mut params_vec: Vec<Arc<Thunk>> = Vec::with_capacity(sorted.len());
-                        for (slot, thunk) in sorted {
-                            let slot = slot as usize;
-                            while params_vec.len() < slot {
-                                params_vec.push(Arc::clone(&thunk));
-                            }
-                            params_vec.push(thunk);
+                        for (slot, thunk) in &sorted {
+                            // Insert binding entry into the arm scope.
+                            let name = arm
+                                .params
+                                .iter()
+                                .find(|p| p.node.slot == *slot)
+                                .map(|p| p.node.name.clone())
+                                .unwrap_or_else(|| format!("_arm_{}", slot));
+                            arm_scope_inner.insert(name, *slot, None);
+                            arm_scope_inner.set_value(*slot, Arc::clone(thunk));
                         }
-                        let arm_frame = EvalFrame::for_function_call(
-                            arm_definition_scope.clone(),
-                            params_vec,
-                            frame.caller_evidence.clone(),
-                        );
+                        let arm_scope = Arc::new(arm_scope_inner);
 
                         // If guard expression pattern, evaluate it to check if truthy.
                         // EXCEPT: when the pattern is a simple VarRef to a binding variable
@@ -2739,8 +2682,8 @@ pub(crate) async fn apply_cont(
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx: i,
                                 match_expr: Arc::clone(&match_expr),
-                                frame: Arc::clone(&arm_frame),
-                                parent_frame: Arc::clone(&frame),
+                                scope: Arc::clone(&arm_scope),
+                                parent_scope: Arc::clone(&scope),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                                 scrutinee_value: scrutinee_value.clone(),
@@ -2751,13 +2694,13 @@ pub(crate) async fn apply_cont(
 
                             return Action::EvalCore {
                                 expr: Arc::clone(lowered_pattern),
-                                frame: arm_frame,
+                                scope: arm_scope,
                                 ctx,
                             };
                         }
 
                         {
-                            let (eval_body, arm_frame) = (Arc::clone(&arm.body), arm_frame);
+                            let eval_body = Arc::clone(&arm.body);
 
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
@@ -2766,8 +2709,8 @@ pub(crate) async fn apply_cont(
                                 stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                     arm_idx: i,
                                     match_expr: Arc::clone(&match_expr),
-                                    frame: Arc::clone(&arm_frame),
-                                    parent_frame: Arc::clone(&frame),
+                                    scope: Arc::clone(&arm_scope),
+                                    parent_scope: Arc::clone(&scope),
                                     ctx: Arc::clone(&ctx),
                                     match_span: match_span.clone(),
                                     scrutinee_value: scrutinee_value.clone(),
@@ -2778,15 +2721,15 @@ pub(crate) async fn apply_cont(
 
                                 return Action::EvalCore {
                                     expr: Arc::clone(guard_expr),
-                                    frame: arm_frame,
+                                    scope: Arc::clone(&arm_scope),
                                     ctx,
                                 };
                             }
 
-                            // No guard — arm matched, evaluate body in the arm frame.
+                            // No guard — arm matched, evaluate body in the arm scope.
                             return Action::EvalCore {
                                 expr: eval_body,
-                                frame: arm_frame,
+                                scope: arm_scope,
                                 ctx,
                             };
                         }
@@ -2805,8 +2748,8 @@ pub(crate) async fn apply_cont(
             let MatchGuardCheckData {
                 arm_idx,
                 match_expr,
-                frame,
-                parent_frame,
+                scope,
+                parent_scope,
                 ctx,
                 match_span,
                 scrutinee_value,
@@ -2837,7 +2780,6 @@ pub(crate) async fn apply_cont(
                                 match_span.clone(),
                                 crate::value::FnCallSpec {
                                     call_span: match_span.clone(),
-                                    caller_env_id: 0,
                                     ctx: Arc::clone(&ctx),
                                     original_call: Arc::new(Spanned {
                                         node: CoreExpr::Int {
@@ -2846,15 +2788,15 @@ pub(crate) async fn apply_cont(
                                         },
                                         span: match_span.clone(),
                                     }),
-                                    caller_evidence: parent_frame.caller_evidence.clone(),
+                                    scope: Arc::clone(&parent_scope),
                                 },
                             ));
                             // Push MatchGuardCheck again with callable_invoked=true.
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx,
                                 match_expr: Arc::clone(&match_expr),
-                                frame: Arc::clone(&frame),
-                                parent_frame: Arc::clone(&parent_frame),
+                                scope: Arc::clone(&scope),
+                                parent_scope: Arc::clone(&parent_scope),
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                                 scrutinee_value,
@@ -2869,7 +2811,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let guard_chain: crate::value::Scope = Arc::clone(&frame.group);
+                    let guard_scope = Arc::clone(&scope);
                     let guard_passed_result =
                         if let Some(ref binding_name) = guard_matchable_binding {
                             crate::eval::call_to_match_resolved(
@@ -2877,11 +2819,11 @@ pub(crate) async fn apply_cont(
                                 binding_name,
                                 &ctx,
                                 &match_span,
-                                guard_chain,
+                                guard_scope,
                             )
                             .await
                         } else {
-                            crate::eval::call_to_match(&guard_value, &ctx, &match_span, guard_chain)
+                            crate::eval::call_to_match(&guard_value, &ctx, &match_span, guard_scope)
                                 .await
                         };
 
@@ -2891,21 +2833,19 @@ pub(crate) async fn apply_cont(
                             // Guard passed — evaluate the body.
                             Action::EvalCore {
                                 expr: body,
-                                frame,
+                                scope,
                                 ctx,
                             }
                         }
                         Ok(false) => {
-                            // Guard failed — try the next arm in the original parent frame.
-                            // Using parent_frame (not the arm's frame) ensures that sibling
+                            // Guard failed — try the next arm in the original parent scope.
+                            // Using parent_scope (not the arm's scope) ensures that sibling
                             // arms and keyed arms see the correct outer scope, not the failed
-                            // arm's bound variables. Using arm frame here caused B-724/B-732:
-                            // fns created in sibling keyed arms got the arm's scope
-                            // instead of the match expression's enclosing frame.
+                            // arm's bound variables (B-724/B-732).
                             stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
                                 arm_idx: arm_idx + 1,
                                 match_expr: Arc::clone(&match_expr),
-                                frame: parent_frame,
+                                scope: parent_scope,
                                 ctx: Arc::clone(&ctx),
                                 match_span: match_span.clone(),
                             })));
@@ -2972,8 +2912,8 @@ pub(crate) async fn apply_cont(
 ///
 /// Returns `Ok(Some(bindings))` if the pattern matches, where `bindings` is a vec of
 /// `(param_index, thunk)` pairs — one entry per bound variable declared in `[let ...]`.
-/// Each `param_index` is the Dispatch slot assigned by the resolver (accumulated_dict_offset + i
-/// in declaration order, via `enter_param_scope`). `thunk` is a pre-materialized thunk
+/// Each `param_index` is the per-frame relative slot assigned by the resolver
+/// (0-based in declaration order). `thunk` is a pre-materialized thunk
 /// holding the matched scrutinee fragment for that variable. The caller extends the group
 /// with these bindings so that `VarAddr::Dispatch(_, slot)` resolves the bound value.
 ///
@@ -2986,13 +2926,13 @@ pub(crate) async fn eval_case_arm_structural_pattern(
     binding_map: &IndexMap<String, u32>,
     scrutinee_value: &Value,
     match_span: Span,
-    frame: &Arc<EvalFrame>,
+    scope: &Arc<SymbolTable>,
     ctx: &Arc<EvalContext>,
 ) -> Result<Option<Vec<(u32, Arc<Thunk>)>>, Box<crate::error::Diagnostic>> {
     let mut bindings: Vec<(u32, Arc<Thunk>)> = Vec::with_capacity(binding_map.len());
     let pctx = StructuralPatternCtx {
         binding_map,
-        frame,
+        scope,
         match_span,
         ctx,
     };
@@ -3010,7 +2950,7 @@ pub(crate) async fn eval_case_arm_structural_pattern(
 /// struct so that the function signature stays below Clippy's argument-count limit.
 struct StructuralPatternCtx<'a> {
     binding_map: &'a IndexMap<String, u32>,
-    frame: &'a Arc<EvalFrame>,
+    scope: &'a Arc<SymbolTable>,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
 }
@@ -3022,7 +2962,7 @@ struct StructuralPatternCtx<'a> {
 /// constructor tag cannot be determined, etc.).
 ///
 /// `bindings` accumulates `(slot, thunk)` pairs for each bound variable encountered.
-/// `pctx.frame` is the parent EvalFrame, used for pin variable lookup.
+/// `pctx.scope` is the parent SymbolTable, used for pin variable lookup.
 ///
 /// Uses `Box::pin` for recursive async calls (the codebase does not depend on
 /// `async_recursion`).
@@ -3037,7 +2977,7 @@ fn eval_structural_pattern_inner<'a>(
     Box::pin(async move {
         let StructuralPatternCtx {
             binding_map,
-            frame,
+            scope,
             match_span,
             ctx,
         } = pctx;
@@ -3062,7 +3002,7 @@ fn eval_structural_pattern_inner<'a>(
                     scrutinee_value,
                     match_span,
                     ctx,
-                    frame,
+                    scope,
                     addr,
                     bindings,
                 )
@@ -3084,7 +3024,7 @@ fn eval_structural_pattern_inner<'a>(
                     scrutinee_value,
                     match_span,
                     ctx,
-                    frame,
+                    scope,
                     addr,
                     bindings,
                 )
@@ -3104,7 +3044,7 @@ fn eval_structural_pattern_inner<'a>(
 
                     let pred_thunk = Arc::new(Thunk::core_expr(
                         pred_expr_core,
-                        EvalFrame::empty(),
+                        SymbolTable::empty(),
                         Arc::clone(ctx),
                         match_span.clone(),
                     ));
@@ -3118,20 +3058,14 @@ fn eval_structural_pattern_inner<'a>(
                         scrutinee_value.clone(),
                         match_span.clone(),
                         match_span.clone(),
-                        0,
                         ctx,
-                        pctx.frame.caller_evidence.clone(),
+                        Arc::clone(pctx.scope),
                     );
 
                     let pred_result = materialize(&pred_call_thunk, Some(match_span), ctx).await?;
 
-                    if !crate::eval::call_to_match(
-                        &pred_result,
-                        ctx,
-                        match_span,
-                        Arc::clone(&frame.group),
-                    )
-                    .await?
+                    if !crate::eval::call_to_match(&pred_result, ctx, match_span, Arc::clone(scope))
+                        .await?
                     {
                         return Ok(false);
                     }
@@ -3164,7 +3098,7 @@ fn eval_structural_pattern_inner<'a>(
                 // The pattern may reference outer-scope names (e.g. `Color` in `Color.Red`).
                 let target_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(target),
-                    Arc::clone(frame),
+                    Arc::clone(scope),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3303,7 +3237,7 @@ fn eval_structural_pattern_inner<'a>(
                 // field-access constructor patterns like [Option.Some p].
                 let func_thunk = Arc::new(Thunk::core_expr(
                     Arc::clone(func),
-                    Arc::clone(frame),
+                    Arc::clone(scope),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3494,7 +3428,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let call_thunk = Arc::new(Thunk::core_expr(
                                 call_expr_spanned,
-                                Arc::clone(frame),
+                                Arc::clone(scope),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
@@ -3575,7 +3509,7 @@ fn eval_structural_pattern_inner<'a>(
                                     &call_result,
                                     ctx,
                                     match_span,
-                                    Arc::clone(&frame.group),
+                                    Arc::clone(scope),
                                 )
                                 .await
                             }
@@ -3598,7 +3532,7 @@ fn eval_structural_pattern_inner<'a>(
                             ));
                             let guard_thunk = Arc::new(Thunk::core_expr(
                                 guard_expr_spanned,
-                                Arc::clone(frame),
+                                Arc::clone(scope),
                                 Arc::clone(ctx),
                                 match_span.clone(),
                             ));
@@ -3608,7 +3542,7 @@ fn eval_structural_pattern_inner<'a>(
                                 &guard_result,
                                 ctx,
                                 match_span,
-                                Arc::clone(&frame.group),
+                                Arc::clone(scope),
                             )
                             .await
                         }
@@ -3667,7 +3601,7 @@ fn eval_structural_pattern_inner<'a>(
 
             // Fallback: evaluate the pattern expression in the parent frame and compare
             // with the scrutinee using value equality.
-            // Uses pctx.frame (not EvalFrame::empty()) so outer names are in scope.
+            // Uses pctx.scope (not SymbolTable::empty()) so outer names are in scope.
             _ => {
                 let spanned = Arc::new(crate::ast::Spanned::new(
                     pattern.clone(),
@@ -3675,7 +3609,7 @@ fn eval_structural_pattern_inner<'a>(
                 ));
                 let pat_expr_thunk = Arc::new(Thunk::core_expr(
                     spanned,
-                    Arc::clone(frame),
+                    Arc::clone(scope),
                     Arc::clone(ctx),
                     match_span.clone(),
                 ));
@@ -3695,7 +3629,7 @@ fn eval_structural_pattern_inner<'a>(
 ///   bindings so that `VarAddr::Dispatch(_, slot)` returns the bound value when the
 ///   body evaluates.
 /// - If `name` is NOT in `binding_map`: it is a pin pattern — look up `name` via its
-///   resolver-assigned `addr` in the parent `frame`, materialize it, and compare with
+///   resolver-assigned `addr` in the parent `scope`, materialize it, and compare with
 ///   `primitive_eq`. Returns false (soft skip) if not equal.
 async fn bind_or_pin_name(
     name: &str,
@@ -3703,28 +3637,28 @@ async fn bind_or_pin_name(
     scrutinee_value: &Value,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
-    frame: &Arc<EvalFrame>,
+    scope: &Arc<SymbolTable>,
     addr: &VarAddr,
     bindings: &mut Vec<(u32, Arc<Thunk>)>,
 ) -> Result<bool, Box<crate::error::Diagnostic>> {
     if let Some(&slot) = binding_map.get(name) {
         // Binding: create a pre-materialized thunk holding the matched scrutinee fragment.
         // The resolver assigned Dispatch(0, slot) to uses of `name` in the arm body.
-        // Pushed onto `bindings`; the caller extends the parent EvalFrame's group at `slot`.
+        // Pushed onto `bindings`; the caller extends the parent SymbolTable at `slot`.
         let thunk = Arc::new(Thunk::value(scrutinee_value.clone(), match_span.clone()));
         bindings.push((slot, thunk));
         Ok(true)
     } else {
-        // Pin: look up the name's value in the parent frame via its resolver-assigned addr.
+        // Pin: look up the name's value in the parent scope via its resolver-assigned addr.
         // `addr` is the VarAddr the resolver assigned to this name in the enclosing scope.
         let pinned_thunk = match addr {
-            VarAddr::Dispatch(_, slot) => {
-                let i = *slot as usize;
-                match frame.group.get(i) {
+            VarAddr::Dispatch(depth, slot) => match scope.lookup(*depth, *slot) {
+                Some(entry) => match entry.value.get() {
                     Some(thunk) => Arc::clone(thunk),
                     None => return Ok(false),
-                }
-            }
+                },
+                None => return Ok(false),
+            },
             VarAddr::EffectPerform { .. } => {
                 return Err(Diagnostic::internal(
                     format!("pattern pin '{name}': EffectPerform not supported in pattern pins (T-2126)"),
@@ -3802,12 +3736,12 @@ pub(crate) async fn run_with_stack(
         match action {
             Action::EvalCore {
                 expr,
-                frame,
+                scope,
                 ctx: action_ctx,
             } => {
                 // Evaluate the CoreExpr to a thunk (without forcing).
-                // Pass stored frame to eval_core_expr.
-                action = match eval_core_expr(&expr, &frame, &action_ctx).await {
+                // Pass stored scope to eval_core_expr.
+                action = match eval_core_expr(&expr, &scope, &action_ctx).await {
                     Ok(thunk) => Action::Materialize {
                         thunk,
                         mat_span: Some(expr.span.clone()),
@@ -3929,7 +3863,7 @@ mod tests {
                 },
                 value_span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx_for_test),
             value_span.clone(),
         );
@@ -3989,7 +3923,7 @@ mod tests {
                 },
                 same_span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx_same),
             same_span.clone(),
         );
@@ -4039,7 +3973,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span,
         ));
@@ -4122,7 +4056,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span,
         ));
@@ -4204,7 +4138,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4324,7 +4258,7 @@ mod tests {
             vec![],
             span,
             None,
-            Some((default_expr, 0)), // env_id placeholder (ignored by EvalFrame-based eval)
+            Some((default_expr, SymbolTable::empty())),
         ));
 
         // Should succeed, returning the default value (99) evaluated in caller's env.
@@ -4449,13 +4383,14 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
+                    scope: None,
                     inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DICT,
                     ),
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4472,7 +4407,6 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
-            needs_caller_env: false,
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
@@ -4481,9 +4415,8 @@ mod tests {
             vec![Arc::clone(&unevaluated_arg)],
             None,
             span,
-            0, // caller_env_id placeholder
             Arc::clone(&ctx),
-            crate::value::empty_scope(),
+            SymbolTable::empty(),
             crate::type_infer::make_typevalue_unknown(),
         ));
 
@@ -4539,13 +4472,14 @@ mod tests {
             Arc::new(Spanned::new(
                 CoreExpr::Dict {
                     entries: vec![],
+                    scope: None,
                     inferred_type: crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_DICT,
                     ),
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4565,7 +4499,7 @@ mod tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4604,7 +4538,6 @@ mod tests {
             name: "dummy-force2",
             pos_strictness: DUMMY_STRICTNESS,
             force_count: 2,
-            needs_caller_env: false,
         };
 
         let outer_thunk = Arc::new(Thunk::builtin_call(
@@ -4612,9 +4545,8 @@ mod tests {
             vec![Arc::clone(&unevaluated_arg0), Arc::clone(&unevaluated_arg1)],
             None,
             span,
-            0, // caller_env_id placeholder
             Arc::clone(&ctx),
-            crate::value::empty_scope(),
+            SymbolTable::empty(),
             crate::type_infer::make_typevalue_unknown(),
         ));
 
@@ -4838,7 +4770,7 @@ mod cek_lifecycle_tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
@@ -4903,7 +4835,7 @@ mod cek_lifecycle_tests {
                 },
                 span.clone(),
             )),
-            EvalFrame::empty(),
+            SymbolTable::empty(),
             Arc::clone(&ctx),
             span.clone(),
         ));
