@@ -12,7 +12,6 @@ use crate::value::{bytes_val, BuiltinArgs, Thunk, Value};
 use subtle::ConstantTimeEq;
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// `bytes`: Concatenate multiple Bytes values (variadic).
 ///
@@ -38,7 +37,7 @@ pub(crate) fn builtin_bytes(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "bytes does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -103,7 +102,7 @@ pub(crate) fn builtin_bytes_find(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "bytes-find does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -113,7 +112,7 @@ pub(crate) fn builtin_bytes_find(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "bytes-find requires exactly 2 arguments, got {}",
                     args.len()
@@ -231,7 +230,7 @@ pub(crate) fn builtin_bytes_of(
                         }
                         Value::Int { n, .. } => {
                             return Err(Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 format!("bytes-of: integer {n} out of range 0-255"),
                                 call_span,
                             )
@@ -293,7 +292,7 @@ pub(crate) fn builtin_bytes_concat(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "bytes-concat does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -303,7 +302,7 @@ pub(crate) fn builtin_bytes_concat(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "bytes-concat requires exactly 2 arguments, got {}",
                     args.len()
@@ -381,7 +380,7 @@ pub(crate) fn builtin_bytes_equal(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "bytes-equal? does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -391,7 +390,7 @@ pub(crate) fn builtin_bytes_equal(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "bytes-equal? requires exactly 2 arguments, got {}",
                     args.len()
@@ -476,7 +475,7 @@ pub(crate) fn builtin_ct_equal(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "ct-equal? does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -486,7 +485,7 @@ pub(crate) fn builtin_ct_equal(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("ct-equal? requires exactly 2 arguments, got {}", args.len()),
                 call_span,
             )
@@ -582,7 +581,7 @@ pub(crate) fn builtin_encode(
         if let Some(named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "builtin-encode does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -592,7 +591,7 @@ pub(crate) fn builtin_encode(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "builtin-encode requires exactly 2 arguments (format, value), got {}",
                     args.len()
@@ -728,7 +727,7 @@ pub(crate) fn builtin_bytes_get(
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "builtin-bytes-get does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -738,7 +737,7 @@ pub(crate) fn builtin_bytes_get(
 
         if args.len() != 2 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "builtin-bytes-get requires exactly 2 arguments (i, b), got {}",
                     args.len()
@@ -832,7 +831,7 @@ pub(crate) fn builtin_bytes_to_int(
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "builtin-bytes-to-int does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -842,7 +841,7 @@ pub(crate) fn builtin_bytes_to_int(
 
         if args.len() != 1 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "builtin-bytes-to-int requires exactly 1 argument (b), got {}",
                     args.len()
@@ -921,7 +920,7 @@ pub(crate) fn builtin_bytes_slice(
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "builtin-bytes-slice does not accept named arguments".to_string(),
                     call_span,
                 )
@@ -931,7 +930,7 @@ pub(crate) fn builtin_bytes_slice(
 
         if args.len() != 3 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "builtin-bytes-slice requires exactly 3 arguments (b, start, len), got {}",
                     args.len()

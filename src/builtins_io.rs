@@ -50,7 +50,6 @@ use crate::error::Diagnostic;
 use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// Maximum bytes per single `builtin-file-read` call. Prevents unbounded heap allocation.
 const MAX_FILE_READ_BYTES: usize = 256 * 1024 * 1024; // 256 MB
@@ -813,7 +812,7 @@ pub(crate) fn builtin_write_atomic(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
                 Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("write-atomic: system clock is before Unix epoch: {e}"),
                     call_span.clone(),
                 )

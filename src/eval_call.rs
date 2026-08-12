@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 use crate::eval::{call_to_match, materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
 
-const KIND: &str = "eval";
+const KIND: &str = "eval/call";
 
 /// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
 /// or a proper `Value::Variant { ctor_index: TV_UNKNOWN }` after the repr protocol runs.

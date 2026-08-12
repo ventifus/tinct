@@ -27,7 +27,6 @@ use crate::eval::materialize;
 use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
 ///
@@ -694,7 +693,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
 
         {
             let mut infer_state = crate::type_infer::InferState::new();
@@ -2851,7 +2850,7 @@ mod tests {
         > {
             Box::pin(async move {
                 let call_span = ctx.call_span;
-                Err(Diagnostic::error(KIND_INTERNAL, "builtin error".to_string(), call_span).into())
+                Err(Diagnostic::error(KIND, "builtin error".to_string(), call_span).into())
             })
         }
         let ctx = test_ctx();

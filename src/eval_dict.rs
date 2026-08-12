@@ -18,8 +18,7 @@ use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
 
-const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "eval/dict";
 const KIND_LOWER: &str = "lower";
 
 fn value_to_key(
@@ -50,7 +49,7 @@ fn value_to_key(
                         Some(Err(e)) => return Err(Box::new((**e).clone())),
                         None => {
                             return Err(Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 "variant payload not materialized".to_string(),
                                 span.clone(),
                             )
@@ -133,7 +132,7 @@ async fn eval_annotation_property_dict(
                         HashableValue::Int(i)
                     } else {
                         return Err(Box::new(Diagnostic::error(
-                            KIND_INTERNAL,
+                            KIND,
                             format!(
                                 "u64 key {n} is too large for a dict integer key (max i64::MAX)"
                             ),
@@ -662,7 +661,7 @@ pub(crate) async fn eval_key_core(
                 return Ok(HashableValue::Int(i));
             }
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
                 key_expr.span.clone(),
             )

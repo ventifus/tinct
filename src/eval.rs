@@ -29,8 +29,7 @@ use crate::type_tags::*;
 use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 
-const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "eval/pipeline";
 
 // ============================================================================
 // Document pipeline evaluation
@@ -1709,7 +1708,7 @@ pub(crate) fn validate_and_wrap_record(
             );
 
             return Err(Diagnostic::error(
-                "eval",
+                KIND,
                 format!(
                     "type assertion failed: expected {}record with field \"{}\", got {}record without field \"{}\"",
                     field_path_prefix, field_name, field_path_prefix, field_name
@@ -1838,7 +1837,7 @@ async fn call_to_match_by_name(
         } => (clauses, definition_scope),
         other => {
             return Err(Diagnostic::error(
-                "eval",
+                KIND,
                 format!(
                     "call_to_match_by_name({name}): expected Function, got {}",
                     ctx.type_display_name(other.type_decl_id_of())
@@ -1866,7 +1865,7 @@ async fn call_to_match_by_name(
     match materialize(&result_thunk, Some(span), ctx).await? {
         Value::Int { n, .. } => Ok(n != 0),
         other => Err(Diagnostic::error(
-            "eval",
+            KIND,
             format!(
                 "call_to_match_by_name({name}) result: expected Int, got {}",
                 ctx.type_display_name(other.type_decl_id_of())
@@ -2033,7 +2032,7 @@ pub fn materialize<'a>(
                         crate::eval_materialize::TASK_EVAL_STACK.with(|s| s.borrow().clone());
                     let err = {
                         let mut e = Diagnostic::error(
-                            "eval",
+                            KIND,
                             format!(
                                 "circular dependency: {}",
                                 thunk.span.name.as_deref().unwrap_or("thunk")
@@ -2207,7 +2206,7 @@ mod tests {
         });
         let program = crate::expand::expand_program(&program);
         let _result =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -3437,7 +3436,7 @@ mod tests {
         // Integration test: verify the Display output includes all stack frames.
         // test_span embeds src/test_util.rs as the source file; spans show with file prefix.
         let err = crate::error::Diagnostic::error(
-            "internal",
+            KIND,
             "something broke".to_string(),
             test_span(1, 5, 1, 12),
         )
@@ -5471,7 +5470,7 @@ mod tests {
         // Resolve with the full root frame so dict sibling LGM slots match the runtime.
         let _table = crate::resolve::resolve_program(
             &surface_program,
-            &crate::symbol_table::SymbolTable::empty(),
+            &crate::symbol_table::SymbolTable::empty_chain(),
         );
 
         {
@@ -5863,7 +5862,7 @@ mod tests {
         // Seed resolver with % in scope for tests.
         let mut seed_scope = crate::symbol_table::SymbolTable::new();
         seed_scope.insert("%".to_string(), 0, None);
-        let seed_scope = Arc::new(seed_scope);
+        let seed_scope = vec![Arc::new(seed_scope)];
         let _result = crate::resolve::resolve_program(&program, &seed_scope);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
@@ -5991,7 +5990,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6050,10 +6049,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver with builtins in scope (test expression uses builtin-int-add).
         let seed_scope = build_test_scope_with_builtins();
-        let _result = crate::resolve::resolve_program(
-            &program,
-            seed_scope.first().expect("scope chain must not be empty"),
-        );
+        let _result = crate::resolve::resolve_program(&program, &seed_scope);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6109,7 +6105,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {

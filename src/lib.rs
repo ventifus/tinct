@@ -147,7 +147,7 @@ pub use value::{
 pub use symbol_table::{ScopeChain, SymbolTable};
 
 const KIND_EVAL: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
+const KIND_SERIALIZE: &str = "eval/serialize";
 const KIND_PARSE: &str = "parse";
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
@@ -870,7 +870,7 @@ impl ValueVisitor for TinctReprVisitor {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("{ts}")),
             Err(e) => Err(Box::new(error::Diagnostic::error(
-                KIND_INTERNAL,
+                KIND_SERIALIZE,
                 format!("invalid timestamp: {e}"),
                 span,
             ))),
@@ -980,7 +980,7 @@ impl ValueVisitor for DisplayVisitor {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("Timestamp({})", ts)),
             Err(e) => Err(Box::new(error::Diagnostic::error(
-                KIND_INTERNAL,
+                KIND_SERIALIZE,
                 format!("invalid timestamp: {e}"),
                 span,
             ))),

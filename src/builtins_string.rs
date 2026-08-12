@@ -23,7 +23,6 @@ use crate::error::Diagnostic;
 use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// `replace`: Replace all occurrences of a pattern in a string.
 ///
@@ -485,7 +484,7 @@ pub(crate) fn builtin_str_slice(
         // Validate indices
         if start_idx > end_idx {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("str-slice: start index {start_idx} > end index {end_idx}"),
                 call_span.clone(),
             )
@@ -502,7 +501,7 @@ pub(crate) fn builtin_str_slice(
 
         let char_count = char_indices.len().saturating_sub(1);
         if end_idx > char_count {
-            return Err(Diagnostic::error(KIND_INTERNAL, 
+            return Err(Diagnostic::error(KIND, 
                 format!(
                     "str-slice: end index {end_idx} out of bounds (string has {char_count} characters)"
                 ),
@@ -785,7 +784,7 @@ pub(crate) fn builtin_char_code(
             )
         } else {
             Err(
-                Diagnostic::error(KIND_INTERNAL, "char-code: empty string".to_string(), call_span)
+                Diagnostic::error(KIND, "char-code: empty string".to_string(), call_span)
                     .into(),
             )
         }
@@ -817,7 +816,7 @@ pub(crate) fn builtin_chr(
                     ok_val(string_val(&ch.to_string()), call_span)
                 } else {
                     Err(Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("chr: invalid Unicode codepoint {}", n),
                         call_span,
                     )
@@ -1038,7 +1037,7 @@ pub(crate) fn builtin_bytes_str(
             Some(bytes) => match std::str::from_utf8(bytes) {
                 Ok(s) => ok_val(string_val(s), call_span),
                 Err(e) => Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("bytes-str: invalid UTF-8 sequence: {}", e),
                     call_span,
                 )
@@ -1246,7 +1245,7 @@ pub(crate) fn builtin_regex_match(
                 call_span,
             ),
             Err(e) => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
                 call_span,
             )

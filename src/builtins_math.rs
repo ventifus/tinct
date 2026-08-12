@@ -31,7 +31,6 @@ use crate::error::Diagnostic;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
@@ -1128,7 +1127,7 @@ pub(crate) fn builtin_shl(
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("shl: negative shift count {}", bits),
                 call_span,
             )
@@ -1178,7 +1177,7 @@ pub(crate) fn builtin_shr(
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!("shr: negative shift count {}", bits),
                 call_span,
             )

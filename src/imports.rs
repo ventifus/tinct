@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-const KIND: &str = "internal";
+const KIND: &str = "import";
 
 /// Parse and type-check `stdlib/builtin_core.llt`, returning the resulting
 /// `(TyConEnv, type_name_to_id)` pair.

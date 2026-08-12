@@ -16,7 +16,7 @@ use crate::error::Diagnostic;
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Thunk};
 
-const KIND: &str = "eval";
+const KIND: &str = "eval/stream";
 
 /// `builtin-to-tinct`: serialize a value to its SCN tinct source representation.
 ///

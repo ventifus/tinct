@@ -27,8 +27,7 @@ use crate::value::{
     string_val, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
 };
 
-const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "eval/materialize";
 const KIND_TRACE: &str = "trace";
 
 tokio::task_local! {
@@ -642,7 +641,7 @@ pub(crate) async fn force_step(
                         // Thread-local being destroyed — propagate rather than silently
                         // producing an empty stack trace. The cycle error cannot be
                         // constructed without the path; surface the access failure.
-                        let err = Diagnostic::error(KIND_INTERNAL,
+                        let err = Diagnostic::error(KIND,
                             format!(
                                 "cycle detection: eval stack thread-local inaccessible: {access_err}"
                             ),
@@ -3491,7 +3490,7 @@ fn eval_structural_pattern_inner<'a>(
                         Some(CoreExpr::Int { value: n, .. }) => HashableValue::Int(*n),
                         _ => {
                             return Err(Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 "pattern: dynamic key in dict pattern is not supported".to_string(),
                                 match_span.clone(),
                             )
@@ -3579,7 +3578,7 @@ async fn bind_or_pin_name(
                 }
             }
             VarAddr::EffectPerform { .. } => {
-                return Err(Diagnostic::error(KIND_INTERNAL,
+                return Err(Diagnostic::error(KIND,
                     format!("pattern pin '{name}': EffectPerform not supported in pattern pins (T-2126)"),
                     match_span.clone(),
                 ).into());

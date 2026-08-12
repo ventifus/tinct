@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::Diagnostic;
 
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "eval";
 
 /// Type alias for the optional default expression + scope pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
@@ -1881,7 +1881,7 @@ impl Drop for ThunkPanicGuard {
     fn drop(&mut self) {
         if let Some(thunk) = self.0.take() {
             thunk.settle(Err(Arc::new(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "thunk evaluation task panicked".to_string(),
                 thunk.span.clone(),
             ))));
@@ -2525,7 +2525,7 @@ mod tests {
         let thunk = Thunk::placeholder(span.clone());
 
         let error = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "test error".to_string(),
             span,
         ));
@@ -2572,12 +2572,12 @@ mod tests {
         let thunk = Thunk::placeholder(span1.clone());
 
         let error1 = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "first error".to_string(),
             span1,
         ));
         let error2 = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "second error".to_string(),
             span2,
         ));
@@ -2608,7 +2608,7 @@ mod tests {
 
         // Attempt to settle with error — must be a no-op.
         let error = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "should not replace".to_string(),
             span,
         ));
@@ -2763,7 +2763,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
         let error = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "settle error".to_string(),
             span,
         ));
@@ -2782,7 +2782,7 @@ mod tests {
         let thunk = Thunk::placeholder(span.clone());
 
         let error = Arc::new(crate::error::Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             "test error".to_string(),
             span,
         ));

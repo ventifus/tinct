@@ -50,7 +50,6 @@ use crate::rust_span;
 use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
@@ -719,7 +718,7 @@ pub(crate) fn builtin_decimal(
                         call_span,
                     ),
                     Err(e) => Err(Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
                     )
@@ -796,7 +795,7 @@ pub(crate) fn builtin_big_int(
                         call_span,
                     ),
                     Err(e) => Err(Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
                     )
@@ -1247,7 +1246,7 @@ pub(crate) fn builtin_llt_repr(
             .await
             .map_err(|e| {
                 Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("llt-repr: {}", e.kind),
                     call_span.clone(),
                 )
@@ -1284,7 +1283,7 @@ pub(crate) fn builtin_debug_repr(
             .await
             .map_err(|e| {
                 Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("debug-repr: {}", e.kind),
                     call_span.clone(),
                 )
@@ -2036,7 +2035,7 @@ pub(crate) fn builtin_cap_identity(
             Value::RevocableDirCap { inner, revoked, .. } => {
                 if revoked.load(std::sync::atomic::Ordering::Acquire) {
                     return Err(Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         "cap-identity: capability has been revoked".to_string(),
                         call_span.clone(),
                     )
@@ -2066,7 +2065,7 @@ pub(crate) fn builtin_cap_identity(
             use cap_std::fs::MetadataExt;
             let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
                 Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("cap-identity: failed to stat directory: {e}"),
                     call_span.clone(),
                 )
@@ -2309,7 +2308,7 @@ pub(crate) fn builtin_resolve(
             d
         } else {
             return Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 format!(
                     "expected Document, got {}",
                     ctx.type_display_name(doc_val.type_decl_id_of())
@@ -2339,7 +2338,7 @@ pub(crate) fn builtin_resolve(
         };
 
         // Resolve the document using the SymbolTable scope.
-        let resolve_result = crate::resolve::resolve_document(&doc_arc, &table);
+        let resolve_result = crate::resolve::resolve_document(&doc_arc, &vec![table]);
         let resolve_diagnostics = resolve_result.diagnostics;
         let unreferenced_names = resolve_result.unreferenced;
 
@@ -2493,7 +2492,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
             Value::Dict { entries: d, .. } => d,
             other => {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!(
                         "builtin-lint-pipeline-docs: expected Dict, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
@@ -2530,7 +2529,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 doc_arcs.push(d);
             } else {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!(
                         "builtin-lint-pipeline-docs: entry is not a Document: {}",
                         ctx.type_display_name(val.type_decl_id_of())
@@ -2649,7 +2648,7 @@ pub(crate) fn builtin_typecheck_doc(
             let env_val = args[2].require_value()?.clone();
             if !matches!(env_val, Value::Dict { .. }) {
                 return Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!(
                         "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
                         ctx.type_display_name(env_val.type_decl_id_of())
@@ -2900,7 +2899,7 @@ pub(crate) fn builtin_get_type_context(
                 drop(tc_guard);
                 // TypeContext must be initialized by main.rs before any tinct code runs.
                 Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "builtin-get-type-context: TypeContext not initialized — \
                      this is a Rust bootstrap error, not a tinct error"
                         .to_string(),
@@ -4259,7 +4258,7 @@ pub(crate) fn builtin_eval_macro_ast(
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
                         Diagnostic::error(
-                            KIND_INTERNAL,
+                            KIND,
                             format!("eval-macro-ast: Expr.* conversion failed: {}", e),
                             call_span.clone(),
                         )
@@ -4295,8 +4294,8 @@ pub(crate) fn builtin_eval_macro_ast(
 
         // Desugar + expand + resolve with empty SymbolTable
         let program = crate::expand::expand_program(&program);
-        let empty_table = crate::symbol_table::SymbolTable::empty();
-        crate::resolve::resolve_program(&program, &empty_table);
+        let empty_chain = crate::symbol_table::SymbolTable::empty_chain();
+        crate::resolve::resolve_program(&program, &empty_chain);
 
         // Lower each document's expressions to CoreExpr and evaluate
         let display_names = ctx.type_display_names_snapshot();
@@ -4323,7 +4322,7 @@ pub(crate) fn builtin_eval_macro_ast(
         match crate::symbol_table::SymbolTable::get_in_chain(&result_table, "%") {
             Some(thunk) => Ok(thunk),
             None => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "eval-macro-ast: no result in evaluated document".to_string(),
                 call_span,
             )
@@ -4949,7 +4948,7 @@ pub(crate) fn builtin_sequential(
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
                             Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 format!("builtin-sequential: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
                             )
@@ -5104,7 +5103,7 @@ pub(crate) fn builtin_ast_to_program(
                 )
                 .map_err(|e| {
                     Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("ast-to-program: Expr.* conversion failed: {}", e),
                         call_span.clone(),
                     )

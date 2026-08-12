@@ -22,8 +22,7 @@ use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
-const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "eval/core";
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
 // (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
@@ -56,7 +55,7 @@ fn value_to_surface_node(
             // Variant form of an AST node — convert via surface bridge
             crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
                 Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
                 )
@@ -69,7 +68,7 @@ fn value_to_surface_node(
                 // It's an AST dict — convert via surface bridge
                 crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
                     Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,
                     )
@@ -78,7 +77,7 @@ fn value_to_surface_node(
             } else {
                 // It's a regular dict — dict values are thunk IDs, conversion not yet supported
                 Err(Diagnostic::error(
-                    KIND_INTERNAL,
+                    KIND,
                     "unquote of non-AST dict is not yet supported".to_string(),
                     span,
                 )
@@ -86,7 +85,7 @@ fn value_to_surface_node(
             }
         }
         _ => Err(Diagnostic::error(
-            KIND_INTERNAL,
+            KIND,
             format!("unquote of {:?} is not supported", value),
             span,
         )
@@ -1018,7 +1017,7 @@ pub(crate) fn eval_core_expr<'a>(
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest { .. } => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "rest marker (...) is only valid inside type expressions".to_string(),
                 span.clone(),
             )
@@ -1045,7 +1044,7 @@ pub(crate) fn eval_core_expr<'a>(
 
             // Unquote: error (only valid inside quote)
             CoreExpr::Unquote { .. } => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "unquote is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
@@ -1053,7 +1052,7 @@ pub(crate) fn eval_core_expr<'a>(
 
             // UnquoteSplice: error (only valid inside quote)
             CoreExpr::UnquoteSplice { .. } => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "unquote-splice is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
@@ -1061,7 +1060,7 @@ pub(crate) fn eval_core_expr<'a>(
 
             // PatternDecl: error (not an expression)
             CoreExpr::PatternDecl { .. } => Err(Diagnostic::error(
-                KIND_INTERNAL,
+                KIND,
                 "pattern declaration is only valid in instance match arms".to_string(),
                 span.clone(),
             )
@@ -1087,7 +1086,7 @@ pub(crate) fn eval_core_expr<'a>(
                         CoreExpr::Var { name: n, .. } => n.clone(),
                         _ => {
                             return Err(Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 format!(
                                     "let binding name must be an identifier, got: {:?}",
                                     name_expr.node
@@ -1173,7 +1172,7 @@ pub(crate) fn eval_core_expr<'a>(
                     .lock()
                     .map_err(|e| {
                         Diagnostic::error(
-                            KIND_INTERNAL,
+                            KIND,
                             format!("type_identity_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1213,7 +1212,7 @@ pub(crate) fn eval_core_expr<'a>(
                     .lock()
                     .map_err(|e| {
                         Diagnostic::error(
-                            KIND_INTERNAL,
+                            KIND,
                             format!("repr_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1228,7 +1227,7 @@ pub(crate) fn eval_core_expr<'a>(
                         .lock()
                         .map_err(|e| {
                             Diagnostic::error(
-                                KIND_INTERNAL,
+                                KIND,
                                 format!("is_predicates mutex poisoned: {e}"),
                                 span.clone(),
                             )

@@ -22,11 +22,10 @@ use crate::value::{
 };
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// Helper to create a boxed Diagnostic from a message.
 fn dt_err(msg: impl Into<String>, span: Span) -> Box<Diagnostic> {
-    Diagnostic::error(KIND_INTERNAL, msg.into(), span).into()
+    Diagnostic::error(KIND, msg.into(), span).into()
 }
 
 /// Parse an RFC 3339 timestamp string to a Timestamp (i64 nanoseconds).

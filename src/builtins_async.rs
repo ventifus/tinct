@@ -41,7 +41,6 @@ use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
 const KIND: &str = "eval";
-const KIND_INTERNAL: &str = "internal";
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -2644,7 +2643,7 @@ pub(crate) fn builtin_drain(
                 Err(e) => {
                     // Task panicked — this is a bug; propagate as an internal error.
                     return Err(Diagnostic::error(
-                        KIND_INTERNAL,
+                        KIND,
                         format!("async background task panicked during drain: {e}"),
                         call_span,
                     )

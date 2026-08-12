@@ -82,7 +82,7 @@ fn value_to_hashable_key(
                         Some(Err(e)) => return Err(Box::new((**e).clone())),
                         None => {
                             return Err(Diagnostic::error(
-                                "internal",
+                                KIND,
                                 format!("{builtin_name}: variant payload not materialized"),
                                 span.clone(),
                             )
@@ -214,7 +214,7 @@ pub(crate) fn builtin_keys(
             result.insert(
                 HashableValue::Int(i64::try_from(i).map_err(|_| {
                     Diagnostic::error(
-                        "internal",
+                        KIND,
                         "collection index overflow".to_string(),
                         call_span.clone(),
                     )

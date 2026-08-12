@@ -12,13 +12,12 @@ use tinct::{
     TYPE_ID_INT, TYPE_ID_NETCAP, TYPE_ID_PROGRAM_ITEM,
 };
 
-const KIND_INTERNAL: &str = "internal";
+const KIND: &str = "cli";
 
 /// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
-/// Uses `internal-error` kind with a synthetic Rust source span.
 fn cli_error(message: impl Into<String>) -> Box<tinct::Diagnostic> {
     Box::new(tinct::Diagnostic::error(
-        KIND_INTERNAL,
+        KIND,
         message.into(),
         tinct::rust_span!(),
     ))

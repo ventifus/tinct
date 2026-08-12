@@ -19,7 +19,7 @@ use crate::type_tags::*;
 pub use crate::type_class::TypeValue;
 use crate::value::{TYPE_ID_DICT, TYPE_ID_ROW_TAIL, TYPE_ID_TYPE_VALUE};
 
-const KIND: &str = "internal";
+const KIND: &str = "type-check";
 
 // ── TypeValue helper functions ────────────────────────────────────────────────
 
