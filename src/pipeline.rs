@@ -128,7 +128,34 @@ pub async fn process_pipeline_document(
         })
         .collect();
 
-    // Lower expressions to CoreExpr for eval_document.
+    // Prepend the document's outermost Dict scope to the chain BEFORE eval.
+    // The resolver already created the scope (entries with names/slots).
+    // Values are written lazily by eval_dict (via OnceLocks).
+    let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
+        matches!(
+            &stage_node.expr,
+            crate::ast::SurfaceExpression::StringLiteral { content, .. }
+            if content == "type"
+        )
+    });
+    for node in expr_nodes.iter().rev() {
+        if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
+            if let Some(dict_scope) = scope.get() {
+                if is_type_stage {
+                    state
+                        .infer_state
+                        .type_stage_scope
+                        .insert(0, Arc::clone(dict_scope));
+                } else {
+                    state.current_scope.insert(0, Arc::clone(dict_scope));
+                }
+                break;
+            }
+        }
+    }
+
+    // Step 3: Lower and evaluate. The scope chain now includes this document's
+    // dict scope, so thunks capture the correct context.
     let display_names = state.infer_state.type_display_names.clone();
     let entries: Vec<Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> = expr_nodes
         .iter()
@@ -144,26 +171,14 @@ pub async fn process_pipeline_document(
     let (_eval_scope, eval_diags) =
         crate::eval::eval_document(&entries, ctx, state.current_scope.clone()).await;
 
-    // Propagate eval diagnostics.
     for diag in &eval_diags {
         if diag.level == crate::error::DiagnosticLevel::Err {
             return Err(Box::new(diag.clone()));
         }
     }
 
-    // Read the scope from the document's outermost Dict AST node.
-    // The resolver created this scope; eval populated its values.
-    for node in expr_nodes.iter().rev() {
-        if let crate::ast::SurfaceExpression::Dict { scope, .. } = &node.expr {
-            if let Some(dict_scope) = scope.get() {
-                state.current_scope = vec![Arc::clone(dict_scope)];
-                break;
-            }
-        }
-    }
-
-    // Step 4: Typecheck. The type annotation resolver looks up values in the
-    // SymbolTable scope on demand — no pre-classification needed.
+    // Step 4: Typecheck. Type expression evaluation searches type_stage_scope
+    // first, giving type-stage entries priority over runtime entries.
     let (_result_ty, tc_errors) = crate::typecheck::process_document(
         doc,
         &mut state.infer_state,

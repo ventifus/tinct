@@ -1545,13 +1545,23 @@ async fn resolve_type_head(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
 ) -> Result<TypeValue, Diagnostic> {
-    // Step 0: look up name in the SymbolTable scope (unified scope for all phases).
-    // Materialize on demand and convert TypeNode → TypeValue.
+    // Step 0: look up name in scope chains. Type-stage chain is searched FIRST
+    // (type expressions see type-stage definitions before runtime definitions).
+    // Then the current scope chain (accumulated from all documents).
     let mut scope_lookup_info: Option<String> = None;
     let _ = &scope_lookup_info;
-    if let Some(ref current_scope) = state.current_scope {
-        if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(current_scope, name) {
-            // Found in scope — proceed with materialization below.
+    let chains_to_search: Vec<&[std::sync::Arc<crate::symbol_table::SymbolTable>]> = {
+        let mut v: Vec<&[std::sync::Arc<crate::symbol_table::SymbolTable>]> = Vec::new();
+        if !state.type_stage_scope.is_empty() {
+            v.push(&state.type_stage_scope);
+        }
+        if let Some(ref cs) = state.current_scope {
+            v.push(cs);
+        }
+        v
+    };
+    for chain in &chains_to_search {
+        if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(chain, name) {
             if let Some(eval_ctx) = &state.eval_ctx {
                 let val = crate::eval::materialize(&thunk, None, eval_ctx)
                     .await
@@ -1580,20 +1590,20 @@ async fn resolve_type_head(
             } else {
                 scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
             }
-        } else {
-            let chain_info: Vec<String> = current_scope
-                .iter()
-                .enumerate()
-                .map(|(i, frame)| format!("frame {}: {} entries", i, frame.len()))
-                .collect();
-            scope_lookup_info = Some(format!(
-                "not found in scope chain ({} frames: {})",
-                current_scope.len(),
-                chain_info.join(", ")
-            ));
         }
-    } else {
-        scope_lookup_info = Some("no current_scope set".to_string());
+    }
+    // If not found in any chain, build diagnostic info.
+    if scope_lookup_info.is_none() {
+        let mut all_frames = Vec::new();
+        for chain in &chains_to_search {
+            for (i, frame) in chain.iter().enumerate() {
+                all_frames.push(format!("frame {}: {} entries", i, frame.len()));
+            }
+        }
+        scope_lookup_info = Some(format!(
+            "not found in any scope chain ({})",
+            all_frames.join(", ")
+        ));
     }
 
     // Step 1: check type_stage_scope for a resolved TypeValue (legacy fallback).

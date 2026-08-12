@@ -239,26 +239,6 @@ pub(crate) struct LetrecChainStepData {
     pub(crate) seq_span: Span,
 }
 
-/// Payload for Cont::VariantUnpackForLetrecChain. Boxed to keep the Cont enum ≤96 bytes.
-///
-/// After materializing a Variant's payload in a LetrecChainStep context, this continuation
-/// unpacks the payload dict and proceeds with the letrec chain expression evaluation.
-pub(crate) struct VariantUnpackForLetrecChainData {
-    /// Static keys extracted from the current letrec chain expression
-    pub(crate) static_key_set: HashSet<String>,
-    /// Index of the next expression to evaluate
-    pub(crate) next_idx: usize,
-    /// Arc to the original CoreExpr::Sequential node. The exprs vec is extracted on demand
-    /// to avoid cloning the whole vec per continuation frame.
-    pub(crate) letrec_chain_expr: Arc<Spanned<CoreExpr>>,
-    /// ScopeChain for variable lookup in subsequent expressions.
-    pub(crate) scope: ScopeChain,
-    pub(crate) ctx: Arc<EvalContext>,
-    pub(crate) seq_span: Span,
-    /// Span of the current expression (for error reporting)
-    pub(crate) current_expr_span: Span,
-}
-
 /// Payload for Cont::MatchDispatch. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MatchDispatchData {
     /// The arms to try matching. Index starts at 0.
@@ -361,7 +341,6 @@ pub(crate) enum Cont {
     /// Unpack a Variant payload for letrec chain expression scope binding.
     /// After materializing a Variant's payload thunk, this continuation calls require_dict
     /// to extract the payload's dict entries and proceeds with LetrecChainStep logic.
-    VariantUnpackForLetrecChain(Box<VariantUnpackForLetrecChainData>),
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
@@ -2357,59 +2336,20 @@ pub(crate) async fn apply_cont(
                     };
 
                     if static_keys.is_some() {
-                        let map = match intermediate_value {
-                            Value::Dict { entries: map, .. } => map,
-                            Value::Variant {
-                                payload: Some(payload_thunk),
-                                ..
-                            } => {
-                                // Auto-unpack variant payload for sequential scope-chain binding.
-                                // Unit Variants (no payload) fall through to the type error below.
-                                let key_set = static_keys.unwrap();
-                                stack.push(Cont::VariantUnpackForLetrecChain(Box::new(
-                                    VariantUnpackForLetrecChainData {
-                                        static_key_set: key_set,
-                                        next_idx,
-                                        letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                                        scope: scope.clone(),
-                                        ctx: Arc::clone(&ctx),
-                                        seq_span: seq_span.clone(),
-                                        current_expr_span: current_expr.span.clone(),
-                                    },
-                                )));
-                                return Action::Materialize {
-                                    thunk: payload_thunk,
-                                    mat_span: Some(current_expr.span.clone()),
-                                };
-                            }
-                            _ => {
-                                return Action::Continue(Err(Box::new(
-                                    Diagnostic::type_mismatch_ctx(
-                                        format!("sequential expression #{}", idx + 1),
-                                        "Dict or Variant",
-                                        &ctx.type_display_name(
-                                            intermediate_value.type_decl_id_of(),
-                                        ),
-                                        current_expr.span.clone(),
-                                    ),
-                                )));
-                            }
+                        // Prepend the resolver's scope from the CoreExpr::Dict.
+                        // Keys are eager (slots assigned at resolve time).
+                        // Values are lazy (OnceLocks populated by eval_dict).
+                        let resolver_scope = match &current_expr.node {
+                            CoreExpr::Dict {
+                                scope: Some(rs), ..
+                            } => Arc::clone(rs),
+                            _ => panic!(
+                                "sequential intermediate dict at index {} has no resolver scope",
+                                idx
+                            ),
                         };
-
-                        // Propagate the intermediate body's string-key thunks into a
-                        // child scope so subsequent expressions can resolve variable
-                        // references to this body's bindings.
-                        let named_entries: indexmap::IndexMap<String, Arc<Thunk>> = map
-                            .iter()
-                            .filter_map(|(k, v)| {
-                                if let HashableValue::Str(name) = k {
-                                    Some((name.to_string(), Arc::clone(v)))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        let updated_scope = SymbolTable::extend_chain(&scope, named_entries);
+                        let mut updated_scope = scope.clone();
+                        updated_scope.insert(0, resolver_scope);
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
@@ -2426,89 +2366,6 @@ pub(crate) async fn apply_cont(
                     } else {
                         // No static keys — continue with same scope.
                         let next_expr = &exprs[next_idx];
-                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
-                            idx: next_idx,
-                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: scope.clone(),
-                            ctx: Arc::clone(&ctx),
-                            seq_span,
-                        })));
-                        Action::EvalCore {
-                            expr: Arc::clone(next_expr),
-                            scope,
-                            ctx,
-                        }
-                    }
-                }
-            }
-        }
-        Cont::VariantUnpackForLetrecChain(data) => {
-            let VariantUnpackForLetrecChainData {
-                static_key_set,
-                next_idx,
-                letrec_chain_expr,
-                scope,
-                ctx,
-                seq_span,
-                current_expr_span,
-            } = *data;
-            let exprs = match &letrec_chain_expr.node {
-                CoreExpr::Sequential { exprs, .. } => exprs,
-                _ => {
-                    unreachable!("VariantUnpackForLetrecChain letrec_chain_expr must be Sequential")
-                }
-            };
-
-            // Result is the materialized payload value from the Variant
-            match result {
-                Err(mut e) => {
-                    e.push_frame("sequential expression".to_string(), seq_span);
-                    Action::Continue(Err(e))
-                }
-                Ok(payload_val) => {
-                    // Unpack the payload dict using require_dict
-                    let payload_map = match crate::builtins::require_dict(
-                        "sequential expression",
-                        payload_val,
-                        current_expr_span.clone(),
-                        &ctx,
-                        current_expr_span,
-                    )
-                    .await
-                    {
-                        Ok(map) => map,
-                        Err(e) => return Action::Continue(Err(e)),
-                    };
-
-                    // Extend frame group with payload dict's string-keyed thunks,
-                    // mirroring the Dict path in LetrecChainStep (lines above). Without
-                    // this, subsequent LGM references would resolve to wrong thunks.
-                    let next_expr = &exprs[next_idx];
-                    if !static_key_set.is_empty() {
-                        let named_entries: indexmap::IndexMap<String, Arc<Thunk>> = payload_map
-                            .iter()
-                            .filter_map(|(k, v)| {
-                                if let HashableValue::Str(name) = k {
-                                    Some((name.to_string(), Arc::clone(v)))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        let updated_scope = SymbolTable::extend_chain(&scope, named_entries);
-                        stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
-                            idx: next_idx,
-                            letrec_chain_expr: Arc::clone(&letrec_chain_expr),
-                            scope: updated_scope.clone(),
-                            ctx: Arc::clone(&ctx),
-                            seq_span,
-                        })));
-                        Action::EvalCore {
-                            expr: Arc::clone(next_expr),
-                            scope: updated_scope,
-                            ctx,
-                        }
-                    } else {
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
                             letrec_chain_expr: Arc::clone(&letrec_chain_expr),

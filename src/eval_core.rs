@@ -755,14 +755,40 @@ pub(crate) fn eval_core_expr<'a>(
                 match thunk {
                     Some(t) => Ok(t),
                     None => {
-                        // VarAddr resolved to None — the resolver and evaluator are out of sync.
-                        // Uses Diagnostic (not panic!) so the error propagates through the thunk
-                        // graph to the caller, producing a useful error message rather than a crash.
-                        Err(Diagnostic::undefined_variable(
-                            format!("'{name}' at addr={addr:?}: no value at this address",),
+                        let mut diag = Diagnostic::undefined_variable(
+                            format!("'{name}' at addr={addr:?}: no value at this address"),
                             span.clone(),
-                        )
-                        .into())
+                        );
+                        // Enrich with scope chain info for debugging.
+                        if let VarAddr::Dispatch(depth, slot) = addr {
+                            let entry = SymbolTable::lookup_in_chain(scope, *depth, *slot);
+                            if let Some(e) = entry {
+                                let has_value = e.value.get().is_some();
+                                diag = diag.with_note(format!(
+                                    "entry exists at depth {} slot {} (has_value={})",
+                                    depth, slot, has_value
+                                ));
+                            } else {
+                                let frame_len = scope.get(*depth as usize).map(|f| f.len());
+                                diag = diag.with_note(format!(
+                                    "no entry at depth {} slot {} (frame has {:?} entries)",
+                                    depth, slot, frame_len
+                                ));
+                            }
+                            diag = diag.with_note(format!("scope chain: {} frames", scope.len()));
+                            for (i, frame) in scope.iter().enumerate().take(5) {
+                                let names: Vec<&str> =
+                                    frame.entries().keys().map(|s| s.as_str()).take(5).collect();
+                                diag = diag.with_note(format!(
+                                    "  chain[{}]: {} entries [{}{}]",
+                                    i,
+                                    frame.len(),
+                                    names.join(", "),
+                                    if frame.len() > 5 { " ..." } else { "" }
+                                ));
+                            }
+                        }
+                        Err(diag.into())
                     }
                 }
             }
