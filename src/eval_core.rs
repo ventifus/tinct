@@ -22,6 +22,9 @@ use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
 // (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
 // No runtime boundary guard wrapping from a side-table is needed.
@@ -52,7 +55,8 @@ fn value_to_surface_node(
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
             crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                Diagnostic::internal(
+                Diagnostic::error(
+                    KIND_INTERNAL,
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
                 )
@@ -64,7 +68,8 @@ fn value_to_surface_node(
             if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
                 crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                    Diagnostic::internal(
+                    Diagnostic::error(
+                        KIND_INTERNAL,
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,
                     )
@@ -72,16 +77,20 @@ fn value_to_surface_node(
                 })
             } else {
                 // It's a regular dict — dict values are thunk IDs, conversion not yet supported
-                Err(Diagnostic::internal(
+                Err(Diagnostic::error(
+                    KIND_INTERNAL,
                     "unquote of non-AST dict is not yet supported".to_string(),
                     span,
                 )
                 .into())
             }
         }
-        _ => Err(
-            Diagnostic::internal(format!("unquote of {:?} is not supported", value), span).into(),
-        ),
+        _ => Err(Diagnostic::error(
+            KIND_INTERNAL,
+            format!("unquote of {:?} is not supported", value),
+            span,
+        )
+        .into()),
     }
 }
 
@@ -107,9 +116,12 @@ async fn collect_seq_elements(
                 if let HashableValue::Int(i) = key {
                     int_entries.push((*i, Arc::clone(thunk)));
                 } else {
-                    return Err(Diagnostic::type_mismatch(
-                        "Seq or integer-keyed Dict",
-                        "Dict with non-integer keys",
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "type mismatch: expected {}, got {}",
+                            "Seq or integer-keyed Dict", "Dict with non-integer keys"
+                        ),
                         span,
                     )
                     .into());
@@ -122,11 +134,15 @@ async fn collect_seq_elements(
             // Validate sequential from 0
             for (idx, (i, _)) in int_entries.iter().enumerate() {
                 if *i != idx as i64 {
-                    return Err(Diagnostic::type_mismatch(
-                        "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
-                        &format!(
-                            "Dict with non-sequential keys (expected {}, found {})",
-                            idx, i
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "type mismatch: expected {}, got {}",
+                            "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
+                            format!(
+                                "Dict with non-sequential keys (expected {}, found {})",
+                                idx, i
+                            )
                         ),
                         span,
                     )
@@ -141,9 +157,13 @@ async fn collect_seq_elements(
             }
         }
         _ => {
-            return Err(Diagnostic::type_mismatch(
-                "Seq or integer-keyed Dict",
-                &ctx.type_display_name(current.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Seq or integer-keyed Dict",
+                    ctx.type_display_name(current.type_decl_id_of())
+                ),
                 span,
             )
             .into());
@@ -194,7 +214,8 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::UnquoteSplice(_) => {
                 // UnquoteSplice outside of call args or dict entries is an error.
                 // Call args and dict entries handle UnquoteSplice in their own loops.
-                Err(Diagnostic::unimplemented(
+                Err(Diagnostic::error(
+                    KIND,
                     "unquote-splice must be in a list position (inside call args or dict entries)"
                         .to_string(),
                     span,
@@ -288,9 +309,13 @@ fn eval_quote_preprocess<'a>(
                                 }
                             }
                             _ => {
-                                return Err(Diagnostic::type_mismatch(
-                                    "Dict",
-                                    &ctx.type_display_name(value.type_decl_id_of()),
+                                return Err(Diagnostic::error(
+                                    KIND,
+                                    format!(
+                                        "type mismatch: expected {}, got {}",
+                                        "Dict",
+                                        ctx.type_display_name(value.type_decl_id_of())
+                                    ),
                                     inner_span,
                                 )
                                 .into())
@@ -645,7 +670,7 @@ pub(crate) async fn extract_fn_annotation_extra(
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 match eval_core_expr(&core_expr, scope, ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&e.node.value.span), ctx).await?,
-                    Err(e) if e.kind == "unimplemented" => {
+                    Err(e) if e.message.contains("placeholder") => {
                         // Placeholder from nested type expressions → skip this key.
                         continue;
                     }
@@ -726,12 +751,12 @@ pub(crate) fn eval_core_expr<'a>(
                         method_slot,
                     } => {
                         let evidence = SymbolTable::lookup_evidence_in_chain(scope, *class_decl_id)
-                            .ok_or_else(|| Diagnostic::user_error(
+                            .ok_or_else(|| Diagnostic::error(KIND,
                                 format!("no instance found for typeclass method (class_decl_id={}) — no evidence entry in scope chain", class_decl_id),
                                 span.clone(),
                             ))?;
                         let actual_slot = evidence.method_slots.get(*method_slot as usize)
-                            .ok_or_else(|| Diagnostic::user_error(
+                            .ok_or_else(|| Diagnostic::error(KIND,
                                 format!("typeclass method_slot {} out of range (class has {} methods)",
                                         method_slot, evidence.method_slots.len()),
                                 span.clone(),
@@ -743,7 +768,7 @@ pub(crate) fn eval_core_expr<'a>(
                                 .get_index(*actual_slot as usize)
                                 .and_then(|(_, e)| e.value.get().cloned())
                                 .ok_or_else(|| {
-                                    Diagnostic::user_error(
+                                    Diagnostic::error(KIND,
                                 format!("typeclass method at slot {} not found in handler frame",
                                         actual_slot),
                                 span.clone(),
@@ -755,37 +780,27 @@ pub(crate) fn eval_core_expr<'a>(
                 match thunk {
                     Some(t) => Ok(t),
                     None => {
-                        let mut diag = Diagnostic::undefined_variable(
-                            format!("'{name}' at addr={addr:?}: no value at this address"),
+                        let mut diag = Diagnostic::error(
+                            KIND,
+                            format!("undefined variable: '{name}' at addr={addr:?}: no value at this address"),
                             span.clone(),
                         );
-                        // Enrich with scope chain info for debugging.
                         if let VarAddr::Dispatch(depth, slot) = addr {
                             let entry = SymbolTable::lookup_in_chain(scope, *depth, *slot);
                             if let Some(e) = entry {
                                 let has_value = e.value.get().is_some();
                                 diag = diag.with_note(format!(
-                                    "entry exists at depth {} slot {} (has_value={})",
+                                    "entry at scope[{}] slot {} (has_value={})",
                                     depth, slot, has_value
                                 ));
                             } else {
-                                let frame_len = scope.get(*depth as usize).map(|f| f.len());
                                 diag = diag.with_note(format!(
-                                    "no entry at depth {} slot {} (frame has {:?} entries)",
-                                    depth, slot, frame_len
+                                    "no entry at scope[{}] slot {}",
+                                    depth, slot
                                 ));
                             }
-                            diag = diag.with_note(format!("scope chain: {} frames", scope.len()));
-                            for (i, frame) in scope.iter().enumerate().take(5) {
-                                let names: Vec<&str> =
-                                    frame.entries().keys().map(|s| s.as_str()).take(5).collect();
-                                diag = diag.with_note(format!(
-                                    "  chain[{}]: {} entries [{}{}]",
-                                    i,
-                                    frame.len(),
-                                    names.join(", "),
-                                    if frame.len() > 5 { " ..." } else { "" }
-                                ));
+                            for note in SymbolTable::scope_chain_notes(scope, Some(*depth)) {
+                                diag = diag.with_note(note);
                             }
                         }
                         Err(diag.into())
@@ -873,16 +888,22 @@ pub(crate) fn eval_core_expr<'a>(
                             Some(thunk) => Ok(Arc::clone(thunk)),
                             None => {
                                 let key_str = key.to_string();
-                                let available_keys: Vec<String> =
-                                    map.keys().map(|k| k.to_string()).collect();
-                                Err(Diagnostic::key_not_found(&key_str, available_keys, span)
-                                    .into())
+                                Err(Diagnostic::error(
+                                    KIND,
+                                    format!("key not found: {}", key_str),
+                                    span,
+                                )
+                                .into())
                             }
                         }
                     }
-                    _ => Err(Diagnostic::type_mismatch(
-                        "Dict",
-                        ctx.type_display_name(target_val.type_decl_id_of()),
+                    _ => Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "type mismatch: expected {}, got {}",
+                            "Dict",
+                            ctx.type_display_name(target_val.type_decl_id_of())
+                        ),
                         target.span.clone(),
                     )
                     .into()),
@@ -996,7 +1017,8 @@ pub(crate) fn eval_core_expr<'a>(
             ))),
 
             // Rest: error (only valid in type expressions)
-            CoreExpr::Rest { .. } => Err(Diagnostic::internal(
+            CoreExpr::Rest { .. } => Err(Diagnostic::error(
+                KIND_INTERNAL,
                 "rest marker (...) is only valid inside type expressions".to_string(),
                 span.clone(),
             )
@@ -1022,21 +1044,24 @@ pub(crate) fn eval_core_expr<'a>(
             }
 
             // Unquote: error (only valid inside quote)
-            CoreExpr::Unquote { .. } => Err(Diagnostic::internal(
+            CoreExpr::Unquote { .. } => Err(Diagnostic::error(
+                KIND_INTERNAL,
                 "unquote is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
             .into()),
 
             // UnquoteSplice: error (only valid inside quote)
-            CoreExpr::UnquoteSplice { .. } => Err(Diagnostic::internal(
+            CoreExpr::UnquoteSplice { .. } => Err(Diagnostic::error(
+                KIND_INTERNAL,
                 "unquote-splice is only valid inside [quote ...]".to_string(),
                 span.clone(),
             )
             .into()),
 
             // PatternDecl: error (not an expression)
-            CoreExpr::PatternDecl { .. } => Err(Diagnostic::internal(
+            CoreExpr::PatternDecl { .. } => Err(Diagnostic::error(
+                KIND_INTERNAL,
                 "pattern declaration is only valid in instance match arms".to_string(),
                 span.clone(),
             )
@@ -1061,7 +1086,8 @@ pub(crate) fn eval_core_expr<'a>(
                         // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
                         _ => {
-                            return Err(Diagnostic::internal(
+                            return Err(Diagnostic::error(
+                                KIND_INTERNAL,
                                 format!(
                                     "let binding name must be an identifier, got: {:?}",
                                     name_expr.node
@@ -1095,7 +1121,8 @@ pub(crate) fn eval_core_expr<'a>(
                 )))
             }
 
-            CoreExpr::Placeholder { .. } => Err(Diagnostic::unimplemented(
+            CoreExpr::Placeholder { .. } => Err(Diagnostic::error(
+                KIND,
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
                 span.clone(),
             )
@@ -1145,7 +1172,8 @@ pub(crate) fn eval_core_expr<'a>(
                 ctx.type_identity_registry
                     .lock()
                     .map_err(|e| {
-                        Diagnostic::internal(
+                        Diagnostic::error(
+                            KIND_INTERNAL,
                             format!("type_identity_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1184,7 +1212,8 @@ pub(crate) fn eval_core_expr<'a>(
                 ctx.repr_registry
                     .lock()
                     .map_err(|e| {
-                        Diagnostic::internal(
+                        Diagnostic::error(
+                            KIND_INTERNAL,
                             format!("repr_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
@@ -1198,7 +1227,8 @@ pub(crate) fn eval_core_expr<'a>(
                     ctx.is_predicates
                         .lock()
                         .map_err(|e| {
-                            Diagnostic::internal(
+                            Diagnostic::error(
+                                KIND_INTERNAL,
                                 format!("is_predicates mutex poisoned: {e}"),
                                 span.clone(),
                             )

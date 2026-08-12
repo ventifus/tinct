@@ -29,6 +29,9 @@ use crate::type_tags::*;
 use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::value::{HashableValue, Thunk, Value, TYPE_ID_DICT};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 // ============================================================================
 // Document pipeline evaluation
 // ============================================================================
@@ -1705,12 +1708,11 @@ pub(crate) fn validate_and_wrap_record(
                 field_path_prefix, actual_fields
             );
 
-            return Err(Diagnostic::type_assert_failed(
-                &format!("{}record with field \"{}\"", field_path_prefix, field_name),
-                // "got" now shows what's actually present, not just repeating the missing field.
-                &format!(
-                    "{}record without field \"{}\"",
-                    field_path_prefix, field_name
+            return Err(Diagnostic::error(
+                "eval",
+                format!(
+                    "type assertion failed: expected {}record with field \"{}\", got {}record without field \"{}\"",
+                    field_path_prefix, field_name, field_path_prefix, field_name
                 ),
                 // Use data_span (the data definition site) so the error points to WHERE
                 // the invalid dict was constructed, not the annotation.
@@ -1835,10 +1837,12 @@ async fn call_to_match_by_name(
             ..
         } => (clauses, definition_scope),
         other => {
-            return Err(Diagnostic::type_mismatch_ctx(
-                format!("call_to_match_by_name({name})"),
-                "Function",
-                &ctx.type_display_name(other.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                "eval",
+                format!(
+                    "call_to_match_by_name({name}): expected Function, got {}",
+                    ctx.type_display_name(other.type_decl_id_of())
+                ),
                 span.clone(),
             )
             .into());
@@ -1861,10 +1865,12 @@ async fn call_to_match_by_name(
     // Step 8: materialize the call result and check if it is a nonzero Int.
     match materialize(&result_thunk, Some(span), ctx).await? {
         Value::Int { n, .. } => Ok(n != 0),
-        other => Err(Diagnostic::type_mismatch_ctx(
-            format!("call_to_match_by_name({name}) result"),
-            "Int",
-            &ctx.type_display_name(other.type_decl_id_of()),
+        other => Err(Diagnostic::error(
+            "eval",
+            format!(
+                "call_to_match_by_name({name}) result: expected Int, got {}",
+                ctx.type_display_name(other.type_decl_id_of())
+            ),
             span.clone(),
         )
         .into()),
@@ -2025,11 +2031,20 @@ pub fn materialize<'a>(
                 if same {
                     let cycle_path =
                         crate::eval_materialize::TASK_EVAL_STACK.with(|s| s.borrow().clone());
-                    let err = Diagnostic::circular_dependency(
-                        thunk.span.name.as_deref().unwrap_or("thunk"),
-                        thunk.span.clone(),
-                        cycle_path,
-                    );
+                    let err = {
+                        let mut e = Diagnostic::error(
+                            "eval",
+                            format!(
+                                "circular dependency: {}",
+                                thunk.span.name.as_deref().unwrap_or("thunk")
+                            ),
+                            thunk.span.clone(),
+                        );
+                        for (cycle_name, cycle_span) in &cycle_path {
+                            e = e.with_label(cycle_span.clone(), format!("via {}", cycle_name));
+                        }
+                        e
+                    };
                     thunk.settle(Err(Arc::new(err.clone())));
                     return Err(Box::new(err));
                 }
@@ -2827,7 +2842,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -2860,7 +2875,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -2892,7 +2907,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -2979,7 +2994,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3070,7 +3085,7 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3109,7 +3124,7 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &ctx).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -3421,7 +3436,8 @@ mod tests {
     async fn test_error_display_with_full_stack() {
         // Integration test: verify the Display output includes all stack frames.
         // test_span embeds src/test_util.rs as the source file; spans show with file prefix.
-        let err = crate::error::Diagnostic::internal(
+        let err = crate::error::Diagnostic::error(
+            "internal",
             "something broke".to_string(),
             test_span(1, 5, 1, 12),
         )
@@ -3686,7 +3702,7 @@ mod tests {
         let thunk = eval_core_for_test(expr, &test_ctx()).await.unwrap();
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -4306,7 +4322,7 @@ mod tests {
         // Int(42) is not a Dict with a `name:` field → record shape check fails → error.
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert_eq!(
-            err.kind, "type-assert-failed",
+            err.kind, "eval",
             "expected TypeAssertFailed, got: {:?}",
             err.kind
         );
@@ -5371,7 +5387,7 @@ mod tests {
         );
         let err2 = result2.unwrap_err();
         assert!(
-            err2.kind == "type-assert-failed" || err2.message.contains("type assertion failed"),
+            err2.kind == "eval" || err2.message.contains("type assertion failed"),
             "cached error should still say 'type assertion failed', got kind: {}, message: {}",
             err2.kind,
             err2.message
@@ -5422,7 +5438,7 @@ mod tests {
 
         // The error should be a type assertion failure
         assert!(
-            error.kind == "type-assert-failed" || error.message.contains("type assertion failed"),
+            error.kind == "eval" || error.message.contains("type assertion failed"),
             "Expected type assertion failed error, got kind: {}, message: {}",
             error.kind,
             error.message
@@ -5497,7 +5513,7 @@ mod tests {
 
         // Verify the error kind is CircularDependency
         assert_eq!(
-            err.kind, "circular-dependency",
+            err.kind, "eval",
             "Expected circular-dependency error, got: {:?}",
             err.kind
         );
@@ -5521,7 +5537,7 @@ mod tests {
         let def_span = test_span(1, 1, 1, 10);
         let frame_span = test_span(5, 1, 5, 10);
 
-        let mut err = Diagnostic::key_not_found("key", vec![], def_span);
+        let mut err = Diagnostic::error(KIND, format!("key not found: {}", "key"), def_span);
 
         // Add the frame once
         err.push_frame("first access".to_string(), frame_span.clone());
@@ -5696,7 +5712,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err().kind,
-            "match-exhaustion",
+            "eval",
             "expected MatchExhaustion from undefined pin in dict pattern"
         );
     }
@@ -5739,7 +5755,7 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.kind == "match-exhaustion",
+            err.kind == "eval",
             "Expected MatchExhaustion, got: {:?}",
             err.kind
         );

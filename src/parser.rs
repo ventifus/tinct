@@ -21,6 +21,8 @@ use crate::ast::{
 use crate::error::Diagnostic;
 use crate::lexer::{self, Token};
 
+const KIND: &str = "parse";
+
 /// Parser-local shorthand: create an `Arc<SurfaceNode>` with fresh inline annotations.
 /// Equivalent to `Arc::new(SurfaceNode::new(expr, span))`.
 #[inline(always)]
@@ -228,7 +230,7 @@ fn parse_bracket_annotation_dict(
                     // annotation is not valid syntax.
                     if waiting_for_value {
                         return Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "missing value after `:` in property dict annotation",
                             tokens[i].span.clone(),
                         ));
@@ -409,7 +411,7 @@ fn parse_bracket_annotation_dict(
                 // If we were waiting for a value after `:`, the annotation is malformed.
                 if waiting_for_value {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "missing value after `:` in property dict annotation".to_string(),
                         tokens[i].span.clone(),
                     ));
@@ -420,7 +422,7 @@ fn parse_bracket_annotation_dict(
     }
 
     Err(Diagnostic::error(
-        "parse-error",
+        KIND,
         "unclosed bracket in property dict annotation".to_string(),
         bracket_start_span,
     ))
@@ -441,7 +443,7 @@ fn parse_annotation_direct(
         }
         _ => {
             return Err(Diagnostic::error(
-                "parse-error",
+                KIND,
                 "expected @ to start annotation".to_string(),
                 tokens[i].span.clone(),
             ));
@@ -455,7 +457,7 @@ fn parse_annotation_direct(
         // Report at the @ token itself — it was consumed but nothing followed.
         let at_span = tokens[start_index].span.clone();
         return Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "unexpected end of input after @".to_string(),
             at_span,
         ));
@@ -543,7 +545,7 @@ fn parse_annotation_direct(
                 let outer_dict_node = Arc::new(SurfaceNode::new(
                     SurfaceExpression::Dict {
                         entries,
-                        scope_frame: std::sync::OnceLock::new(),
+                        scope: std::sync::OnceLock::new(),
                     },
                     ann_span.clone(),
                 ));
@@ -560,7 +562,7 @@ fn parse_annotation_direct(
             let dict_node = Arc::new(SurfaceNode::new(
                 SurfaceExpression::Dict {
                     entries,
-                    scope_frame: std::sync::OnceLock::new(),
+                    scope: std::sync::OnceLock::new(),
                 },
                 ann_span.clone(),
             ));
@@ -570,7 +572,7 @@ fn parse_annotation_direct(
             ))
         }
         _ => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             format!(
                 "expected annotation name or '[' after @, found {:?}",
                 tokens[i].node
@@ -810,7 +812,7 @@ enum CallArg {
 /// `blank_before` is keyed by the same encoding and set to `true` when
 /// there was a blank line (consecutive newlines) before that node.
 ///
-/// `diagnostics` contains parse diagnostics (always `kind = "parse-error"`, level = Err) that
+/// `diagnostics` contains parse diagnostics (always `kind = "parse"`, level = Err) that
 /// were recovered from during parsing. These are errors that occurred inside bracket forms;
 /// the parser substituted an `SurfaceExpression::Error` node and continued. Fatal errors
 /// (lexer failure, unclosed brackets at top level) still cause `parse()` to return `Err(...)`.
@@ -986,7 +988,7 @@ fn recover_from_bracket_error(
                     mk(
                         SurfaceExpression::Dict {
                             entries: partial_entries,
-                            scope_frame: std::sync::OnceLock::new(),
+                            scope: std::sync::OnceLock::new(),
                         },
                         dict_span,
                     )
@@ -1197,7 +1199,7 @@ fn recover_from_failed_open(
 pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(source, Arc::clone(&file))
-        .map_err(|e| Diagnostic::error("parse-error", e.message, e.span))?;
+        .map_err(|e| Diagnostic::error(KIND, e.message, e.span))?;
 
     // Stack of frames tracking bracket nesting
     let mut stack: Vec<StackFrame> = Vec::new();
@@ -1266,7 +1268,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                 // Check depth before pushing
                 if stack.len() >= MAX_PARSE_DEPTH {
                     let err = Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         format!("maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"),
                         span.clone(),
                     );
@@ -1285,7 +1287,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         continue;
                     }
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         format!("maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"),
                         span,
                     ));
@@ -1803,7 +1805,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
             Token::CloseBracket => {
                 // Pop the frame and construct the AST node
                 let frame = stack.pop().ok_or_else(|| {
-                    Diagnostic::error("parse-error", "unmatched closing bracket", span.clone())
+                    Diagnostic::error(KIND, "unmatched closing bracket", span.clone())
                 })?;
                 // Record what was just popped — useful when unclosed brackets remain at EOF
                 last_popped_frame = Some(frame_info_static(&frame));
@@ -1864,7 +1866,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // If there's a pending key, that's an error — key without value
                         if let Some(key_expr) = pending_key {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "key without value: expected `:` and value".to_string(),
                                 key_expr.span.clone()
                             ));
@@ -1934,7 +1936,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     continue;
                                 } else if entries.is_empty() {
                                     // Floating annotation but no expression — error
-                                    close_bracket_recover!(Diagnostic::error("parse-error", "type-assert form [@Annotation expr] requires an expression".to_string(), span.clone()));
+                                    close_bracket_recover!(Diagnostic::error(KIND, "type-assert form [@Annotation expr] requires an expression".to_string(), span.clone()));
                                     // close_bracket_recover! falls through; entries won't be used
                                     vec![]
                                 } else {
@@ -2035,7 +2037,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 let spanned_dict = mk(
                                     SurfaceExpression::Dict {
                                         entries,
-                                        scope_frame: std::sync::OnceLock::new(),
+                                        scope: std::sync::OnceLock::new(),
                                     },
                                     dict_span(span_start),
                                 );
@@ -2062,7 +2064,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // If there's a pending key, that's an error — named arg without value
                         if let Some((key, key_span, _)) = pending_key {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 format!("named argument `{}` without value", key),
                                 key_span
                             ));
@@ -2074,7 +2076,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             } else if args.is_empty() {
                                 // Explicit call with no args: [call] is an error
                                 Err(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "call form requires at least a function expression".to_string(),
                                     span.clone(),
                                 ))
@@ -2082,7 +2084,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 // Explicit call: func is args[0]
                                 match &args[0] {
                                     CallArg::Positional(expr) => Ok(expr.clone()),
-                                    CallArg::Named(name, _, _) => Err(Diagnostic::error("parse-error", format!(
+                                    CallArg::Named(name, _, _) => Err(Diagnostic::error(KIND, format!(
                                             "call function cannot be a named argument (got `{name}:`)",
                                         ), span.clone())),
                                 }
@@ -2152,7 +2154,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         if body.is_empty() {
                             close_bracket_recover!({
                                 let mut d = Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "fn form requires a body expression".to_string(),
                                     span.clone(),
                                 );
@@ -2179,7 +2181,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 body: body_expr,
                                 desugared: false,
                                 resolved_return_annotation: crate::ast::TypeAnnotation::new(),
-                                scope_frame: std::sync::OnceLock::new(),
+                                scope: std::sync::OnceLock::new(),
                             },
                             dict_span(span_start),
                         );
@@ -2205,7 +2207,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 _ => "key".to_string(),
                             };
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 format!("`{key_name}:` requires a value before `]`"),
                                 span.clone()
                             ));
@@ -2225,7 +2227,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             mk(
                                 SurfaceExpression::Dict {
                                     entries: vec![],
-                                    scope_frame: std::sync::OnceLock::new(),
+                                    scope: std::sync::OnceLock::new(),
                                 },
                                 dict_span(span_start.clone()),
                             )
@@ -2238,7 +2240,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             mk(
                                 SurfaceExpression::Dict {
                                     entries: type_exprs,
-                                    scope_frame: std::sync::OnceLock::new(),
+                                    scope: std::sync::OnceLock::new(),
                                 },
                                 dict_span(span_start.clone()),
                             )
@@ -2266,7 +2268,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     StackFrame::Quote { expr, span_start } => match expr {
                         None => {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "quote form requires an expression".to_string(),
                                 span.clone()
                             ));
@@ -2285,7 +2287,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     StackFrame::Unquote { expr, span_start } => match expr {
                         None => {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "unquote form requires an expression".to_string(),
                                 span.clone()
                             ));
@@ -2304,7 +2306,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     StackFrame::UnquoteSplice { expr, span_start } => match expr {
                         None => {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "unquote-splice form requires an expression".to_string(),
                                 span.clone()
                             ));
@@ -2333,19 +2335,19 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     } => {
                         if pending_key.is_some() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "syntax-class: key without value".to_string(),
                                 span.clone()
                             ));
                         } else if name.is_none() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "syntax-class form requires a name".to_string(),
                                 span.clone()
                             ));
                         } else if pattern.is_none() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "syntax-class form requires a 'pattern:' field".to_string(),
                                 span.clone()
                             ));
@@ -2384,7 +2386,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     } => {
                         if scrutinee.is_none() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "match form requires a scrutinee expression".to_string(),
                                 span.clone()
                             ));
@@ -2399,7 +2401,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             pending_pattern_expr.take();
                             if arms.is_empty() {
                                 close_bracket_recover!(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "match form requires at least one pattern: body pair"
                                         .to_string(),
                                     span.clone()
@@ -2419,13 +2421,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             }
                         } else if pending_pattern.is_some() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "match pattern must be followed by a body expression".to_string(),
                                 span.clone()
                             ));
                         } else if arms.is_empty() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "match form requires at least one pattern: body pair".to_string(),
                                 span.clone()
                             ));
@@ -2455,7 +2457,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // from the parent dict binding, e.g. `MyClass: [class ...]`).
                         if pending_key.is_some() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "class form has incomplete method (key without value)".to_string(),
                                 span.clone()
                             ));
@@ -2469,10 +2471,8 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             let mut superclasses = superclasses;
 
                             if let Some(metadata_expr) = structural_metadata {
-                                if let SurfaceExpression::Dict {
-                                    entries,
-                                    scope_frame: _,
-                                } = &metadata_expr.expr
+                                if let SurfaceExpression::Dict { entries, scope: _ } =
+                                    &metadata_expr.expr
                                 {
                                     for entry in entries {
                                         if let Some(ref key_expr) = entry.node.key {
@@ -2646,14 +2646,14 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     } => {
                         if pending_key.is_some() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "instance form has incomplete method (key without value)"
                                     .to_string(),
                                 span.clone()
                             ));
                         } else if pending_arm_pattern.is_some() {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "instance form has incomplete arm (pattern without methods)"
                                     .to_string(),
                                 span.clone()
@@ -2666,7 +2666,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     last_arm.1.extend(current_arm_methods);
                                 } else {
                                     close_bracket_recover!(Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         "instance form has orphaned methods without pattern"
                                             .to_string(),
                                         span.clone()
@@ -2735,7 +2735,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             close_bracket_recover!(push_err);
                         } else {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "instance form requires a class name".to_string(),
                                 span.clone()
                             ));
@@ -2783,7 +2783,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         {
                             if body.is_empty() {
                                 close_bracket_recover!(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "case arm requires [let bindings] pattern body".to_string(),
                                     dict_span(span_start)
                                 ));
@@ -2797,14 +2797,14 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 }) = stack.last()
                                 {
                                     if pending_pattern_expr.is_some() || pending_pattern.is_some() {
-                                        close_bracket_recover!(Diagnostic::error("parse-error", "[case ...] cannot appear when a pattern is pending — complete the prior arm first".to_string(), dict_span(span_start.clone())));
+                                        close_bracket_recover!(Diagnostic::error(KIND, "[case ...] cannot appear when a pattern is pending — complete the prior arm first".to_string(), dict_span(span_start.clone())));
                                     }
                                 }
                                 // CaseArm data goes directly into SurfaceMatchArm.let_bindings and body fields.
                                 // Push SurfaceMatchArm directly into the parent Match frame's arms list.
                                 let parent_frame = stack.last_mut().ok_or_else(|| {
                                     Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         "[case ...] must appear inside [match ...]".to_string(),
                                         dict_span(span_start.clone()),
                                     )
@@ -2824,12 +2824,12 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             body: wrapped_body,
                                             guard_matchable_binding:
                                                 crate::ast::MatchableBinding::new(),
-                                            scope_frame: std::sync::OnceLock::new(),
+                                            scope: std::sync::OnceLock::new(),
                                         });
                                     }
                                     Ok(_) => {
                                         close_bracket_recover!(Diagnostic::error(
-                                            "parse-error",
+                                            KIND,
                                             "[case ...] must appear inside [match ...]".to_string(),
                                             dict_span(span_start)
                                         ));
@@ -2841,7 +2841,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             }
                         } else {
                             close_bracket_recover!(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "case arm requires [let bindings] pattern body".to_string(),
                                 dict_span(span_start)
                             ));
@@ -2855,7 +2855,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // on the stack, which indicates a malformed expression like `[x | ]`.
                         // Recover gracefully with a parse error instead of panicking.
                         close_bracket_recover!(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "pipe operator '|' requires a right-hand expression".to_string(),
                             span.clone()
                         ));
@@ -2867,7 +2867,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // This is always a parse error — valid code never produces this state.
                         // Return a fatal error: the parse is fundamentally broken at this point.
                         return Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "annotation @ requires an expression before `]`",
                             span.clone(),
                         ));
@@ -2939,7 +2939,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 } else {
                                     // Last entry has a key — cannot promote it
                                     Some(Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         "`:` without a key (expected key before `:`)".to_string(),
                                         span.clone(),
                                     ))
@@ -2947,7 +2947,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             } else {
                                 // No entries at all
                                 Some(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "`:` without a key (expected key before `:`)".to_string(),
                                     span.clone(),
                                 ))
@@ -2962,7 +2962,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     }) => {
                         if pending_key.is_none() {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a name (expected bare word before `:` for named arg)"
                                     .to_string(),
                                 span.clone(),
@@ -2977,7 +2977,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     }) => {
                         if pending_key.is_none() {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a method name (expected method: Type)".to_string(),
                                 span.clone(),
                             ))
@@ -3008,7 +3008,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             arms.push((pattern_expr, Vec::new()));
                             None
                         } else if pending_key.is_none() {
-                            Some(Diagnostic::error("parse-error", "`:` without a method name or pattern (expected method: impl or [pattern ...]: methods)".to_string(), span.clone()))
+                            Some(Diagnostic::error(KIND, "`:` without a method name or pattern (expected method: impl or [pattern ...]: methods)".to_string(), span.clone()))
                         } else {
                             None // Pending key is set; next expression will be the value
                         }
@@ -3020,7 +3020,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     }) => {
                         if pending_pattern_expr.is_none() {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a pattern (expected pattern: body in match)"
                                     .to_string(),
                                 span.clone(),
@@ -3038,7 +3038,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     }) => {
                         if pending_key.is_none() {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a key (expected 'pattern' or 'message' before `:`)"
                                     .to_string(),
                                 span.clone(),
@@ -3065,11 +3065,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     *pending_key = Some(key_node);
                                     None // Next value will be rhs (constructor or default)
                                 }
-                                _ => Some(Diagnostic::error("parse-error", "`:` in [let ...] must follow a bare identifier or a binding group `[a b]`".to_string(), span.clone())),
+                                _ => Some(Diagnostic::error(KIND, "`:` in [let ...] must follow a bare identifier or a binding group `[a b]`".to_string(), span.clone())),
                             }
                         } else {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a left-hand side in [let ...] form".to_string(),
                                 span.clone(),
                             ))
@@ -3102,18 +3102,18 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         *pending_key = Some(Arc::clone(&popped.node.value));
                                         None // Next expression will be the payload value
                                     }
-                                    _ => Some(Diagnostic::error("parse-error", "`:` in [type ...] must follow an uppercase constructor name (e.g. `File: [path: String]`)".to_string(), span.clone())),
+                                    _ => Some(Diagnostic::error(KIND, "`:` in [type ...] must follow an uppercase constructor name (e.g. `File: [path: String]`)".to_string(), span.clone())),
                                 }
                             } else {
                                 Some(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     "`:` without a constructor name in [type ...] form".to_string(),
                                     span.clone(),
                                 ))
                             }
                         } else {
                             Some(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "`:` without a constructor name in [type ...] form".to_string(),
                                 span.clone(),
                             ))
@@ -3122,7 +3122,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     Some(frame) => {
                         let (form_name, open_pos) = frame_info_static(frame);
                         Some(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             format!(
                                 "`:` is not valid inside a {} form (opened at {}:{})",
                                 form_name, open_pos.start_line, open_pos.start_col
@@ -3131,7 +3131,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         ))
                     }
                     None => Some(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "`:` at document top level (no enclosing bracket form)".to_string(),
                         span.clone(),
                     )),
@@ -3779,7 +3779,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                 // Document separator: finalize current document and start a new one
                 if !stack.is_empty() {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "document separator cannot appear inside bracket expressions",
                         span,
                     ));
@@ -3849,13 +3849,13 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         // Consume the annotation and ignore the section name
                                         // (bare % is still an error, but a more informative one)
                                         return Err(Diagnostic::error(
-                                            "parse-error",
+                                            KIND,
                                             "bare '%' in section header: expected a name after '%' (e.g. '--- %name' or '--- %name@Type')",
                                             id_span,
                                         ));
                                     }
                                     return Err(Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         "bare '%' in section header: expected a name after '%' (e.g. '--- %name')",
                                         id_span,
                                     ));
@@ -3865,7 +3865,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 let full_name = format!("%{}", section_name);
                                 if seen_section_names.contains(&section_name) {
                                     return Err(Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         format!("duplicate section name '{}' in file", full_name),
                                         id_span,
                                     ));
@@ -3906,7 +3906,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     let null_node = Arc::new(SurfaceNode::new(
                                         SurfaceExpression::Dict {
                                             entries: Vec::new(),
-                                            scope_frame: std::sync::OnceLock::new(),
+                                            scope: std::sync::OnceLock::new(),
                                         },
                                         at_span,
                                     ));
@@ -3930,7 +3930,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             // Expect colon for key: value pairs
                             if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
                                 return Err(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     format!("expected ':' after '{}' in header", key),
                                     if i < token_vec.len() {
                                         token_vec[i].span.clone()
@@ -3944,7 +3944,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             // Parse value as a simple expression — bracket or literal
                             if i >= token_vec.len() {
                                 return Err(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     format!("expected value after '{}:' in header", key),
                                     token_vec[i - 1].span.clone(),
                                 ));
@@ -3962,7 +3962,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             loop {
                                 if i >= token_vec.len() {
                                     return Err(Diagnostic::error(
-                                        "parse-error",
+                                        KIND,
                                         format!("unexpected end of input while parsing header value for '{}'", key),
                                         token_vec[i - 1].span.clone(),
                                     ));
@@ -4012,7 +4012,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             let dict_node = Arc::new(SurfaceNode::new(
                                                 SurfaceExpression::Dict {
                                                     entries,
-                                                    scope_frame: std::sync::OnceLock::new(),
+                                                    scope: std::sync::OnceLock::new(),
                                                 },
                                                 dict_span,
                                             ));
@@ -4042,7 +4042,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             }
                                         } else {
                                             return Err(Diagnostic::error(
-                                                "parse-error",
+                                                KIND,
                                                 "unexpected ']' in header value",
                                                 token_vec[i].span.clone(),
                                             ));
@@ -4134,7 +4134,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             }
                                         }
                                         return Err(Diagnostic::error(
-                                            "parse-error",
+                                            KIND,
                                             "unexpected ':' in header value",
                                             token_vec[i].span.clone(),
                                         ));
@@ -4217,7 +4217,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         let null_node = Arc::new(SurfaceNode::new(
                                             SurfaceExpression::Dict {
                                                 entries: Vec::new(),
-                                                scope_frame: std::sync::OnceLock::new(),
+                                                scope: std::sync::OnceLock::new(),
                                             },
                                             at_span.clone(),
                                         ));
@@ -4252,7 +4252,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     }
                                     _ => {
                                         return Err(Diagnostic::error(
-                                            "parse-error",
+                                            KIND,
                                             format!(
                                                 "unsupported token in header value: {:?}",
                                                 token_vec[i].node
@@ -4266,7 +4266,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             // Extract the single parsed value
                             if temp_items.len() != 1 {
                                 return Err(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     format!("failed to parse value for header key '{}'", key),
                                     token_vec[value_start_i].span.clone(),
                                 ));
@@ -4276,7 +4276,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 value_node = node;
                             } else {
                                 return Err(Diagnostic::error(
-                                    "parse-error",
+                                    KIND,
                                     format!("header value for '{}' must be an expression", key),
                                     token_vec[value_start_i].span.clone(),
                                 ));
@@ -4288,7 +4288,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         _ => {
                             // Unexpected token in header
                             return Err(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 format!(
                                     "unexpected token in section header: {:?}",
                                     token_vec[i].node
@@ -4320,7 +4320,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     } else {
                         if let Some(SurfaceItem::Decl(_)) = current_document_items.last() {
                             return Err(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "dot access requires a value expression, not a declaration",
                                 span,
                             ));
@@ -4343,11 +4343,8 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     skip_whitespace_tokens(&token_vec, i, &mut leading_comments, &mut blank_before);
 
                 if i >= token_vec.len() {
-                    let err = Diagnostic::error(
-                        "parse-error",
-                        "expected field name after '.'",
-                        span.clone(),
-                    );
+                    let err =
+                        Diagnostic::error(KIND, "expected field name after '.'", span.clone());
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
                             err,
@@ -4429,7 +4426,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     Token::Int(n) => {
                         if target.is_none() {
                             // Leading-dot with integer index is not valid syntax.
-                            let err = Diagnostic::error("parse-error", "leading-dot requires an identifier field name; integer index '.N' is not valid without a target expression", token_vec[i].span.clone());
+                            let err = Diagnostic::error(KIND, "leading-dot requires an identifier field name; integer index '.N' is not valid without a target expression", token_vec[i].span.clone());
                             if !stack.is_empty() {
                                 i = recover_from_bracket_error(
                                     err,
@@ -4504,7 +4501,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     }
                     _ => {
                         let err = Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             format!(
                                 "expected field name (identifier or integer) after '.', found {:?}",
                                 token_vec[i].node
@@ -4535,7 +4532,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                 let lhs = if stack.is_empty() {
                     if current_document_items.is_empty() {
                         return Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "pipe operator requires a left-hand expression before '|'",
                             span,
                         ));
@@ -4544,7 +4541,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         SurfaceItem::Expr(node) => node,
                         SurfaceItem::Decl(_) => {
                             return Err(Diagnostic::error(
-                                "parse-error",
+                                KIND,
                                 "pipe operator requires a value expression, not a declaration",
                                 span,
                             ));
@@ -4554,7 +4551,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     // Inside a frame — pop the last value from the current frame.
                     // Ok(None) means the frame has no preceding expression — treat as an error.
                     let no_lhs_err = Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "pipe operator requires a left-hand expression before '|'",
                         span.clone(),
                     );
@@ -5024,7 +5021,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
             )
         };
 
-        return Err(Diagnostic::error("parse-error", message, unclosed_span)
+        return Err(Diagnostic::error(KIND, message, unclosed_span)
             .with_help("add a closing ] to complete the expression"));
     }
 
@@ -5238,12 +5235,12 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::SyntaxClass { .. }) => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "dot access is not valid inside syntax-class form",
             span,
         )),
         Some(StackFrame::ClassDecl { .. }) => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "dot access is not valid inside class form",
             span,
         )),
@@ -5262,7 +5259,7 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::PatternDecl { .. }) => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "dot access is not valid inside pattern form",
             span,
         )),
@@ -5313,7 +5310,7 @@ fn pop_last_value_from_frame(
                 }
             } else if let_bindings.is_some() {
                 Err(Diagnostic::error(
-                    "parse-error",
+                    KIND,
                     "dot access is not valid in case arm [let bindings] position",
                     span,
                 ))
@@ -5322,7 +5319,7 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::Pipe { .. }) => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "pipe operator '|' requires a right-hand expression",
             span,
         )),
@@ -5378,11 +5375,7 @@ fn push_expr_to_parent(
                 // params_consumed guards against a second empty bracket being mistaken for params.
                 if !*params_consumed && body.is_empty() {
                     // Allow [] as zero-arg shorthand — equivalent to [let] with no bindings.
-                    if let SurfaceExpression::Dict {
-                        entries,
-                        scope_frame: _,
-                    } = &node.expr
-                    {
+                    if let SurfaceExpression::Dict { entries, scope: _ } = &node.expr {
                         if entries.is_empty() {
                             *params_consumed = true;
                             return Ok(());
@@ -5405,7 +5398,7 @@ fn push_expr_to_parent(
                         });
 
                         if !all_valid_params {
-                            return Err(Diagnostic::error("parse-error", "fn parameter list contains invalid binding patterns; each entry must be a name, name@Type, ...name, or _ wildcard", node.span.clone()));
+                            return Err(Diagnostic::error(KIND, "fn parameter list contains invalid binding patterns; each entry must be a name, name@Type, ...name, or _ wildcard", node.span.clone()));
                         }
 
                         // The parser accepts parameters in any order.
@@ -5481,7 +5474,7 @@ fn push_expr_to_parent(
                         // First expression is not a [let ...] binding list — parse error.
                         // Per unified-bindings invariant: fn parameter list must use [let ...] form.
                         return Err({
-                            let mut d = Diagnostic::error("parse-error", "`[fn ...]` parameter bracket must start with `let` (e.g. `[fn [let x y] body]`)", node.span.clone());
+                            let mut d = Diagnostic::error(KIND, "`[fn ...]` parameter bracket must start with `let` (e.g. `[fn [let x y] body]`)", node.span.clone());
                             d.add_help("change [fn [x y] body] to [fn [let x y] body]");
                             d
                         });
@@ -5583,7 +5576,7 @@ fn push_expr_to_parent(
 
                         if is_bare_name_param_list {
                             return Err({
-                                let mut d = Diagnostic::error("parse-error", "`[type ...]` parameter bracket must start with `let` (e.g. `[type [let a b] Body]`)", node.span.clone());
+                                let mut d = Diagnostic::error(KIND, "`[type ...]` parameter bracket must start with `let` (e.g. `[type [let a b] Body]`)", node.span.clone());
                                 d.add_help("change [type [a b] Body] to [type [let a b] Body]");
                                 d
                             });
@@ -5647,7 +5640,7 @@ fn push_expr_to_parent(
                         None => ctor_name.clone(),
                     };
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         format!(
                             "unexpected call form `[{qualified} ...]` inside `[type ...]`; \
                              named constructors use keyed entry syntax: `{qualified}: [fields]`"
@@ -5660,10 +5653,7 @@ fn push_expr_to_parent(
                 // A structural alias must have exactly one body (single positional dict with
                 // lowercase-keyed entries). Multiple positional dicts are ambiguous and invalid.
                 let is_positional_struct_dict = match &node.expr {
-                    SurfaceExpression::Dict {
-                        entries,
-                        scope_frame: _,
-                    } => {
+                    SurfaceExpression::Dict { entries, scope: _ } => {
                         // A dict is "structural" if it has at least one keyed entry where the key
                         // is a lowercase-starting identifier (not uppercase, not a number).
                         entries.iter().any(|e| {
@@ -5696,7 +5686,7 @@ fn push_expr_to_parent(
                     });
                     if already_has_struct_dict {
                         return Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "structural alias must have exactly one body; \
                                 use [or ...] for a union of structural types",
                             node.span.clone(),
@@ -5723,7 +5713,7 @@ fn push_expr_to_parent(
             }) => {
                 if quote_expr.is_some() {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "quote form can only have one expression",
                         node.span.clone(),
                     ));
@@ -5737,7 +5727,7 @@ fn push_expr_to_parent(
             }) => {
                 if unquote_expr.is_some() {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "unquote form can only have one expression",
                         node.span.clone(),
                     ));
@@ -5751,7 +5741,7 @@ fn push_expr_to_parent(
             }) => {
                 if unquote_splice_expr.is_some() {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "unquote-splice form can only have one expression",
                         node.span.clone(),
                     ));
@@ -5776,7 +5766,7 @@ fn push_expr_to_parent(
                         Ok(())
                     } else {
                         Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "syntax-class declaration requires a name (bare identifier)",
                             node.span.clone(),
                         ))
@@ -5788,30 +5778,30 @@ fn push_expr_to_parent(
                         match key_name.as_str() {
                             "pattern" => {
                                 if pattern.is_some() {
-                                    return Err(Diagnostic::error("parse-error", "syntax-class: duplicate 'pattern' key", node.span.clone()));
+                                    return Err(Diagnostic::error(KIND, "syntax-class: duplicate 'pattern' key", node.span.clone()));
                                 }
                                 *pattern = Some(node);
                                 Ok(())
                             }
                             "message" => {
                                 if message.is_some() {
-                                    return Err(Diagnostic::error("parse-error", "syntax-class: duplicate 'message' key", node.span.clone()));
+                                    return Err(Diagnostic::error(KIND, "syntax-class: duplicate 'message' key", node.span.clone()));
                                 }
                                 if let SurfaceExpression::StringLiteral { content, .. } = &node.expr {
                                     *message = Some(content.clone());
                                     Ok(())
                                 } else {
-                                    Err(Diagnostic::error("parse-error", "syntax-class 'message' value must be a string literal", node.span.clone()))
+                                    Err(Diagnostic::error(KIND, "syntax-class 'message' value must be a string literal", node.span.clone()))
                                 }
                             }
-                            _ => Err(Diagnostic::error("parse-error", format!(
+                            _ => Err(Diagnostic::error(KIND, format!(
                                     "syntax-class: unknown key '{}' (expected 'pattern' or 'message')",
                                     key_name
                                 ), key.span.clone())),
                         }
                     } else {
                         Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             "syntax-class keys must be bare identifiers",
                             key.span.clone(),
                         ))
@@ -5859,7 +5849,7 @@ fn push_expr_to_parent(
                         guard,
                         body: vec![node],
                         guard_matchable_binding: crate::ast::MatchableBinding::new(),
-                        scope_frame: std::sync::OnceLock::new(),
+                        scope: std::sync::OnceLock::new(),
                     });
                     Ok(())
                 } else {
@@ -5871,7 +5861,7 @@ fn push_expr_to_parent(
                     // are not attached to any arm.
                     if arms.is_empty() {
                         let old_pending = pending_pattern_expr.take().unwrap();
-                        return Err(Diagnostic::error("parse-error", "unexpected expression before first match arm (no pattern: body pair yet)", old_pending.span.clone()));
+                        return Err(Diagnostic::error(KIND, "unexpected expression before first match arm (no pattern: body pair yet)", old_pending.span.clone()));
                     }
                     pending_pattern_expr.take();
                     *pending_pattern_expr = Some(node);
@@ -5910,7 +5900,7 @@ fn push_expr_to_parent(
                         _ => {
                             // Not a LetDecl — parse error
                             Err({
-                                let mut d = Diagnostic::error("parse-error", "class declaration requires [let ...] form (e.g. [class [let a] ...]); class name comes from the binding (e.g. MyClass: [class [let a] ...])", node.span.clone());
+                                let mut d = Diagnostic::error(KIND, "class declaration requires [let ...] form (e.g. [class [let a] ...]); class name comes from the binding (e.g. MyClass: [class [let a] ...])", node.span.clone());
                                 d.add_help("change [class [a] ...] to [class [let a] ...]");
                                 d
                             })
@@ -5925,13 +5915,13 @@ fn push_expr_to_parent(
                             *structural_metadata = Some(node);
                             Ok(())
                         }
-                        _ => Err(Diagnostic::error("parse-error", "unexpected expression in class form (expected method: Type entries or structural metadata dict)", node.span.clone())),
+                        _ => Err(Diagnostic::error(KIND, "unexpected expression in class form (expected method: Type entries or structural metadata dict)", node.span.clone())),
                     }
                 } else {
                     // Already have name/params/structural_metadata — subsequent expressions should be handled
                     // by push_value (which handles pending_key for method entries)
                     Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "unexpected expression in class form (expected method: Type entries)",
                         node.span.clone(),
                     ))
@@ -5960,7 +5950,7 @@ fn push_expr_to_parent(
                     // Already have a pending pattern — shouldn't happen
                     // (colon should clear pending_arm_pattern before next expr)
                     Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "unexpected expression in instance form (expected colon after pattern)",
                         node.span.clone(),
                     ))
@@ -6071,7 +6061,7 @@ fn push_expr_to_parent(
                 // Store the annotation value expression; drain_annotation_frames will close the frame.
                 if value.is_some() {
                     return Err(Diagnostic::error(
-                        "parse-error",
+                        KIND,
                         "annotation accepts only one expression",
                         node.span.clone(),
                     ));
@@ -6117,7 +6107,7 @@ fn commit_let_pending(
         // `name: Constructor` inside [let ...] — RHS is a constructor, not a valid default value.
         SurfaceExpression::VarRef { name: key_name, .. } if is_constructor_rhs => {
             Err(Diagnostic::error(
-                "parse-error",
+                KIND,
                 format!(
                     "unexpected constructor `{}` as value in `[let ...]` binding `{}: ...`; \
                  constructor names are not valid binding defaults",
@@ -6130,7 +6120,7 @@ fn commit_let_pending(
 
         // `[a b]: Constructor` inside [let ...] — binding group with constructor RHS.
         SurfaceExpression::LetDecl { .. } if is_constructor_rhs => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "unexpected `[...]: Constructor` form in `[let ...]` binding; \
                       constructor names are not valid binding defaults",
             rhs_node.span.clone(),
@@ -6176,7 +6166,7 @@ fn commit_let_pending(
         // `[a b]: default_value` — binding group before colon with a non-constructor RHS;
         // a binding group cannot have a default value.
         SurfaceExpression::LetDecl { .. } => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "unexpected `[...]` binding group before `:` in `[let ...]`; \
                       binding groups cannot have default values",
             rhs_node.span.clone(),
@@ -6184,7 +6174,7 @@ fn commit_let_pending(
 
         // Other LHS forms — should not arise from valid parse paths.
         _ => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "unexpected form before `:` in [let ...] binding",
             key_node.span.clone(),
         )),
@@ -6270,10 +6260,7 @@ fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
             Box::new(Annotation::Simple(name.clone())),
             Box::new(ann.node.clone()),
         ),
-        SurfaceExpression::Dict {
-            entries,
-            scope_frame: _,
-        } => Annotation::PropertyDict(entries.clone()),
+        SurfaceExpression::Dict { entries, scope: _ } => Annotation::PropertyDict(entries.clone()),
         // Implied call with VarRef head (e.g. @[Seq Int] parsed as implied call) →
         // convert to PropertyDict: func as key-less entry 0, then each positional arg.
         SurfaceExpression::Call {
@@ -6393,7 +6380,7 @@ fn set_floating_annotation(
         *floating_annotation = Some(ann);
         Ok(())
     } else {
-        Err(Diagnostic::error("parse-error", "floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict", ann.span))
+        Err(Diagnostic::error(KIND, "floating annotation not valid in this context; `[@Type expr]` is only supported inside a dict", ann.span))
     }
 }
 
@@ -6505,7 +6492,7 @@ fn push_value(
                 if let Some(key_str) = key_to_string(&key.expr) {
                     if seen_keys.contains(&key_str) {
                         return Err(Diagnostic::error(
-                            "parse-error",
+                            KIND,
                             format!("duplicate key \"{}\"", key_str),
                             key.span.clone(),
                         ));
@@ -6645,11 +6632,7 @@ fn push_value(
                 // Without this arm, the dict would be stored as `pending_arm_pattern` (wrong),
                 // and the close-bracket handler would emit "instance form has incomplete arm
                 // (pattern without methods)" — causing parse errors for all prelude instances.
-                if let SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } = &node.expr
-                {
+                if let SurfaceExpression::Dict { entries, scope: _ } = &node.expr {
                     for entry in entries {
                         current_arm_methods.push(entry.clone());
                     }
@@ -6691,7 +6674,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, Diagnos
 
     if surface.documents.is_empty() {
         return Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "no documents in input",
             crate::rust_span!(),
         ));
@@ -6710,7 +6693,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, Diagnos
             ))
         }
         None => Err(Diagnostic::error(
-            "parse-error",
+            KIND,
             "no items in first document",
             first_doc.span.clone(),
         )),
@@ -6789,10 +6772,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 0);
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -6806,10 +6786,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_none()); // auto-indexed
                 assert!(matches!(
@@ -6827,10 +6804,7 @@ mod tests {
         let output = parse(src, test_file(src)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 2);
                 // First entry: a: 1
                 assert!(entries[0].node.key.is_some());
@@ -6969,10 +6943,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected one expression item");
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1, "expected one dict entry");
                 // Key must be Str("Name")
                 match entries[0].node.key.as_ref().map(|k| &k.expr) {
@@ -7005,10 +6976,7 @@ mod tests {
         let output = parse(src2, test_file(src2)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match entries[0].node.key.as_ref().map(|k| &k.expr) {
                     Some(SurfaceExpression::StringLiteral { content: s, .. }) => {
@@ -7051,10 +7019,7 @@ mod tests {
         let output = parse(src3, test_file(src3)).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.value.expr {
                     SurfaceExpression::Decl(decl) => match decl.as_ref() {
@@ -7195,10 +7160,7 @@ mod tests {
             other => panic!("expected VarRef, got {other:?}"),
         }
         match &items[1].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 assert!(matches!(
                     &entries[0].node.value.expr,
@@ -7445,10 +7407,7 @@ mod tests {
                     assert!(params.is_empty());
                     // Multi-entry body is wrapped in a synthetic Dict with positional entries
                     match &body.expr {
-                        SurfaceExpression::Dict {
-                            entries,
-                            scope_frame: _,
-                        } => {
+                        SurfaceExpression::Dict { entries, scope: _ } => {
                             assert_eq!(entries.len(), 2, "expected 2 positional entries");
                             assert!(
                                 entries[0].node.key.is_none(),
@@ -7591,10 +7550,7 @@ mod tests {
         let items = &output.program.documents[0].node.items;
         match &items[0] {
             SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } => {
+                SurfaceExpression::Dict { entries, scope: _ } => {
                     assert_eq!(entries.len(), 1, "expected 1 dict entry");
                     let first_entry = &entries[0].node;
                     assert!(first_entry.key.is_some(), "entry should have a key");
@@ -7669,10 +7625,7 @@ mod tests {
         let items = &output.program.documents[0].node.items;
         match &items[0] {
             SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict {
-                    entries,
-                    scope_frame: _,
-                } => {
+                SurfaceExpression::Dict { entries, scope: _ } => {
                     assert_eq!(entries.len(), 1, "expected 1 dict entry");
                     let first_entry = &entries[0].node;
                     assert!(first_entry.key.is_some(), "entry should have a key");
@@ -7716,10 +7669,7 @@ mod tests {
         match &items[0] {
             SurfaceItem::Expr(node) => {
                 match &node.expr {
-                    SurfaceExpression::Dict {
-                        entries,
-                        scope_frame: _,
-                    } => {
+                    SurfaceExpression::Dict { entries, scope: _ } => {
                         assert_eq!(
                             entries.len(),
                             2,
@@ -7762,10 +7712,7 @@ mod tests {
         let output = parse("[call: 1]", test_file("[call: 1]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
                 match &key.expr {
@@ -7791,10 +7738,7 @@ mod tests {
         .expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 3);
                 let expected_keys = ["call", "fn", "type"];
                 let expected_values = [1i64, 2, 3];
@@ -7846,10 +7790,7 @@ mod tests {
         let output = parse("[a: [1]]", test_file("[a: [1]]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
                 match &key.expr {
@@ -8008,10 +7949,7 @@ mod tests {
         let output = parse("[a: 1 2 b: 3]", test_file("[a: 1 2 b: 3]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(
                     entries.len(),
                     3,
@@ -8252,10 +8190,7 @@ mod tests {
         let output = parse("[x: $y.z]", test_file("[x: $y.z]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_some());
                 match &entries[0].node.key.as_ref().unwrap().expr {
@@ -8298,10 +8233,7 @@ mod tests {
         let output = parse("[outer-x: .x]", test_file("[outer-x: .x]")).expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.value.expr {
                     SurfaceExpression::Field { expr, field, .. } => {
@@ -8328,10 +8260,7 @@ mod tests {
         let items1 = surf_items(&output.program.documents[0].node);
         assert_eq!(items1.len(), 1);
         match &items1[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "a"),
@@ -8345,10 +8274,7 @@ mod tests {
         let items2 = surf_items(&output.program.documents[1].node);
         assert_eq!(items2.len(), 1);
         match &items2[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "b"),
@@ -8474,10 +8400,7 @@ mod tests {
             other => panic!("expected VarRef('a') as first expr, got {other:?}"),
         }
         match &items[1].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 assert!(matches!(
                     &entries[0].node.value.expr,
@@ -8585,10 +8508,7 @@ mod tests {
                 assert_eq!(*field, DotKey::Ident("x".to_string()));
                 let inner = expr.as_ref().expect("expected Some(target)");
                 match &inner.expr {
-                    SurfaceExpression::Dict {
-                        entries,
-                        scope_frame: _,
-                    } => {
+                    SurfaceExpression::Dict { entries, scope: _ } => {
                         assert_eq!(entries.len(), 1);
                         match &entries[0].node.key.as_ref().unwrap().expr {
                             SurfaceExpression::StringLiteral { content: s, .. } => {
@@ -8646,10 +8566,7 @@ mod tests {
         let items1 = surf_items(&output.program.documents[0].node);
         assert_eq!(items1.len(), 1);
         match &items1[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "a"),
@@ -8663,10 +8580,7 @@ mod tests {
         let items2 = surf_items(&output.program.documents[1].node);
         assert_eq!(items2.len(), 1);
         match &items2[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "b"),
@@ -8680,10 +8594,7 @@ mod tests {
         let items3 = surf_items(&output.program.documents[2].node);
         assert_eq!(items3.len(), 1);
         match &items3[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "c"),
@@ -8852,10 +8763,7 @@ mod tests {
         let output2 = parse(input2, test_file(input2)).expect("parse failed");
         let items2 = surf_items(&output2.program.documents[0].node);
         match &items2[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 // Outer dict starts on line 2
                 assert_eq!(
@@ -9034,10 +8942,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 top-level expression");
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1, "expected 1 outer entry");
                 match &entries[0].node.key.as_ref().unwrap().expr {
                     SurfaceExpression::StringLiteral { content: s, .. } => assert_eq!(s, "outer"),
@@ -9124,10 +9029,7 @@ mod tests {
         // The recover_from_bracket_error() function builds a partial dict when there are
         // valid entries, adding an error entry for the failed part
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 // Should have 2 entries: the valid "a: 1" plus the error entry
                 assert_eq!(entries.len(), 2, "expected 2 entries (1 valid + 1 error)");
 
@@ -9169,10 +9071,7 @@ mod tests {
         assert!(!items.is_empty(), "expected at least 1 expression");
         // The result is a Dict with the annotation applied to the value of x
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1, "expected 1 entry");
             }
             SurfaceExpression::Error(_) => {
@@ -9217,10 +9116,7 @@ mod tests {
         // $_ in dict key position: [$_: 42]
         let expr = parse_surf_node("[$_: 42]");
         match &expr.expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 1);
                 let key_expr = entries[0].node.key.as_ref().expect("expected key");
                 match &key_expr.expr {
@@ -9834,10 +9730,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1, "expected 1 top-level expression (Dict)");
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries: x: <fn> and x");
                 // First entry: x: [fn [let b] [match b ...]]
                 let key0 = entries[0]
@@ -9876,10 +9769,7 @@ mod tests {
         let items = surf_items(&output.program.documents[0].node);
         assert_eq!(items.len(), 1);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(
                     entries.len(),
                     2,
@@ -9916,10 +9806,7 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries");
                 let key0 = entries[0]
                     .node
@@ -9973,10 +9860,7 @@ mod tests {
         );
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::Dict {
-                entries,
-                scope_frame: _,
-            } => {
+            SurfaceExpression::Dict { entries, scope: _ } => {
                 assert_eq!(entries.len(), 2, "expected 2 entries");
                 let key0 = entries[0]
                     .node

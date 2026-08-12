@@ -12,6 +12,8 @@ use indexmap::IndexMap;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceDocument, SurfaceNode};
 use crate::error::Diagnostic;
 
+const KIND_INTERNAL: &str = "internal";
+
 /// Type alias for the optional default expression + scope pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
 type GuardDefault = (Arc<Spanned<CoreExpr>>, crate::symbol_table::ScopeChain);
@@ -1878,7 +1880,8 @@ impl ThunkPanicGuard {
 impl Drop for ThunkPanicGuard {
     fn drop(&mut self) {
         if let Some(thunk) = self.0.take() {
-            thunk.settle(Err(Arc::new(Diagnostic::internal(
+            thunk.settle(Err(Arc::new(Diagnostic::error(
+                KIND_INTERNAL,
                 "thunk evaluation task panicked".to_string(),
                 thunk.span.clone(),
             ))));
@@ -2521,7 +2524,8 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
 
-        let error = Arc::new(crate::error::Diagnostic::internal(
+        let error = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "test error".to_string(),
             span,
         ));
@@ -2567,11 +2571,13 @@ mod tests {
         let span2 = test_span(5, 1, 5, 10);
         let thunk = Thunk::placeholder(span1.clone());
 
-        let error1 = Arc::new(crate::error::Diagnostic::internal(
+        let error1 = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "first error".to_string(),
             span1,
         ));
-        let error2 = Arc::new(crate::error::Diagnostic::internal(
+        let error2 = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "second error".to_string(),
             span2,
         ));
@@ -2601,7 +2607,8 @@ mod tests {
         }));
 
         // Attempt to settle with error — must be a no-op.
-        let error = Arc::new(crate::error::Diagnostic::internal(
+        let error = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "should not replace".to_string(),
             span,
         ));
@@ -2755,7 +2762,8 @@ mod tests {
         // Verify that peek_result exposes the error — not None.
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
-        let error = Arc::new(crate::error::Diagnostic::internal(
+        let error = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "settle error".to_string(),
             span,
         ));
@@ -2773,7 +2781,8 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let thunk = Thunk::placeholder(span.clone());
 
-        let error = Arc::new(crate::error::Diagnostic::internal(
+        let error = Arc::new(crate::error::Diagnostic::error(
+            KIND_INTERNAL,
             "test error".to_string(),
             span,
         ));

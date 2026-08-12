@@ -27,6 +27,10 @@ use crate::value::{
     string_val, HashableValue, Thunk, UnevaluatedState, Value, TYPE_ID_DICT, TYPE_ID_INT,
 };
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+const KIND_TRACE: &str = "trace";
+
 tokio::task_local! {
     pub(crate) static TASK_EVAL_STACK: std::cell::RefCell<Vec<(std::sync::Arc<str>, crate::ast::Span)>>;
 }
@@ -638,7 +642,7 @@ pub(crate) async fn force_step(
                         // Thread-local being destroyed — propagate rather than silently
                         // producing an empty stack trace. The cycle error cannot be
                         // constructed without the path; surface the access failure.
-                        let err = Diagnostic::internal(
+                        let err = Diagnostic::error(KIND_INTERNAL,
                             format!(
                                 "cycle detection: eval stack thread-local inaccessible: {access_err}"
                             ),
@@ -650,8 +654,17 @@ pub(crate) async fn force_step(
                     }
                 };
                 let label = thunk.span.name.as_deref().unwrap_or("thunk");
-                let mut err =
-                    Diagnostic::circular_dependency(label, thunk.span.clone(), cycle_path);
+                let mut err = {
+                    let mut circ_err = Diagnostic::error(
+                        KIND,
+                        format!("circular dependency: {}", label),
+                        thunk.span.clone(),
+                    );
+                    for (name, span) in &cycle_path {
+                        circ_err = circ_err.with_label(span.clone(), format!("via {}", name));
+                    }
+                    circ_err
+                };
                 if let Some(ref span) = mat_span {
                     err = err.with_materialization_span(span.clone());
                 }
@@ -785,7 +798,7 @@ async fn dispatch_state(
             };
 
             match (def.func)(builtin_args).await.map_err(|mut e| {
-                e.set_arity_callee(Some(def.name.into()));
+                e.notes.push(format!("in call to '{}'", def.name));
                 e
             }) {
                 Ok(result_thunk) => {
@@ -1392,7 +1405,7 @@ pub(crate) async fn apply_cont(
                                     .lock()
                                     .expect("runtime_diagnostics mutex poisoned")
                                     .push(crate::error::Diagnostic::info(
-                                        "trace-call",
+                                        KIND_TRACE,
                                         format!("{}({})", fn_name, args_str),
                                         call_span.clone(),
                                     ));
@@ -1560,7 +1573,7 @@ pub(crate) async fn apply_cont(
                                     scope: call_scope.clone(),
                                 };
                                 (def.func)(builtin_args).await.map_err(|mut e| {
-                                    e.set_arity_callee(Some(def.name.into()));
+                                    e.notes.push(format!("in call to '{}'", def.name));
                                     e
                                 })
                             };
@@ -1661,7 +1674,7 @@ pub(crate) async fn apply_cont(
                             } else {
                                 format!("expected Function or Builtin, got {}", got_detail)
                             };
-                            let err = Diagnostic::user_error(message, func_span.clone())
+                            let err = Diagnostic::error(KIND, message, func_span.clone())
                                 .with_secondary_span(call_span.clone(), "called here");
                             let decorated = decorate(Box::new(err));
                             // eval_stack_guard pops on drop (armed)
@@ -1785,9 +1798,12 @@ pub(crate) async fn apply_cont(
                             let dn = guard_ctx.type_display_names_snapshot();
                             let expected_str = format_type_with_names(&expected, &dn);
                             let got_str = guard_ctx.type_display_name(value.type_decl_id_of());
-                            let mut err = Diagnostic::type_assert_failed(
-                                &format!("{}{}", field_path_prefix, expected_str),
-                                &got_str,
+                            let mut err = Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "type assertion failed: expected {}{}, got {}",
+                                    field_path_prefix, expected_str, got_str
+                                ),
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
@@ -1801,7 +1817,21 @@ pub(crate) async fn apply_cont(
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
-                                err = err.with_blame(label.clone());
+                                let party = match label.polarity {
+                                    crate::error::BlameParity::Positive => {
+                                        "typed side (annotation)"
+                                    }
+                                    crate::error::BlameParity::Negative => {
+                                        "untyped side (producer)"
+                                    }
+                                };
+                                err = err
+                                    .with_label(label.origin_span.clone(), "value originates here")
+                                    .with_label(
+                                        label.boundary_span.clone(),
+                                        format!("typed/untyped boundary ({party})"),
+                                    )
+                                    .with_note(format!("blame: {party} responsible"));
                             }
                             let err = decorate(err.into());
                             thunk.settle(Err(Arc::new((*err).clone())));
@@ -1841,9 +1871,12 @@ pub(crate) async fn apply_cont(
                             let dn = guard_ctx.type_display_names_snapshot();
                             let expected_str = format_type_with_names(&expected, &dn);
                             let got_str = guard_ctx.type_display_name(value.type_decl_id_of());
-                            let mut err = Diagnostic::type_assert_failed(
-                                &format!("{}{}", field_path_prefix, expected_str),
-                                &got_str,
+                            let mut err = Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "type assertion failed: expected {}{}, got {}",
+                                    field_path_prefix, expected_str, got_str
+                                ),
                                 inner_span.clone(),
                             )
                             .with_note(format!("expected: {}{}", field_path_prefix, expected_str))
@@ -1857,7 +1890,21 @@ pub(crate) async fn apply_cont(
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
-                                err = err.with_blame(label.clone());
+                                let party = match label.polarity {
+                                    crate::error::BlameParity::Positive => {
+                                        "typed side (annotation)"
+                                    }
+                                    crate::error::BlameParity::Negative => {
+                                        "untyped side (producer)"
+                                    }
+                                };
+                                err = err
+                                    .with_label(label.origin_span.clone(), "value originates here")
+                                    .with_label(
+                                        label.boundary_span.clone(),
+                                        format!("typed/untyped boundary ({party})"),
+                                    )
+                                    .with_note(format!("blame: {party} responsible"));
                             }
                             let err = decorate(err.into());
                             thunk.settle(Err(Arc::new((*err).clone())));
@@ -1993,7 +2040,7 @@ pub(crate) async fn apply_cont(
                     match (def.func)(builtin_args)
                         .await
                         .map_err(|mut e| {
-                            e.set_arity_callee(Some(def.name.into()));
+                            e.notes.push(format!("in call to '{}'", def.name));
                             e
                         })
                         .map_err(&decorate)
@@ -2230,9 +2277,12 @@ pub(crate) async fn apply_cont(
                             }
                         } else {
                             let expected_str = expected_display();
-                            let mut err = Diagnostic::type_assert_failed(
-                                &expected_str,
-                                &fail_reason,
+                            let mut err = Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "type assertion failed: expected {}, got {}",
+                                    expected_str, fail_reason
+                                ),
                                 thunk_span.clone(),
                             )
                             .with_note(format!("expected: {}", expected_str))
@@ -2242,12 +2292,12 @@ pub(crate) async fn apply_cont(
                                 err = err
                                     .with_secondary_span(thunk_span.clone(), "value produced here");
                             }
-                            let err: crate::error::Diagnostic =
-                                if let Some(ref blame) = pipeline_blame {
-                                    err.with_pipeline_blame(blame.clone())
-                                } else {
-                                    err
-                                };
+                            if let Some(ref blame) = pipeline_blame {
+                                err.notes.push(format!("producer: {}", blame.producer));
+                                if let Some(ref consumer) = blame.consumer {
+                                    err.notes.push(format!("consumer: {}", consumer));
+                                }
+                            }
                             Action::Continue(Err(err.into()))
                         }
                     }
@@ -2349,7 +2399,7 @@ pub(crate) async fn apply_cont(
                             ),
                         };
                         let mut updated_scope = scope.clone();
-                        updated_scope.insert(0, resolver_scope);
+                        updated_scope.push(resolver_scope);
                         let next_expr = &exprs[next_idx];
                         stack.push(Cont::LetrecChainStep(Box::new(LetrecChainStepData {
                             idx: next_idx,
@@ -2505,7 +2555,7 @@ pub(crate) async fn apply_cont(
                             arm_scope_inner.set_value(*slot, Arc::clone(thunk));
                         }
                         let mut arm_scope = scope.clone();
-                        arm_scope.insert(0, Arc::new(arm_scope_inner));
+                        arm_scope.push(Arc::new(arm_scope_inner));
 
                         // If guard expression pattern, evaluate it to check if truthy.
                         // EXCEPT: when the pattern is a simple VarRef to a binding variable
@@ -2592,8 +2642,12 @@ pub(crate) async fn apply_cont(
                     }
 
                     // No arm matched: non-exhaustive match
-                    Action::Continue(Err(Box::new(Diagnostic::match_exhaustion(
-                        &ctx.type_display_name(scrutinee_value.type_decl_id_of()),
+                    Action::Continue(Err(Box::new(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "non-exhaustive match: {}",
+                            ctx.type_display_name(scrutinee_value.type_decl_id_of())
+                        ),
                         match_span.clone(),
                     ))))
                 }
@@ -2753,7 +2807,7 @@ pub(crate) async fn apply_cont(
                     .lock()
                     .expect("runtime_diagnostics mutex poisoned")
                     .push(crate::error::Diagnostic::info(
-                        "trace-return",
+                        KIND_TRACE,
                         format!("{} → {}", data.label, val.render(tycon_env)),
                         data.call_span.clone(),
                     ));
@@ -2961,9 +3015,13 @@ fn eval_structural_pattern_inner<'a>(
 
                 // Extract the dict and look up the key.
                 let Value::Dict { entries: map, .. } = target_val else {
-                    return Err(Diagnostic::type_mismatch(
-                        "Dict",
-                        ctx.type_display_name(target_val.type_decl_id_of()),
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "type mismatch: expected {}, got {}",
+                            "Dict",
+                            ctx.type_display_name(target_val.type_decl_id_of())
+                        ),
                         target.span.clone(),
                     )
                     .into());
@@ -2979,10 +3037,9 @@ fn eval_structural_pattern_inner<'a>(
 
                 let Some(ctor_thunk) = map.get(&hashable_key) else {
                     let key_str = key.to_string();
-                    let available_keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
-                    return Err(Diagnostic::key_not_found(
-                        &key_str,
-                        available_keys,
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!("key not found: {}", key_str),
                         target.span.clone(),
                     )
                     .into());
@@ -3059,7 +3116,7 @@ fn eval_structural_pattern_inner<'a>(
                         // Not a constructor — Field in pattern position must evaluate to a
                         // constructor value. Otherwise it's a type error.
                         Err(Diagnostic::error(
-                            "pattern-error",
+                            KIND,
                             format!(
                                 "pattern Field expression must evaluate to a constructor, got {}",
                                 ctx.type_display_name(ctor_val.type_decl_id_of())
@@ -3402,10 +3459,14 @@ fn eval_structural_pattern_inner<'a>(
                             .await
                         }
 
-                        other => Err(Diagnostic::type_mismatch_ctx(
-                            "pattern call".to_string(),
-                            "Variant (constructor) or Function (predicate)",
-                            &ctx.type_display_name(other.type_decl_id_of()),
+                        other => Err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "{}: expected {}, got {}",
+                                "pattern call",
+                                "Variant (constructor) or Function (predicate)",
+                                ctx.type_display_name(other.type_decl_id_of())
+                            ),
                             match_span.clone(),
                         )
                         .into()),
@@ -3429,7 +3490,8 @@ fn eval_structural_pattern_inner<'a>(
                         }
                         Some(CoreExpr::Int { value: n, .. }) => HashableValue::Int(*n),
                         _ => {
-                            return Err(Diagnostic::internal(
+                            return Err(Diagnostic::error(
+                                KIND_INTERNAL,
                                 "pattern: dynamic key in dict pattern is not supported".to_string(),
                                 match_span.clone(),
                             )
@@ -3517,7 +3579,7 @@ async fn bind_or_pin_name(
                 }
             }
             VarAddr::EffectPerform { .. } => {
-                return Err(Diagnostic::internal(
+                return Err(Diagnostic::error(KIND_INTERNAL,
                     format!("pattern pin '{name}': EffectPerform not supported in pattern pins (T-2126)"),
                     match_span.clone(),
                 ).into());
@@ -3610,7 +3672,8 @@ pub(crate) async fn run_with_stack(
                 // Check continuation stack depth before calling force_step, which may push continuations.
                 // This prevents unbounded stack growth in the CEK machine.
                 if stack.len() >= MAX_CONTINUATION_STACK {
-                    return Err(Diagnostic::resource_limit_exceeded(
+                    return Err(Diagnostic::error(
+                        KIND,
                         format!(
                             "continuation stack depth exceeded {} frames",
                             MAX_CONTINUATION_STACK
@@ -3667,7 +3730,11 @@ mod tests {
     #[tokio::test]
     async fn test_attach_materialization_context_adds_frame() {
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = Diagnostic::undefined_variable("x".to_string(), thunk_span.clone());
+        let err = Diagnostic::error(
+            KIND,
+            format!("undefined variable: {}", "x"),
+            thunk_span.clone(),
+        );
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
@@ -4208,7 +4275,7 @@ mod tests {
         );
         let err2 = result2.unwrap_err();
         assert!(
-            err2.kind == "type-assert-failed" || err2.message.contains("type assertion failed"),
+            err2.kind == "eval" || err2.message.contains("type assertion failed"),
             "cached error should still report 'type assertion failed', got kind: {}, message: {}",
             err2.kind,
             err2.message
@@ -4448,7 +4515,11 @@ mod deep_tests {
         // (the "if first_note.is_none()" branch).
 
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = Diagnostic::undefined_variable("x".to_string(), thunk_span.clone());
+        let err = Diagnostic::error(
+            KIND,
+            format!("undefined variable: {}", "x"),
+            thunk_span.clone(),
+        );
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
@@ -4633,7 +4704,7 @@ mod cek_lifecycle_tests {
         ));
         // Inject a cached failure directly so we test the Failed branch without
         // triggering a full eval cycle.
-        let err = Diagnostic::user_error("sentinel-error".to_string(), span.clone());
+        let err = Diagnostic::error(KIND, "sentinel-error".to_string(), span.clone());
         thunk.settle(Err(Arc::new(err)));
 
         // Thunk must now be in Failed state.
@@ -4719,10 +4790,10 @@ mod cek_lifecycle_tests {
         // force_step must return Action::Continue(Err(circular_dependency)).
         match result {
             Action::Continue(Err(e)) => {
-                let msg = e.kind.to_string();
                 assert!(
-                    msg.contains("circular") || msg.contains("cycle") || msg.contains("dependency"),
-                    "expected circular_dependency error, got: {msg}"
+                    e.message.contains("circular"),
+                    "expected circular dependency error, got: {}",
+                    e.message
                 );
             }
             Action::Continue(Ok(v)) => {

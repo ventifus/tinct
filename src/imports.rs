@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+const KIND: &str = "internal";
+
 /// Parse and type-check `stdlib/builtin_core.llt`, returning the resulting
 /// `(TyConEnv, type_name_to_id)` pair.
 ///
@@ -137,7 +139,8 @@ async fn build_builtin_core_envs_inner() -> Result<
     let program = crate::desugar::desugar_program_full(
         &crate::parser::parse(source, sf)
             .map_err(|e| {
-                Box::new(crate::error::Diagnostic::internal(
+                Box::new(crate::error::Diagnostic::error(
+                    KIND,
                     format!("builtin_core.llt parse failed: {e}"),
                     crate::rust_span!(),
                 ))

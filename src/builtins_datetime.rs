@@ -21,9 +21,12 @@ use crate::value::{
     TYPE_ID_DICT,
 };
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 /// Helper to create a boxed Diagnostic from a message.
 fn dt_err(msg: impl Into<String>, span: Span) -> Box<Diagnostic> {
-    Diagnostic::internal(msg.into(), span).into()
+    Diagnostic::error(KIND_INTERNAL, msg.into(), span).into()
 }
 
 /// Parse an RFC 3339 timestamp string to a Timestamp (i64 nanoseconds).
@@ -1527,7 +1530,8 @@ fn resolve_tz_from_symlink(call_span: &Span) -> Result<String, Box<crate::error:
     match local_tz_from_symlink() {
         Ok(name) => Ok(name),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("UTC".to_string()),
-        Err(e) => Err(Diagnostic::user_error(
+        Err(e) => Err(Diagnostic::error(
+            KIND,
             format!("local-tz-name: failed to read system timezone: {e}"),
             call_span.clone(),
         )

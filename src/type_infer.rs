@@ -19,6 +19,8 @@ use crate::type_tags::*;
 pub use crate::type_class::TypeValue;
 use crate::value::{TYPE_ID_DICT, TYPE_ID_ROW_TAIL, TYPE_ID_TYPE_VALUE};
 
+const KIND: &str = "internal";
+
 // ── TypeValue helper functions ────────────────────────────────────────────────
 
 /// Create a TypeValue.Var Arc<Value> with the given name.
@@ -1672,7 +1674,7 @@ impl InferenceContext {
     pub fn bind(&mut self, name: String, val: TypeValue) -> Result<(), crate::error::Diagnostic> {
         if self.subst.contains_key(&name) {
             return Err(crate::error::Diagnostic::error(
-                "inference-internal",
+                KIND,
                 format!(
                     "type variable '{}' bound twice — monotonicity invariant violated",
                     name
@@ -2198,7 +2200,7 @@ impl TypeStageData {
 
     /// Prepend a new scope frame (innermost wins).
     pub fn push_front(&mut self, frame: std::collections::HashMap<String, TypeValue>) {
-        self.scope.insert(0, frame);
+        self.scope.push(frame);
     }
 }
 
@@ -2236,7 +2238,7 @@ pub struct InferState {
     /// Set when entering a scope (Dict/Fn/MatchArm), restored to parent when leaving.
     /// Type schemes are read via VarAddr(depth, slot) lookup on the chain.
     /// Type schemes are written via set_type_scheme on the appropriate frame.
-    pub current_scope: Option<crate::symbol_table::ScopeChain>,
+    pub current_scope: crate::symbol_table::ScopeChain,
     /// Type class declarations.
     /// Moved from Env to InferState. Populated during type-stage processing.
     pub classes: Vec<crate::type_class::ClassDecl>,
@@ -2374,7 +2376,7 @@ impl InferState {
     pub fn new() -> Self {
         Self {
             constraints: Vec::new(),
-            current_scope: None,
+            current_scope: Vec::new(),
             classes: Vec::new(),
             instances: std::collections::HashMap::new(),
             failed_bindings: HashMap::new(),

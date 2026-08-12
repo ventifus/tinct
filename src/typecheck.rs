@@ -36,6 +36,8 @@ use typecheck_narrow::{
     extract_param_indices, extract_pattern_types, patterns_overlap, types_can_unify,
 };
 
+const KIND: &str = "type-check";
+
 /// Returns the next globally unique class declaration ID.
 /// Delegates to `type_class::next_class_decl_id` — the counter is defined there so the
 /// resolver's Phase 1b scan and the type-checker share the same AtomicU64.
@@ -194,9 +196,11 @@ fn make_typevalue_record(
 pub(crate) async fn process_document(
     doc: &SurfaceDocument,
     state: &mut InferState,
-    _scope: &crate::symbol_table::ScopeChain,
+    scope: &crate::symbol_table::ScopeChain,
     type_map: &mut Option<&mut TypeMap>,
 ) -> (Arc<Value>, Vec<Diagnostic>) {
+    state.current_scope = scope.clone();
+
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
     let empty_dict_ty = make_typevalue_record(indexmap::IndexMap::new(), None);
 
@@ -252,7 +256,7 @@ pub(crate) async fn process_document(
         };
         if !is_dict_ok {
             errors.push(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "document last expression must be a record type, got {:?}",
                     result_ty
@@ -334,7 +338,7 @@ pub(crate) fn infer_class_decl_from_surface(
 
     if name.is_empty() {
         return Err(vec![Diagnostic::error(
-            "type-error",
+            KIND,
             "class declaration must have a name declared with [class [ClassName ...] ...]",
             span,
         )]);
@@ -365,7 +369,7 @@ pub(crate) fn infer_class_decl_from_surface(
                 fd_indices.push((determining_indices, determined_indices));
             }
             _ => {
-                return Err(vec![Diagnostic::error("type-error",
+                return Err(vec![Diagnostic::error(KIND,
                     "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
                     fd_node.span.clone(),
                 )]);
@@ -462,7 +466,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             .cloned()
             .ok_or_else(|| {
                 vec![Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!("unknown class '{}'", class_name),
                     span.clone(),
                 )]
@@ -486,7 +490,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
 
         if pattern_types.len() != param_count {
             return Err(vec![Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "instance pattern has {} type parameters but class '{}' expects {}",
                     pattern_types.len(),
@@ -503,7 +507,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             matches!(tv.as_ref(), Value::Variant { ctor_index, .. } if *ctor_index == TV_UNKNOWN)
                 || matches!(tv.as_ref(), Value::Dict { entries, .. } if entries.is_empty())
         }) {
-            return Err(vec![Diagnostic::error("type-error",
+            return Err(vec![Diagnostic::error(KIND,
                 format!(
                     "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax) or TypeVars declared via bind: in [let ...]",
                     class_name
@@ -521,7 +525,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
             let (types_j, span_j, _) = &arm_data[j];
 
             if patterns_overlap(types_i, types_j, state).await? {
-                let error = Diagnostic::error("type-error",
+                let error = Diagnostic::error(KIND,
                     format!(
                         "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
                         class_name,
@@ -562,7 +566,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             .collect();
 
                         if !types_can_unify(&determined_i, &determined_j, state).await? {
-                            let error = Diagnostic::error("type-error",
+                            let error = Diagnostic::error(KIND,
                                 format!(
                                     "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
                                     class_name,
@@ -629,10 +633,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
         };
         let pushed_frame = !param_type_frame.is_empty();
         if pushed_frame {
-            state
-                .type_stage_data
-                .scope
-                .insert(0, param_type_frame.clone());
+            state.type_stage_data.scope.push(param_type_frame.clone());
         }
 
         for method in *methods {
@@ -645,7 +646,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             state.type_stage_data.scope.remove(0);
                         }
                         return Err(vec![Diagnostic::error(
-                            "type-error",
+                            KIND,
                             "instance method name must be a string or identifier",
                             key_node.span.clone(),
                         )]);
@@ -656,7 +657,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         state.type_stage_data.scope.remove(0);
                     }
                     return Err(vec![Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "instance method must have a name",
                         method.span.clone(),
                     )]);
@@ -779,7 +780,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                             // Check that the instance method has the same arity as the class signature.
                             if class_params.len() != method_params.len() {
                                 state.diagnostics.push(Diagnostic::warn(
-                                    "type-warning",
+                                    KIND,
                                     format!(
                                         "instance method '{}' for class '{}' has {} parameters, but class signature expects {}",
                                         method_name,
@@ -817,7 +818,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                                     if let Err(err) = unify_result {
                                         state.diagnostics.push(
                                             Diagnostic::warn(
-                                                "type-warning",
+                                                KIND,
                                                 format!(
                                                     "instance method '{}' parameter {} has type incompatible with class signature",
                                                     method_name, i
@@ -845,7 +846,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         (None, Some(_)) => {
                             // Instance method is a function, but class signature is not.
                             state.diagnostics.push(Diagnostic::warn(
-                                "type-warning",
+                                KIND,
                                 format!(
                                     "instance method '{}' for class '{}' is a function, but class signature is not",
                                     method_name, class_name
@@ -856,7 +857,7 @@ pub(crate) async fn infer_instance_decl_from_surface(
                         (Some(_), None) => {
                             // Class signature is a function, but instance method is not.
                             state.diagnostics.push(Diagnostic::warn(
-                                "type-warning",
+                                KIND,
                                 format!(
                                     "instance method '{}' for class '{}' is not a function, but class signature expects one",
                                     method_name, class_name

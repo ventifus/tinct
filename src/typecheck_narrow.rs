@@ -47,6 +47,8 @@ use crate::type_tags::*;
 use crate::types::InferState;
 use crate::value::Value;
 
+const KIND: &str = "type-check";
+
 /// Extract the first parameter narrowing type from a TypeValue.Scheme's narrowings payload.
 ///
 /// TypeValue.Scheme has an optional `narrowings` field (an indexed dict: `{ 0: TypeValue | [] }`).
@@ -317,15 +319,10 @@ pub(crate) fn apply_narrowings(
                 // Look up existing type via current_scope using the VarAddr.
                 let current_tv: Option<Arc<crate::value::Value>> =
                     if let crate::ast::VarAddr::Dispatch(depth, slot) = addr {
-                        state
-                            .current_scope
-                            .as_ref()
-                            .and_then(|chain| {
-                                crate::symbol_table::SymbolTable::lookup_in_chain(
-                                    chain, *depth, *slot,
-                                )
-                            })
-                            .and_then(|e| e.type_scheme.get().cloned())
+                        crate::symbol_table::SymbolTable::lookup_in_chain(
+                            &state.current_scope, *depth, *slot,
+                        )
+                        .and_then(|e| e.type_scheme.get().cloned())
                     } else {
                         None
                     };
@@ -414,7 +411,7 @@ pub(crate) async fn extract_pattern_types(
             Ok(types)
         }
         _ => Err(vec![Diagnostic::error(
-            "type-error",
+            KIND,
             "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
             pattern_node.span.clone(),
         )]),
@@ -441,7 +438,7 @@ fn process_instance_bind_list(
         } => {
             if !named_args.is_empty() {
                 return Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "instance bind: list must contain only bare names",
                     node.span.clone(),
                 ));
@@ -451,7 +448,7 @@ fn process_instance_bind_list(
                 SurfaceExpression::VarRef { name, .. } => v.push((name.clone(), func.span.clone())),
                 _ => {
                     return Err(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "instance bind: entries must be bare TypeVar names",
                         func.span.clone(),
                     ))
@@ -464,7 +461,7 @@ fn process_instance_bind_list(
                     }
                     _ => {
                         return Err(Diagnostic::error(
-                            "type-error",
+                            KIND,
                             "instance bind: entries must be bare TypeVar names",
                             arg.span.clone(),
                         ))
@@ -476,7 +473,7 @@ fn process_instance_bind_list(
         SurfaceExpression::VarRef { name, .. } => vec![(name.clone(), node.span.clone())],
         _ => {
             return Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 "instance bind: must be a list of bare TypeVar names like [a b c]",
                 span,
             ))
@@ -486,7 +483,7 @@ fn process_instance_bind_list(
     for (name, name_span) in name_spans {
         if !name.starts_with(|c: char| c.is_lowercase()) {
             return Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "instance bind: TypeVar name '{}' must start with lowercase",
                     name
@@ -656,7 +653,7 @@ pub(crate) fn extract_binding_types<'a>(
             }
             _ => {
                 return Err(vec![Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
                     binding.span.clone(),
                 )]);
@@ -771,7 +768,7 @@ pub(crate) fn extract_param_indices(
                 indices.push(idx);
             } else {
                 return Err(vec![Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!("functional dependency references unknown param '{}'", name),
                     span,
                 )]);
@@ -786,7 +783,7 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
                         return Err(vec![Diagnostic::error(
-                            "type-error",
+                            KIND,
                             "functional dependency param must be an identifier or string",
                             entry.span.clone(),
                         )]);
@@ -797,7 +794,7 @@ pub(crate) fn extract_param_indices(
                     indices.push(idx);
                 } else {
                     return Err(vec![Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "functional dependency references unknown param '{}'",
                             param_name
@@ -821,7 +818,7 @@ pub(crate) fn extract_param_indices(
                 SurfaceExpression::StringLiteral { content: s, .. } => s,
                 _ => {
                     return Err(vec![Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "functional dependency param must be an identifier or string",
                         func.span.clone(),
                     )])
@@ -831,7 +828,7 @@ pub(crate) fn extract_param_indices(
                 indices.push(idx);
             } else {
                 return Err(vec![Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "functional dependency references unknown param '{}'",
                         head_name
@@ -846,7 +843,7 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::StringLiteral { content: s, .. } => s,
                     _ => {
                         return Err(vec![Diagnostic::error(
-                            "type-error",
+                            KIND,
                             "functional dependency param must be an identifier or string",
                             arg.span.clone(),
                         )])
@@ -856,7 +853,7 @@ pub(crate) fn extract_param_indices(
                     indices.push(idx);
                 } else {
                     return Err(vec![Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "functional dependency references unknown param '{}'",
                             arg_name
@@ -868,7 +865,7 @@ pub(crate) fn extract_param_indices(
         }
         _ => {
             return Err(vec![Diagnostic::error(
-                "type-error",
+                KIND,
                 "functional dependency variables must be an identifier or list",
                 span,
             )]);

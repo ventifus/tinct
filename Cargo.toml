@@ -58,7 +58,6 @@ bytes = "1"  # Byte buffer abstraction (shared dep with quinn/h3; used in Http3S
 http = "1"  # HTTP types (Request, Response, HeaderMap) used in http-request builtin via h3
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
-strsim = "0.11"
 
 [lints.clippy]
 arc_with_non_send_sync = "deny"

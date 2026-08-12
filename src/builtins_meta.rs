@@ -49,6 +49,9 @@ use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
 use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
 /// Serialize a `crate::error::Diagnostic` into the unified diagnostic dict format
@@ -248,7 +251,8 @@ pub(crate) fn builtin_raise(
         let message_thunk = map
             .get(&HashableValue::Str("message".into()))
             .ok_or_else(|| {
-                Diagnostic::user_error(
+                Diagnostic::error(
+                    KIND,
                     "raise: Diagnostic dict missing required `message:` field".to_string(),
                     call_span.clone(),
                 )
@@ -256,7 +260,7 @@ pub(crate) fn builtin_raise(
         let message_val = materialize(message_thunk, Some(&call_span), &ctx).await?;
         let message = require_string("raise", message_val, message_thunk.span.clone(), &ctx)?;
 
-        let mut err = Diagnostic::user_error(message, call_span.clone());
+        let mut err = Diagnostic::error(KIND, message, call_span.clone());
 
         // Extract optional `notes:` field — integer-keyed dict of Strings
         if let Some(notes_thunk) = map.get(&HashableValue::Str("notes".into())) {
@@ -303,9 +307,13 @@ pub(crate) fn builtin_macro_error(
 
         // Expect 1 or 2 arguments
         if args.len() != 1 && args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(
-                if args.is_empty() { 1 } else { 2 },
-                args.len(),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(if args.is_empty() { 1 } else { 2 }),
+                    args.len()
+                ),
                 call_span,
             )
             .into());
@@ -333,7 +341,7 @@ pub(crate) fn builtin_macro_error(
         };
 
         // Create macro error with the determined span
-        Err(Diagnostic::macro_error(message, error_span).into())
+        Err(Diagnostic::error(KIND, message, error_span).into())
     })
 }
 
@@ -355,7 +363,16 @@ pub(crate) fn builtin_try(
         } = ctx_arg;
         reject_named("try", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let arg_thunk = Arc::clone(&args[0]);
         let call_result = materialize(&arg_thunk, Some(&call_span), &ctx).await;
@@ -382,7 +399,7 @@ pub(crate) fn builtin_try(
             }
             Err(e) => {
                 // ResourceLimitExceeded is non-catchable: it indicates a system-level limit.
-                if e.kind == "resource-limit" {
+                if e.message.contains("exceeded") && e.message.contains("limit") {
                     return Err(e);
                 }
                 // Failure: full diagnostic dict matching the unified protocol.
@@ -552,7 +569,8 @@ pub(crate) fn builtin_gensym(
         reject_named("builtin-gensym", named.as_ref(), call_span.clone())?;
 
         if args.len() != 2 {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!(
                     "builtin-gensym takes exactly 2 arguments (scope, prefix), got {}",
                     args.len()
@@ -570,10 +588,14 @@ pub(crate) fn builtin_gensym(
                 Value::String {
                     source, start, end, ..
                 } => Ok(source[start..end].to_string()),
-                v => Err(Diagnostic::type_mismatch_ctx(
-                    format!("builtin-gensym {name}"),
-                    "String",
-                    ctx.type_display_name(v.type_decl_id_of()),
+                v => Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        format!("builtin-gensym {name}"),
+                        "String",
+                        ctx.type_display_name(v.type_decl_id_of())
+                    ),
                     span.clone(),
                 )
                 .into()),
@@ -696,7 +718,8 @@ pub(crate) fn builtin_decimal(
                         },
                         call_span,
                     ),
-                    Err(e) => Err(Diagnostic::internal(
+                    Err(e) => Err(Diagnostic::error(
+                        KIND_INTERNAL,
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
                     )
@@ -712,9 +735,13 @@ pub(crate) fn builtin_decimal(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "String or Int",
-                ctx.type_display_name(val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "String or Int",
+                    ctx.type_display_name(val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -768,16 +795,21 @@ pub(crate) fn builtin_big_int(
                         },
                         call_span,
                     ),
-                    Err(e) => Err(Diagnostic::internal(
+                    Err(e) => Err(Diagnostic::error(
+                        KIND_INTERNAL,
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
                     )
                     .into()),
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Int or String",
-                ctx.type_display_name(val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Int or String",
+                    ctx.type_display_name(val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -881,7 +913,16 @@ pub(crate) fn builtin_ast_of(
         // Reject named args and ensure exactly 1 arg
         crate::builtins::reject_named("builtin-ast-of", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span.clone()).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span.clone(),
+            )
+            .into());
         }
 
         let thunk = Arc::clone(&args[0]);
@@ -1167,9 +1208,13 @@ pub(crate) fn builtin_ast_of(
         // ast-of is defined only for unevaluated expressions (AstNodeField) and
         // Value::Function. If the thunk holds any other materialized value, the caller
         // should have passed the unevaluated form instead.
-        Err(Diagnostic::type_mismatch(
-            "Expr.*",
-            ctx.type_display_name(val.type_decl_id_of()),
+        Err(Diagnostic::error(
+            KIND,
+            format!(
+                "type mismatch: expected {}, got {}",
+                "Expr.*",
+                ctx.type_display_name(val.type_decl_id_of())
+            ),
             call_span,
         )
         .into())
@@ -1201,7 +1246,11 @@ pub(crate) fn builtin_llt_repr(
         let display_str = crate::value_to_tinct_repr_string(&val, &ctx, call_span.clone())
             .await
             .map_err(|e| {
-                Diagnostic::internal(format!("llt-repr: {}", e.kind), call_span.clone())
+                Diagnostic::error(
+                    KIND_INTERNAL,
+                    format!("llt-repr: {}", e.kind),
+                    call_span.clone(),
+                )
             })?;
         ok_val(string_val(&display_str), call_span)
     })
@@ -1234,7 +1283,11 @@ pub(crate) fn builtin_debug_repr(
         let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
             .await
             .map_err(|e| {
-                Diagnostic::internal(format!("debug-repr: {}", e.kind), call_span.clone())
+                Diagnostic::error(
+                    KIND_INTERNAL,
+                    format!("debug-repr: {}", e.kind),
+                    call_span.clone(),
+                )
             })?;
         ok_val(string_val(&display_str), call_span)
     })
@@ -1295,9 +1348,13 @@ pub(crate) fn builtin_tag_of(
                     call_span,
                 )
             }
-            _ => Err(Box::new(Diagnostic::type_mismatch(
-                "Variant",
-                ctx.type_display_name(peeled.type_decl_id_of()),
+            _ => Err(Box::new(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Variant",
+                    ctx.type_display_name(peeled.type_decl_id_of())
+                ),
                 call_span,
             ))),
         }
@@ -1536,7 +1593,16 @@ pub(crate) fn builtin_var_resolution(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-var-resolution", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(Diagnostic::arity_mismatch(3, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(3),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
@@ -1545,10 +1611,14 @@ pub(crate) fn builtin_var_resolution(
         let cursor_line = match line_val {
             Value::Int { n, .. } => n as u32,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-var-resolution".to_string(),
-                    "Int",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-var-resolution",
+                        "Int",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1558,10 +1628,14 @@ pub(crate) fn builtin_var_resolution(
         let cursor_col = match col_val {
             Value::Int { n, .. } => n as u32,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-var-resolution".to_string(),
-                    "Int",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-var-resolution",
+                        "Int",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1571,10 +1645,14 @@ pub(crate) fn builtin_var_resolution(
         let program_arc = match prog_val {
             Value::Program { program, .. } => program,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-var-resolution".to_string(),
-                    "Program",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-var-resolution",
+                        "Program",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1850,7 +1928,16 @@ pub(crate) fn builtin_make_annotated(
         crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone())?;
 
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let inner_val = args[0].require_value()?.clone();
@@ -1858,9 +1945,13 @@ pub(crate) fn builtin_make_annotated(
 
         // annotation must be a Dict
         if !matches!(ann_val, Value::Dict { .. }) {
-            return Err(Box::new(Diagnostic::type_mismatch(
-                "Dict",
-                ctx.type_display_name(ann_val.type_decl_id_of()),
+            return Err(Box::new(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Dict",
+                    ctx.type_display_name(ann_val.type_decl_id_of())
+                ),
                 call_span,
             )));
         }
@@ -1944,7 +2035,8 @@ pub(crate) fn builtin_cap_identity(
             Value::DirCap { dir, .. } => dir.try_clone().expect("dir try_clone"),
             Value::RevocableDirCap { inner, revoked, .. } => {
                 if revoked.load(std::sync::atomic::Ordering::Acquire) {
-                    return Err(Diagnostic::internal(
+                    return Err(Diagnostic::error(
+                        KIND_INTERNAL,
                         "cap-identity: capability has been revoked".to_string(),
                         call_span.clone(),
                     )
@@ -1953,9 +2045,13 @@ pub(crate) fn builtin_cap_identity(
                 inner.try_clone().expect("dir try_clone")
             }
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "DirCap",
-                    ctx.type_display_name(val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "DirCap",
+                        ctx.type_display_name(val.type_decl_id_of())
+                    ),
                     Arc::clone(&args[0]).span.clone(),
                 )
                 .into());
@@ -1969,7 +2065,8 @@ pub(crate) fn builtin_cap_identity(
         let identity = {
             use cap_std::fs::MetadataExt;
             let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
-                Diagnostic::internal(
+                Diagnostic::error(
+                    KIND_INTERNAL,
                     format!("cap-identity: failed to stat directory: {e}"),
                     call_span.clone(),
                 )
@@ -1999,7 +2096,7 @@ pub(crate) fn builtin_cap_identity(
 /// Returns `{program: Value::Program, errors: Dict<Int, ErrorDict>}`.
 ///   - `program`: raw `Value::Program` with empty resolution table.
 ///   - `errors`: integer-keyed dict of unified error dicts `{kind, message, span, notes, ...}`.
-///     `kind` is always `"parse-error"` for parse errors.
+///     `kind` is always `"parse"` for parse errors.
 ///     Empty dict (`[]`) when parse succeeded with no errors.
 ///
 /// Callers should check `errors` before proceeding. The `program` is always present
@@ -2020,7 +2117,16 @@ pub(crate) fn builtin_parse(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // First arg: Bytes (the source file contents)
@@ -2032,10 +2138,14 @@ pub(crate) fn builtin_parse(
                 source, start, end, ..
             } => source[start..end].to_vec(),
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-parse".to_string(),
-                    "Bytes",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-parse",
+                        "Bytes",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2049,7 +2159,8 @@ pub(crate) fn builtin_parse(
         // Decode bytes as UTF-8 source text
         let source = std::str::from_utf8(&source_bytes)
             .map_err(|e| {
-                Diagnostic::user_error(
+                Diagnostic::error(
+                    KIND,
                     format!(
                         "builtin-parse: UTF-8 decode error in \"{}\": {}",
                         path_str, e
@@ -2180,7 +2291,16 @@ pub(crate) fn builtin_resolve(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
@@ -2188,7 +2308,8 @@ pub(crate) fn builtin_resolve(
         let doc_arc = if let Value::Document { doc: d, .. } = doc_val {
             d
         } else {
-            return Err(Diagnostic::internal(
+            return Err(Diagnostic::error(
+                KIND_INTERNAL,
                 format!(
                     "expected Document, got {}",
                     ctx.type_display_name(doc_val.type_decl_id_of())
@@ -2203,10 +2324,14 @@ pub(crate) fn builtin_resolve(
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-resolve env".to_string(),
-                    "SymbolTable",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-resolve env",
+                        "SymbolTable",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -2329,7 +2454,16 @@ pub(crate) fn builtin_lint_pipeline_docs(
             ..
         } = ctx_arg;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // Extract required named arg: pipeline-input (String)
@@ -2344,7 +2478,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 )?
             }
             None => {
-                return Err(Diagnostic::user_error(
+                return Err(Diagnostic::error(
+                    KIND,
                     "builtin-lint-pipeline-docs: required named arg 'pipeline-input' missing"
                         .to_string(),
                     call_span,
@@ -2357,7 +2492,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
         let docs_dict = match docs_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::internal(
+                return Err(Diagnostic::error(
+                    KIND_INTERNAL,
                     format!(
                         "builtin-lint-pipeline-docs: expected Dict, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
@@ -2373,7 +2509,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
             .iter()
             .map(|(k, v)| match k {
                 HashableValue::Int(i) => Ok((*i, Arc::clone(v))),
-                other => Err(Diagnostic::user_error(
+                other => Err(Diagnostic::error(
+                    KIND,
                     format!(
                         "builtin-lint-pipeline-docs: document dict key must be Int, got: {:?}",
                         other
@@ -2392,7 +2529,8 @@ pub(crate) fn builtin_lint_pipeline_docs(
             if let Value::Document { doc: d, .. } = val {
                 doc_arcs.push(d);
             } else {
-                return Err(Diagnostic::internal(
+                return Err(Diagnostic::error(
+                    KIND_INTERNAL,
                     format!(
                         "builtin-lint-pipeline-docs: entry is not a Document: {}",
                         ctx.type_display_name(val.type_decl_id_of())
@@ -2471,7 +2609,8 @@ pub(crate) fn builtin_typecheck_doc(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
-            return Err(Box::new(Diagnostic::user_error(
+            return Err(Box::new(Diagnostic::error(
+                KIND,
                 format!(
                     "builtin-typecheck-doc: expected 3 arguments, got {}",
                     args.len()
@@ -2485,10 +2624,14 @@ pub(crate) fn builtin_typecheck_doc(
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-typecheck-doc".to_string(),
-                    "Document",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-typecheck-doc",
+                        "Document",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     args[0].span.clone(),
                 )
                 .into());
@@ -2505,7 +2648,8 @@ pub(crate) fn builtin_typecheck_doc(
         {
             let env_val = args[2].require_value()?.clone();
             if !matches!(env_val, Value::Dict { .. }) {
-                return Err(Diagnostic::internal(
+                return Err(Diagnostic::error(
+                    KIND_INTERNAL,
                     format!(
                         "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
                         ctx.type_display_name(env_val.type_decl_id_of())
@@ -2557,8 +2701,8 @@ pub(crate) fn builtin_typecheck_doc(
             (state,)
         };
 
-        // Build outermost SymbolTable scope with type-stage entries.
-        if state.current_scope.is_none() {
+        // Build outermost SymbolTable scope with type-stage entries if not already populated.
+        if state.current_scope.is_empty() {
             let mut outermost = crate::symbol_table::SymbolTable::new();
             for (slot, (name, tv)) in state
                 .type_stage_data
@@ -2570,13 +2714,10 @@ pub(crate) fn builtin_typecheck_doc(
                 outermost.insert(name.clone(), slot as u32, None);
                 outermost.set_type_scheme(slot as u32, Arc::clone(tv));
             }
-            state.current_scope = Some(vec![std::sync::Arc::new(outermost)]);
+            state.current_scope.push(std::sync::Arc::new(outermost));
         }
 
-        let scope = state
-            .current_scope
-            .clone()
-            .unwrap_or_else(|| vec![std::sync::Arc::new(crate::symbol_table::SymbolTable::new())]);
+        let scope = state.current_scope.clone();
         let mut type_map_ref: Option<&mut crate::typecheck::TypeMap> = None;
 
         let (_, errors) =
@@ -2724,7 +2865,16 @@ pub(crate) fn builtin_get_type_context(
             call_span.clone(),
         )?;
         if !args.is_empty() {
-            return Err(Diagnostic::arity_mismatch(0, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(0),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         // Return the real TypeContext handle from EvalContext.
         // Errors if builtin-make-type-ctx has not yet been called to initialize it.
@@ -2749,7 +2899,8 @@ pub(crate) fn builtin_get_type_context(
             None => {
                 drop(tc_guard);
                 // TypeContext must be initialized by main.rs before any tinct code runs.
-                Err(Diagnostic::internal(
+                Err(Diagnostic::error(
+                    KIND_INTERNAL,
                     "builtin-get-type-context: TypeContext not initialized — \
                      this is a Rust bootstrap error, not a tinct error"
                         .to_string(),
@@ -2790,7 +2941,16 @@ pub(crate) fn builtin_make_type_ctx(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-make-type-ctx", named.as_ref(), call_span.clone())?;
         if !args.is_empty() {
-            return Err(Diagnostic::arity_mismatch(0, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(0),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         // Fresh TypeContext seeded with the builtin_core type env AND type-stage scope.
         //
@@ -2851,7 +3011,16 @@ pub(crate) fn builtin_fork_type_ctx(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let parent_val = args[0].require_value()?.clone();
         match parent_val {
@@ -2872,10 +3041,14 @@ pub(crate) fn builtin_fork_type_ctx(
                     call_span,
                 )
             }
-            other => Err(Diagnostic::type_mismatch_ctx(
-                "builtin-fork-type-ctx".to_string(),
-                "TypeContext",
-                ctx.type_display_name(other.type_decl_id_of()),
+            other => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    "builtin-fork-type-ctx",
+                    "TypeContext",
+                    ctx.type_display_name(other.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -2922,17 +3095,30 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             call_span.clone(),
         )?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // Extract TypeContext — same pattern as builtin_typecheck_doc
         let tc_arc = match args[0].require_value()?.clone() {
             Value::TypeContext { ctx: arc, .. } => arc,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-tc-update-type-stage-env".to_string(),
-                    "TypeContext",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-tc-update-type-stage-env",
+                        "TypeContext",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2943,10 +3129,14 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         let dict_entries = match args[1].require_value()?.clone() {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-tc-update-type-stage-env".to_string(),
-                    "Dict",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-tc-update-type-stage-env",
+                        "Dict",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -3014,7 +3204,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         // Prepend new frame — it becomes innermost (Vec[0]), highest priority
         {
             let mut guard = tc_arc.lock().unwrap();
-            guard.type_stage_scope.insert(0, new_frame);
+            guard.type_stage_scope.push(new_frame);
             // Merge fns and type_vars (new entries take precedence via or_insert)
             for (name, thunk_arc) in new_fns {
                 guard.type_stage_fns.entry(name).or_insert(thunk_arc);
@@ -3063,7 +3253,16 @@ pub(crate) fn builtin_program(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-program", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let val = args[0].require_value()?.clone();
@@ -3089,10 +3288,14 @@ pub(crate) fn builtin_program(
                             });
                         }
                         _ => {
-                            return Err(Diagnostic::type_mismatch_ctx(
-                                "builtin-program".to_string(),
-                                "Document",
-                                ctx.type_display_name(doc_val.type_decl_id_of()),
+                            return Err(Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "{}: expected {}, got {}",
+                                    "builtin-program",
+                                    "Document",
+                                    ctx.type_display_name(doc_val.type_decl_id_of())
+                                ),
                                 call_span,
                             )
                             .into());
@@ -3101,10 +3304,14 @@ pub(crate) fn builtin_program(
                 }
             }
             _ => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-program".to_string(),
-                    "Dict of Document values",
-                    ctx.type_display_name(val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-program",
+                        "Dict of Document values",
+                        ctx.type_display_name(val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3145,7 +3352,16 @@ pub(crate) fn builtin_desugar(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let program_val = args[0].require_value()?.clone();
@@ -3156,10 +3372,14 @@ pub(crate) fn builtin_desugar(
                 ..
             } => (program, resolutions),
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-desugar".to_string(),
-                    "Program",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-desugar",
+                        "Program",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3198,7 +3418,16 @@ pub(crate) fn builtin_expand(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-expand", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let program_val = args[0].require_value()?.clone();
@@ -3209,10 +3438,14 @@ pub(crate) fn builtin_expand(
                 ..
             } => (program, resolutions),
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-expand".to_string(),
-                    "Program",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-expand",
+                        "Program",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3251,17 +3484,30 @@ pub(crate) fn builtin_program_docs(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let program_val = args[0].require_value()?.clone();
         let program_arc = match program_val {
             Value::Program { program, .. } => program,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-program-docs".to_string(),
-                    "Program",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-program-docs",
+                        "Program",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3329,17 +3575,30 @@ pub(crate) fn builtin_doc_expressions(
             call_span.clone(),
         )?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let doc_val = args[0].require_value()?.clone();
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-doc-expressions".to_string(),
-                    "Document",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-doc-expressions",
+                        "Document",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3393,17 +3652,30 @@ pub(crate) fn builtin_doc_meta(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-doc-meta", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let doc_val = args[0].require_value()?.clone();
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-doc-meta".to_string(),
-                    "Document",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-doc-meta",
+                        "Document",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3499,7 +3771,8 @@ pub(crate) fn builtin_builtin_module(
                     call_span,
                 )
             }
-            None => Err(Diagnostic::user_error(
+            None => Err(Diagnostic::error(
+                KIND,
                 format!("unknown native module: {:?}", name),
                 call_span,
             )
@@ -3522,7 +3795,16 @@ pub(crate) fn builtin_empty_symbol_table(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-empty-scope", named.as_ref(), call_span.clone())?;
         if !args.is_empty() {
-            return Err(Diagnostic::arity_mismatch(0, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(0),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         Ok(Arc::new(Thunk::value(
             Value::SymbolTable {
@@ -3556,7 +3838,16 @@ pub(crate) fn builtin_symbol_table_extend(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-scope-extend", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: Value::SymbolTable
@@ -3564,10 +3855,14 @@ pub(crate) fn builtin_symbol_table_extend(
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-scope-extend".to_string(),
-                    "SymbolTable",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-scope-extend",
+                        "SymbolTable",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3579,10 +3874,14 @@ pub(crate) fn builtin_symbol_table_extend(
         let additions_map = match additions_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-scope-extend additions".to_string(),
-                    "Dict",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-scope-extend additions",
+                        "Dict",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3652,7 +3951,16 @@ pub(crate) fn builtin_symbol_table_get(
             call_span.clone(),
         )?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: String — the name to look up
@@ -3669,10 +3977,14 @@ pub(crate) fn builtin_symbol_table_get(
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-symbol-table-get".to_string(),
-                    "SymbolTable",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-symbol-table-get",
+                        "SymbolTable",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3716,7 +4028,16 @@ pub(crate) fn builtin_eval(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-eval", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: Value::CoreDocument — reject Value::Document with a descriptive type error.
@@ -3724,21 +4045,22 @@ pub(crate) fn builtin_eval(
         let (core_entries, _doc_span) = match doc_val {
             Value::CoreDocument { entries, span, .. } => (entries, span),
             Value::Document { .. } => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-eval: expected CoreDocument (output of builtin-lower), got Document; \
-                     call builtin-lower before builtin-eval"
-                        .to_string(),
-                    "CoreDocument",
-                    "Document",
+                return Err(Diagnostic::error(KIND,
+                    format!("{}: expected {}, got {}", "builtin-eval: expected CoreDocument (output of builtin-lower), got Document; \
+                     call builtin-lower before builtin-eval", "CoreDocument", "Document"),
                     call_span,
                 )
                 .into());
             }
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-eval".to_string(),
-                    "CoreDocument",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-eval",
+                        "CoreDocument",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3750,10 +4072,14 @@ pub(crate) fn builtin_eval(
         let table = match env_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-eval env".to_string(),
-                    "SymbolTable",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-eval env",
+                        "SymbolTable",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -3842,7 +4168,16 @@ pub(crate) fn builtin_variant_payload(
         } = ctx_arg;
         crate::builtins::reject_named("variant-payload", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let val = args[0].require_value()?.clone();
         match val {
@@ -3864,10 +4199,14 @@ pub(crate) fn builtin_variant_payload(
                 },
                 call_span,
             ),
-            other => Err(Diagnostic::type_mismatch_ctx(
-                "variant-payload".to_string(),
-                "Variant",
-                ctx.type_display_name(other.type_decl_id_of()),
+            other => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    "variant-payload",
+                    "Variant",
+                    ctx.type_display_name(other.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -3898,7 +4237,16 @@ pub(crate) fn builtin_eval_macro_ast(
         } = ctx_arg;
 
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // Convert Expr.* variant to SurfaceNode
@@ -3910,7 +4258,8 @@ pub(crate) fn builtin_eval_macro_ast(
             } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                 crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
                     |e| {
-                        Diagnostic::internal(
+                        Diagnostic::error(
+                            KIND_INTERNAL,
                             format!("eval-macro-ast: Expr.* conversion failed: {}", e),
                             call_span.clone(),
                         )
@@ -3918,10 +4267,14 @@ pub(crate) fn builtin_eval_macro_ast(
                 )?
             }
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "eval-macro-ast".to_string(),
-                    "Expr.*",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "eval-macro-ast",
+                        "Expr.*",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -3969,7 +4322,8 @@ pub(crate) fn builtin_eval_macro_ast(
         // Get the result from the table
         match crate::symbol_table::SymbolTable::get_in_chain(&result_table, "%") {
             Some(thunk) => Ok(thunk),
-            None => Err(Diagnostic::internal(
+            None => Err(Diagnostic::error(
+                KIND_INTERNAL,
                 "eval-macro-ast: no result in evaluated document".to_string(),
                 call_span,
             )
@@ -4013,9 +4367,13 @@ pub(crate) fn builtin_validate(
         let schema_dict = match schema {
             Value::Dict { entries: d, .. } => d,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Dict (schema)",
-                    ctx.type_display_name(schema.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Dict (schema)",
+                        ctx.type_display_name(schema.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -4037,7 +4395,21 @@ pub(crate) fn builtin_validate(
             Ok(Arc::new(Thunk::value(data, call_span)))
         } else {
             // Failure: throw SchemaViolation with all violations
-            Err(Diagnostic::schema_violation(violations, call_span).into())
+            Err({
+                let mut diag = Diagnostic::error(
+                    KIND,
+                    format!(
+                        "schema validation failed with {} violation(s)",
+                        violations.len()
+                    ),
+                    call_span,
+                );
+                for (field, msg) in violations {
+                    diag.add_note(format!("{field}: {msg}"));
+                }
+                diag
+            }
+            .into())
         }
     })
 }
@@ -4050,10 +4422,24 @@ fn expect_two_args(
     call_span: Span,
 ) -> Result<(Value, Value), Box<crate::error::Diagnostic>> {
     if args.len() != 2 {
-        return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!(
+                "arity mismatch: expected {}, got {}",
+                crate::error::ArityBound::Exact(2),
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     if named.is_some() && !named.unwrap().is_empty() {
-        return Err(Diagnostic::named_arg_rejected(name.to_string(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!("{} does not accept named arguments", name),
+            call_span,
+        )
+        .into());
     }
 
     let val1 = args[0].require_value()?.clone();
@@ -4521,7 +4907,16 @@ pub(crate) fn builtin_sequential(
         } = ctx_arg;
         crate::builtins::reject_named("sequential", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         // Materialize the expressions dict
         let arg0_thunk = Arc::clone(&args[0]);
@@ -4530,10 +4925,14 @@ pub(crate) fn builtin_sequential(
         let exprs_dict = match &exprs_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-sequential".to_string(),
-                    "Dict",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-sequential",
+                        "Dict",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -4549,7 +4948,8 @@ pub(crate) fn builtin_sequential(
                 } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
                     let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                         .map_err(|e| {
-                            Diagnostic::internal(
+                            Diagnostic::error(
+                                KIND_INTERNAL,
                                 format!("builtin-sequential: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
                             )
@@ -4557,10 +4957,14 @@ pub(crate) fn builtin_sequential(
                     exprs.push(node);
                 }
                 other => {
-                    return Err(Diagnostic::type_mismatch_ctx(
-                        "builtin-sequential".to_string(),
-                        "Expr.*",
-                        ctx.type_display_name(other.type_decl_id_of()),
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "{}: expected {}, got {}",
+                            "builtin-sequential",
+                            "Expr.*",
+                            ctx.type_display_name(other.type_decl_id_of())
+                        ),
                         call_span,
                     )
                     .into())
@@ -4597,15 +5001,25 @@ pub(crate) fn builtin_ast_to_program(
         } = ctx_arg;
 
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // Extract mandatory call-site-span: named arg
         let call_site_span_thunk_id = if let Some(ref named_map) = named {
             for key in named_map.keys() {
                 if key != "call-site-span" {
-                    return Err(Diagnostic::named_arg_rejected(
-                        "ast-to-program".to_string(),
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!("{} does not accept named arguments", "ast-to-program"),
                         call_span,
                     )
                     .into());
@@ -4614,20 +5028,28 @@ pub(crate) fn builtin_ast_to_program(
             match named_map.get("call-site-span").cloned() {
                 Some(t) => t,
                 None => {
-                    return Err(Diagnostic::type_mismatch_ctx(
-                        "ast-to-program".to_string(),
-                        "span dict (for call-site-span: argument — required)",
-                        "absent",
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "{}: expected {}, got {}",
+                            "ast-to-program",
+                            "span dict (for call-site-span: argument — required)",
+                            "absent"
+                        ),
                         call_span,
                     )
                     .into())
                 }
             }
         } else {
-            return Err(Diagnostic::type_mismatch_ctx(
-                "ast-to-program".to_string(),
-                "span dict (for call-site-span: argument — required)",
-                "absent",
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    "ast-to-program",
+                    "span dict (for call-site-span: argument — required)",
+                    "absent"
+                ),
                 call_span,
             )
             .into());
@@ -4640,19 +5062,27 @@ pub(crate) fn builtin_ast_to_program(
             Value::Dict { entries: dict, .. } => {
                 // Extract span from the dict using extract_span
                 crate::surface_convert::extract_span(dict, &ctx).ok_or_else(|| {
-                    Diagnostic::type_mismatch_ctx(
-                        "ast-to-program".to_string(),
-                        "valid span dict (with start/end line/col fields)",
-                        "invalid span dict",
+                    Diagnostic::error(
+                        KIND,
+                        format!(
+                            "{}: expected {}, got {}",
+                            "ast-to-program",
+                            "valid span dict (with start/end line/col fields)",
+                            "invalid span dict"
+                        ),
                         call_span.clone(),
                     )
                 })?
             }
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "ast-to-program".to_string(),
-                    "span dict (for call-site-span: argument)",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "ast-to-program",
+                        "span dict (for call-site-span: argument)",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -4673,17 +5103,22 @@ pub(crate) fn builtin_ast_to_program(
                     &ctx,
                 )
                 .map_err(|e| {
-                    Diagnostic::internal(
+                    Diagnostic::error(
+                        KIND_INTERNAL,
                         format!("ast-to-program: Expr.* conversion failed: {}", e),
                         call_span.clone(),
                     )
                 })?
             }
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "ast-to-program".to_string(),
-                    "Expr.*",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "ast-to-program",
+                        "Expr.*",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -4738,7 +5173,16 @@ pub(crate) fn builtin_check_type(
         } = ctx_arg;
         reject_named("check-type", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let arg0_thunk = Arc::clone(&args[0]);
@@ -4762,10 +5206,14 @@ pub(crate) fn builtin_check_type(
         if passes {
             ok_val(value, call_span)
         } else {
-            Err(Diagnostic::type_mismatch_ctx(
-                "expects validation".to_string(),
-                &type_name,
-                ctx.type_display_name(value.type_decl_id_of()),
+            Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    "expects validation",
+                    type_name,
+                    ctx.type_display_name(value.type_decl_id_of())
+                ),
                 call_span,
             )
             .into())
@@ -4797,7 +5245,16 @@ pub(crate) fn builtin_cap_env_has(
         } = ctx_arg;
         reject_named("cap-env-has?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let arg0_thunk = Arc::clone(&args[0]);
@@ -4812,10 +5269,14 @@ pub(crate) fn builtin_cap_env_has(
                 d.contains_key(&HashableValue::Str(Arc::from(name.as_str())))
             }
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-cap-env-has?".to_string(),
-                    "Dict",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-cap-env-has?",
+                        "Dict",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -4864,7 +5325,16 @@ pub(crate) fn builtin_lower(
         } = ctx_arg;
         crate::builtins::reject_named("builtin-lower", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // arg0: Value::Document
@@ -4872,10 +5342,14 @@ pub(crate) fn builtin_lower(
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::type_mismatch_ctx(
-                    "builtin-lower".to_string(),
-                    "Document",
-                    ctx.type_display_name(other.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "{}: expected {}, got {}",
+                        "builtin-lower",
+                        "Document",
+                        ctx.type_display_name(other.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into());
@@ -5351,8 +5825,8 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
-            "expected TypeMismatch for annotated non-variant, got: {:?}",
+            err.kind == "eval",
+            "expected eval error for annotated non-variant, got: {:?}",
             err.kind
         );
     }

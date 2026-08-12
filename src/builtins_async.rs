@@ -40,6 +40,9 @@ use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, Value, TYPE_ID_DICT};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
 /// distinguish from `builtins::expect_one_arg` which forces and returns a `Value`.
@@ -51,14 +54,16 @@ fn take_one_thunk(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 1 {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} expects 1 argument, got {}", args.len()),
             call_span,
         )
@@ -78,14 +83,16 @@ fn take_two_thunks(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 2 {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} expects 2 arguments, got {}", args.len()),
             call_span,
         )
@@ -102,14 +109,16 @@ fn take_three_thunks(
     _ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} does not accept named arguments"),
             call_span,
         )
         .into());
     }
     if args.len() != 3 {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(
+            KIND,
             format!("{name} expects 3 arguments, got {}", args.len()),
             call_span,
         )
@@ -172,7 +181,8 @@ pub(crate) fn builtin_task(
                         .expect("Value::Function must have at least one clause");
                     // Check for zero-arg function
                     if !clause.params.is_empty() {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(
+                            KIND,
                             format!(
                                 "task expects a zero-arg function, got {} parameter(s)",
                                 clause.params.len()
@@ -182,7 +192,7 @@ pub(crate) fn builtin_task(
                         .into());
                     }
                     let mut call_chain = definition_scope.clone();
-                    call_chain.insert(0, Arc::new(crate::symbol_table::SymbolTable::new()));
+                    call_chain.push(Arc::new(crate::symbol_table::SymbolTable::new()));
                     let thunk = eval_core_expr(&clause.body, &call_chain, &ctx_clone).await?;
                     materialize(&thunk, None, &ctx_clone).await
                 }
@@ -276,7 +286,7 @@ pub(crate) fn builtin_await(
                             join_result = handle => {
                                 match join_result {
                                     Ok(inner) => inner,
-                                    Err(e) => Err(Diagnostic::user_error(
+                                    Err(e) => Err(Diagnostic::error(KIND,
                                         format!("task panicked: {e}"),
                                         call_span.clone(),
                                     ).into()),
@@ -284,7 +294,7 @@ pub(crate) fn builtin_await(
                             }
                             _ = ctx.cancel.cancelled() => {
                                 // Cache cancellation error so subsequent awaits see it too
-                                let err: Box<Diagnostic> = Diagnostic::user_error(
+                                let err: Box<Diagnostic> = Diagnostic::error(KIND,
                                     "await: cancelled".to_string(), call_span.clone()
                                 ).into();
                                 *guard = crate::value::TaskState::Done(Err(err.clone()));
@@ -310,9 +320,13 @@ pub(crate) fn builtin_await(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Task",
-                ctx.type_display_name(task_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Task",
+                    ctx.type_display_name(task_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -359,14 +373,19 @@ pub(crate) fn builtin_channel(
                     call_span,
                 )
             }
-            Value::Int { n, .. } if n < 1 => Err(Diagnostic::user_error(
+            Value::Int { n, .. } if n < 1 => Err(Diagnostic::error(
+                KIND,
                 format!("channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
             .into()),
-            _ => Err(Diagnostic::type_mismatch(
-                "Int",
-                ctx.type_display_name(capacity_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Int",
+                    ctx.type_display_name(capacity_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -406,14 +425,14 @@ pub(crate) fn builtin_send(
                 tokio::select! {
                     result = channel_inner.sender.send(value) => {
                         result.map_err(|_| {
-                            Diagnostic::user_error(
+                            Diagnostic::error(KIND,
                                 "channel closed (receiver dropped)".to_string(),
                                 call_span.clone(),
                             )
                         })?;
                     }
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(KIND,
                             "send: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -437,7 +456,8 @@ pub(crate) fn builtin_send(
             } => {
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
                 channel_inner.sender.send(value).map_err(|_| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         "broadcast channel closed (all receivers dropped)".to_string(),
                         call_span.clone(),
                     )
@@ -460,13 +480,15 @@ pub(crate) fn builtin_send(
                 let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
                 let mut tx_opt = sender_inner.sender.lock().await;
                 let tx = tx_opt.take().ok_or_else(|| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         "oneshot sender already used".to_string(),
                         call_span.clone(),
                     )
                 })?;
                 tx.send(value).map_err(|_| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         "oneshot receiver dropped before send".to_string(),
                         call_span.clone(),
                     )
@@ -482,9 +504,13 @@ pub(crate) fn builtin_send(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Channel, BroadcastChannel, or OneshotSender",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Channel, BroadcastChannel, or OneshotSender",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -524,7 +550,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -561,7 +587,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -617,7 +643,8 @@ pub(crate) fn builtin_recv(
                 // Take the receiver (single-use)
                 let mut rx_opt = receiver_inner.receiver.lock().await;
                 let rx = rx_opt.take().ok_or_else(|| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         "oneshot receiver already used".to_string(),
                         call_span.clone(),
                     )
@@ -627,7 +654,7 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
                         ).into());
@@ -657,9 +684,13 @@ pub(crate) fn builtin_recv(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Channel, BroadcastChannel, or OneshotReceiver",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Channel, BroadcastChannel, or OneshotReceiver",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -725,14 +756,19 @@ pub(crate) fn builtin_broadcast_channel(
                     call_span,
                 )
             }
-            Value::Int { n, .. } if n < 1 => Err(Diagnostic::user_error(
+            Value::Int { n, .. } if n < 1 => Err(Diagnostic::error(
+                KIND,
                 format!("broadcast-channel capacity must be ≥ 1, got {n}"),
                 call_span,
             )
             .into()),
-            _ => Err(Diagnostic::type_mismatch(
-                "Int",
-                ctx.type_display_name(capacity_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Int",
+                    ctx.type_display_name(capacity_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -759,14 +795,16 @@ pub(crate) fn builtin_oneshot_channel(
     } = ctx_arg;
     Box::pin(async move {
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "oneshot-channel does not accept named arguments".to_string(),
                 call_span,
             )
             .into());
         }
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("oneshot-channel expects 0 arguments, got {}", args.len()),
                 call_span,
             )
@@ -891,9 +929,13 @@ pub(crate) fn builtin_try_send(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Channel",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Channel",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1028,9 +1070,13 @@ pub(crate) fn builtin_try_recv(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Channel",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Channel",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1167,9 +1213,13 @@ pub(crate) fn builtin_try_recv_broadcast(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "BroadcastChannel",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "BroadcastChannel",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1339,9 +1389,13 @@ pub(crate) fn builtin_try_recv_oneshot(
                     }
                 }
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "OneshotReceiver",
-                ctx.type_display_name(chan_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "OneshotReceiver",
+                    ctx.type_display_name(chan_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1367,14 +1421,16 @@ pub(crate) fn builtin_yield(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("yield expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "yield does not accept named arguments".to_string(),
                 call_span,
             )
@@ -1447,9 +1503,13 @@ pub(crate) fn builtin_signal_channel(
             let sig_dict = match signals_val {
                 Value::Dict { entries: d, .. } => d,
                 other => {
-                    return Err(Diagnostic::type_mismatch(
-                        "Dict of Signal",
-                        ctx.type_display_name(other.type_decl_id_of()),
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!(
+                            "type mismatch: expected {}, got {}",
+                            "Dict of Signal",
+                            ctx.type_display_name(other.type_decl_id_of())
+                        ),
                         call_span,
                     )
                     .into())
@@ -1470,9 +1530,13 @@ pub(crate) fn builtin_signal_channel(
                         crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
                     }
                     _ => {
-                        return Err(Diagnostic::type_mismatch(
-                            "Signal",
-                            ctx.type_display_name(head_val.type_decl_id_of()),
+                        return Err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "type mismatch: expected {}, got {}",
+                                "Signal",
+                                ctx.type_display_name(head_val.type_decl_id_of())
+                            ),
                             call_span,
                         )
                         .into())
@@ -1482,7 +1546,8 @@ pub(crate) fn builtin_signal_channel(
             }
 
             if sig_names.is_empty() {
-                return Err(Diagnostic::user_error(
+                return Err(Diagnostic::error(
+                    KIND,
                     "signal-channel: requires at least one signal".to_string(),
                     call_span,
                 )
@@ -1501,7 +1566,7 @@ pub(crate) fn builtin_signal_channel(
                     "SIGUSR1" => SignalKind::user_defined1(),
                     "SIGUSR2" => SignalKind::user_defined2(),
                     other => {
-                        return Err(Diagnostic::user_error(
+                        return Err(Diagnostic::error(KIND, 
                             format!("signal-channel: unknown signal {other:?}; supported: SIGINT SIGTERM SIGHUP SIGQUIT SIGUSR1 SIGUSR2"),
                             call_span,
                         )
@@ -1510,7 +1575,8 @@ pub(crate) fn builtin_signal_channel(
                 };
 
                 let mut sig_stream = signal(kind).map_err(|e| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         format!("signal-channel: failed to register signal handler: {e}"),
                         call_span.clone(),
                     )
@@ -1573,7 +1639,8 @@ pub(crate) fn builtin_signal_channel(
         #[cfg(not(unix))]
         {
             let BuiltinArgs { call_span, .. } = ctx_arg;
-            Err(Diagnostic::user_error(
+            Err(Diagnostic::error(
+                KIND,
                 "signal-channel is only supported on Unix platforms".to_string(),
                 call_span,
             )
@@ -1614,9 +1681,13 @@ pub(crate) fn builtin_timer_channel(
         let clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap { inner, .. } => inner.as_ref().clone(),
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "ClockCap",
-                    ctx.type_display_name(clock_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "ClockCap",
+                        ctx.type_display_name(clock_val.type_decl_id_of())
+                    ),
                     call_span.clone(),
                 )
                 .into())
@@ -1629,16 +1700,21 @@ pub(crate) fn builtin_timer_channel(
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(Diagnostic::user_error(
+                return Err(Diagnostic::error(
+                    KIND,
                     format!("timer-channel: interval must be ≥ 1 ms, got {} ns", nanos),
                     call_span,
                 )
                 .into())
             }
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Duration",
-                    ctx.type_display_name(interval_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Duration",
+                        ctx.type_display_name(interval_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1764,9 +1840,13 @@ pub(crate) fn builtin_watch_channel(
         let dir = match dir_cap_val {
             Value::DirCap { dir, .. } => dir,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "DirCap",
-                    ctx.type_display_name(dir_cap_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "DirCap",
+                        ctx.type_display_name(dir_cap_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1779,9 +1859,13 @@ pub(crate) fn builtin_watch_channel(
                 source, start, end, ..
             } => source[start..end].to_string(),
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "String",
-                    ctx.type_display_name(path_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "String",
+                        ctx.type_display_name(path_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -1961,14 +2045,16 @@ pub(crate) fn builtin_context(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("context expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "context does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2023,9 +2109,13 @@ pub(crate) fn builtin_with_cancel(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Context",
-                    ctx.type_display_name(parent_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Context",
+                        ctx.type_display_name(parent_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2121,9 +2211,13 @@ pub(crate) fn builtin_with_timeout(
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(Diagnostic::type_mismatch(
-                "ClockCap",
-                ctx.type_display_name(clock_val.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "ClockCap",
+                    ctx.type_display_name(clock_val.type_decl_id_of())
+                ),
                 call_span.clone(),
             )
             .into());
@@ -2135,9 +2229,13 @@ pub(crate) fn builtin_with_timeout(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Context",
-                    ctx.type_display_name(parent_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Context",
+                        ctx.type_display_name(parent_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2145,19 +2243,24 @@ pub(crate) fn builtin_with_timeout(
         };
 
         let duration_ms = match ms_val {
-            // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
+            // Duration is stored as nanoseconds (i64) -- divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(Diagnostic::user_error(
-                    format!("with-timeout: duration must be ≥ 0, got {} ns", nanos),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!("with-timeout: duration must be >= 0, got {} ns", nanos),
                     call_span,
                 )
                 .into())
             }
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Duration",
-                    ctx.type_display_name(ms_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Duration",
+                        ctx.type_display_name(ms_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2224,9 +2327,13 @@ pub(crate) fn builtin_with_deadline(
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
         let clock_val = clock_thunk.require_value()?.clone();
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(Diagnostic::type_mismatch(
-                "ClockCap",
-                ctx.type_display_name(clock_val.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "ClockCap",
+                    ctx.type_display_name(clock_val.type_decl_id_of())
+                ),
                 call_span.clone(),
             )
             .into());
@@ -2238,9 +2345,13 @@ pub(crate) fn builtin_with_deadline(
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Context",
-                    ctx.type_display_name(parent_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Context",
+                        ctx.type_display_name(parent_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2250,14 +2361,18 @@ pub(crate) fn builtin_with_deadline(
         // Accept Int (unix-ms) or Timestamp (nanoseconds since Unix epoch as i64).
         let deadline_unix_ns: i64 = match ts_val {
             Value::Int { n, .. } => {
-                // Treat Int as Unix milliseconds — convert to nanoseconds for uniform handling.
+                // Treat Int as Unix milliseconds -- convert to nanoseconds for uniform handling.
                 n.saturating_mul(1_000_000)
             }
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Int or Timestamp",
-                    ctx.type_display_name(ts_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Int or Timestamp",
+                        ctx.type_display_name(ts_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2273,7 +2388,8 @@ pub(crate) fn builtin_with_deadline(
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
-                Diagnostic::user_error(
+                Diagnostic::error(
+                    KIND,
                     format!("system clock is before Unix epoch: {e}"),
                     call_span.clone(),
                 )
@@ -2335,9 +2451,13 @@ pub(crate) fn builtin_cancelled_q(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Context",
-                ctx.type_display_name(ctx_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Context",
+                    ctx.type_display_name(ctx_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -2387,9 +2507,13 @@ pub(crate) fn builtin_cancel_task(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Context",
-                ctx.type_display_name(ctx_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "Context",
+                    ctx.type_display_name(ctx_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -2421,14 +2545,16 @@ pub(crate) fn builtin_cancel_root(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("cancel-root expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "cancel-root does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2483,14 +2609,16 @@ pub(crate) fn builtin_drain(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("drain expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "drain does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2515,7 +2643,8 @@ pub(crate) fn builtin_drain(
                 Err(e) if e.is_cancelled() => {} // expected: abort() was called
                 Err(e) => {
                     // Task panicked — this is a bug; propagate as an internal error.
-                    return Err(Diagnostic::internal(
+                    return Err(Diagnostic::error(
+                        KIND_INTERNAL,
                         format!("async background task panicked during drain: {e}"),
                         call_span,
                     )
@@ -2558,14 +2687,16 @@ pub(crate) fn builtin_exit_now(
     } = ctx_arg;
     Box::pin(async move {
         if args.len() != 1 {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("exit-now expects 1 argument, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "exit-now does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2578,9 +2709,13 @@ pub(crate) fn builtin_exit_now(
         let exit_code = match code_val {
             Value::Int { n, .. } => n.clamp(0, 255) as i32,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Int",
-                    ctx.type_display_name(code_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Int",
+                        ctx.type_display_name(code_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2615,14 +2750,16 @@ pub(crate) fn builtin_non_cancellable(
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 format!("non-cancellable expects 0 arguments, got {}", args.len()),
                 call_span,
             )
             .into());
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::user_error(
+            return Err(Diagnostic::error(
+                KIND,
                 "non-cancellable does not accept named arguments".to_string(),
                 call_span,
             )
@@ -2679,9 +2816,13 @@ pub(crate) fn builtin_with_context(
         let new_cancel = match context_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::type_mismatch(
-                    "Context",
-                    ctx.type_display_name(context_val.type_decl_id_of()),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type mismatch: expected {}, got {}",
+                        "Context",
+                        ctx.type_display_name(context_val.type_decl_id_of())
+                    ),
                     call_span,
                 )
                 .into())
@@ -2790,9 +2931,13 @@ pub(crate) fn builtin_cell_get(
                 let current = cell_inner.receiver.borrow().clone();
                 ok_val(current, call_span)
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "ReactiveCell",
-                ctx.type_display_name(cell_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "ReactiveCell",
+                    ctx.type_display_name(cell_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -2837,7 +2982,8 @@ pub(crate) fn builtin_cell_set(
                 // a Receiver in ReactiveCellInner for the lifetime of the cell.
                 let tx = cell_inner.sender.lock().await;
                 tx.send(new_val).map_err(|_| {
-                    Diagnostic::user_error(
+                    Diagnostic::error(
+                        KIND,
                         "cell-set: reactive cell has been dropped (no receivers)".to_string(),
                         call_span.clone(),
                     )
@@ -2854,9 +3000,13 @@ pub(crate) fn builtin_cell_set(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "ReactiveCell",
-                ctx.type_display_name(cell_val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected {}, got {}",
+                    "ReactiveCell",
+                    ctx.type_display_name(cell_val.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),

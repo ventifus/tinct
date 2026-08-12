@@ -16,6 +16,8 @@ use crate::error::Diagnostic;
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Thunk};
 
+const KIND: &str = "eval";
+
 /// `builtin-to-tinct`: serialize a value to its SCN tinct source representation.
 ///
 /// Takes one positional argument (WHNF-materialized via `force_count = 1`).
@@ -52,9 +54,9 @@ pub(crate) fn builtin_to_tinct(
         // all nested values so that to_tinct's peek_result calls succeed.
         let deep_val = force_dict_tree(&val, &ctx).await?;
 
-        let tinct_str = deep_val
-            .to_tinct(Some(&ctx))
-            .map_err(|e| Diagnostic::user_error(format!("to-tinct: {}", e), call_span.clone()))?;
+        let tinct_str = deep_val.to_tinct(Some(&ctx)).map_err(|e| {
+            Diagnostic::error(KIND, format!("to-tinct: {}", e), call_span.clone())
+        })?;
         ok_val(string_val(&tinct_str), call_span)
     })
 }

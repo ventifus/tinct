@@ -26,6 +26,9 @@ use crate::error::Diagnostic;
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 /// Construct a `BuiltinDef` with name, function, and optional strictness annotations.
 ///
 /// `builtin!("name", fn)` — all-lazy (empty strictness array).
@@ -112,10 +115,24 @@ pub(crate) fn expect_one_arg(
     call_span: Span,
 ) -> Result<Value, Box<crate::error::Diagnostic>> {
     if args.len() != 1 {
-        return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!(
+                "arity mismatch: expected {}, got {}",
+                crate::error::ArityBound::Exact(1),
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
-        return Err(Diagnostic::named_arg_rejected(name.to_string(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!("{} does not accept named arguments", name),
+            call_span,
+        )
+        .into());
     }
     Ok(args[0].require_value()?.clone())
 }
@@ -128,10 +145,17 @@ pub(crate) fn checked_f64_to_i64(
     call_span: Span,
 ) -> Result<i64, Box<crate::error::Diagnostic>> {
     if !f.is_finite() {
-        return Err(Diagnostic::float_not_finite(name.to_string(), f, call_span).into());
+        return Err(
+            Diagnostic::error(KIND, format!("{}: {} is not finite", name, f), call_span).into(),
+        );
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(Diagnostic::float_out_of_range(name.to_string(), f, call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!("{}: {} out of range for Int", name, f),
+            call_span,
+        )
+        .into());
     }
     Ok(f as i64)
 }
@@ -146,7 +170,7 @@ pub(crate) fn check_float_result(
     span: Span,
 ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
     if !val.is_finite() {
-        Err(Diagnostic::float_not_finite(op.to_string(), val, span).into())
+        Err(Diagnostic::error(KIND, format!("{}: {} is not finite", op, val), span).into())
     } else {
         ok_val(
             Value::Float {
@@ -181,10 +205,12 @@ pub(crate) async fn require_dict(
                     Box::pin(require_dict(name, payload_val, def_span, ctx, call_span)).await
                 }
                 None => {
-                    let err = Diagnostic::type_mismatch_ctx(
-                        name.to_string(),
-                        "Dict",
-                        "unit variant (no payload)",
+                    let err = Diagnostic::error(
+                        KIND,
+                        format!(
+                            "{}: expected {}, got {}",
+                            name, "Dict", "unit variant (no payload)"
+                        ),
                         def_span,
                     );
                     Err(err.into())
@@ -192,10 +218,14 @@ pub(crate) async fn require_dict(
             }
         }
         other => {
-            let err = Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "Dict",
-                &ctx.type_display_name(other.type_decl_id_of()),
+            let err = Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    name,
+                    "Dict",
+                    ctx.type_display_name(other.type_decl_id_of())
+                ),
                 def_span,
             );
             Err(err.into())
@@ -219,10 +249,14 @@ pub(crate) fn require_string(
             ..
         } => Ok(source[start..end].to_string()),
         other => {
-            let err = Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "String",
-                &ctx.type_display_name(other.type_decl_id_of()),
+            let err = Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected {}, got {}",
+                    name,
+                    "String",
+                    ctx.type_display_name(other.type_decl_id_of())
+                ),
                 def_span,
             );
             // Secondary span would be redundant here since def_span is already the argument's span.
@@ -244,10 +278,14 @@ pub(crate) fn require_type_context(
 > {
     match value {
         Value::TypeContext { ctx: tc, .. } => Ok(tc),
-        other => Err(Diagnostic::type_mismatch_ctx(
-            name.to_string(),
-            "TypeContext",
-            &ctx.type_display_name(other.type_decl_id_of()),
+        other => Err(Diagnostic::error(
+            KIND,
+            format!(
+                "{}: expected {}, got {}",
+                name,
+                "TypeContext",
+                ctx.type_display_name(other.type_decl_id_of())
+            ),
             def_span,
         )
         .into()),
@@ -261,7 +299,12 @@ pub(crate) fn reject_named(
     call_span: Span,
 ) -> Result<(), Box<crate::error::Diagnostic>> {
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
-        return Err(Diagnostic::named_arg_rejected(name.to_string(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!("{} does not accept named arguments", name),
+            call_span,
+        )
+        .into());
     }
     Ok(())
 }
@@ -294,7 +337,12 @@ fn float_to_int_builtin(
         ),
         Value::Float { n: f, .. } => {
             if !f.is_finite() {
-                return Err(Diagnostic::float_not_finite(name.to_string(), f, arg0_span).into());
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!("{}: {} is not finite", name, f),
+                    arg0_span,
+                )
+                .into());
             }
             ok_val(
                 Value::Int {
@@ -306,10 +354,14 @@ fn float_to_int_builtin(
                 call_span,
             )
         }
-        other => Err(Diagnostic::type_mismatch_ctx(
-            name.to_string(),
-            "Int or Float",
-            &ctx.type_display_name(other.type_decl_id_of()),
+        other => Err(Diagnostic::error(
+            KIND,
+            format!(
+                "{}: expected {}, got {}",
+                name,
+                "Int or Float",
+                ctx.type_display_name(other.type_decl_id_of())
+            ),
             arg0_span,
         )
         .into()),
@@ -378,7 +430,18 @@ pub(crate) fn builtin_to_int(
         ..
     } = ctx_arg;
     if args.is_empty() {
-        return Box::pin(async move { Err(Diagnostic::arity_mismatch(1, 0, call_span).into()) });
+        return Box::pin(async move {
+            Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    0
+                ),
+                call_span,
+            )
+            .into())
+        });
     }
     Box::pin(async move {
         let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -394,12 +457,12 @@ pub(crate) fn builtin_to_int(
                 },
                 call_span,
             ),
-            Err(_) => {
-                Err(
-                    Diagnostic::parse_conversion("to-int".to_string(), s.clone(), "Int", call_span)
-                        .into(),
-                )
-            }
+            Err(_) => Err(Diagnostic::error(
+                KIND,
+                format!("{}: cannot parse {:?} as {}", "to-int", s, "Int"),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -420,7 +483,18 @@ pub(crate) fn builtin_to_float(
         ..
     } = ctx_arg;
     if args.is_empty() {
-        return Box::pin(async move { Err(Diagnostic::arity_mismatch(1, 0, call_span).into()) });
+        return Box::pin(async move {
+            Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    0
+                ),
+                call_span,
+            )
+            .into())
+        });
     }
     Box::pin(async move {
         let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -436,11 +510,15 @@ pub(crate) fn builtin_to_float(
                 },
                 call_span,
             ),
-            Ok(f) => Err(Diagnostic::float_not_finite("to-float".to_string(), f, call_span).into()),
-            Err(_) => Err(Diagnostic::parse_conversion(
-                "to-float".to_string(),
-                s.clone(),
-                "Float",
+            Ok(f) => Err(Diagnostic::error(
+                KIND,
+                format!("{}: {} is not finite", "to-float", f),
+                call_span,
+            )
+            .into()),
+            Err(_) => Err(Diagnostic::error(
+                KIND,
+                format!("{}: cannot parse {:?} as {}", "to-float", s, "Float"),
                 call_span,
             )
             .into()),
@@ -461,7 +539,16 @@ pub(crate) fn builtin_proxy(
     Box::pin(async move {
         reject_named("proxy", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         Ok(Arc::new(Thunk::value(
             Value::Proxy {
@@ -942,11 +1029,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -970,11 +1053,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1580,11 +1659,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1608,11 +1683,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -1940,7 +2011,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Int input to to-int, got: {:?}",
             err.kind
         );
@@ -2259,11 +2330,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2279,11 +2346,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2299,11 +2362,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2319,11 +2378,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            err.message.contains("is not a finite number"),
-            "got: {}",
-            err.kind
-        );
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -2796,7 +2851,7 @@ mod tests {
         > {
             Box::pin(async move {
                 let call_span = ctx.call_span;
-                Err(Diagnostic::internal("builtin error".to_string(), call_span).into())
+                Err(Diagnostic::error(KIND_INTERNAL, "builtin error".to_string(), call_span).into())
             })
         }
         let ctx = test_ctx();
@@ -2851,7 +2906,8 @@ mod tests {
         > {
             Box::pin(async move {
                 let call_span = ctx.call_span;
-                Err(Diagnostic::resource_limit_exceeded(
+                Err(Diagnostic::error(
+                    KIND,
                     "test: exceeded resource limit (1000000)".to_string(),
                     call_span,
                 )
@@ -3600,7 +3656,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Int input to keys, got: {:?}",
             err.kind
         );
@@ -3620,7 +3676,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for String input to keys, got: {:?}",
             err.kind
         );
@@ -4003,7 +4059,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Int pattern in replace, got: {:?}",
             err.kind
         );
@@ -4036,7 +4092,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Dict replacement in replace, got: {:?}",
             err.kind
         );
@@ -4068,7 +4124,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Float input in replace, got: {:?}",
             err.kind
         );
@@ -4096,7 +4152,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Float input to trim, got: {:?}",
             err.kind
         );
@@ -4920,7 +4976,7 @@ mod tests {
         .unwrap_err();
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            e.kind == "type-mismatch",
+            e.kind == "eval",
             "expected TypeMismatch error for Int + String, got: {}",
             e.kind
         );
@@ -5262,7 +5318,7 @@ mod tests {
         .unwrap_err();
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            e.kind == "type-mismatch",
+            e.kind == "eval",
             "expected TypeMismatch error for Int - String, got: {}",
             e.kind
         );
@@ -5549,7 +5605,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5585,7 +5641,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5620,7 +5676,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5659,7 +5715,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(err.message.contains("is not a finite"), "got: {}", err.kind);
+        assert!(err.message.contains("is not finite"), "got: {}", err.kind);
     }
 
     #[tokio::test]
@@ -5851,11 +5907,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.kind == "division-by-zero",
-            "expected DivisionByZero, got: {}",
-            e.kind
-        );
+        assert!(e.kind == "eval", "expected DivisionByZero, got: {}", e.kind);
         assert!(
             e.message.contains("division by zero"),
             "expected message containing 'division by zero', got: {}",
@@ -5896,11 +5948,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.message.contains("is not a finite number"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("is not finite"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -5936,11 +5984,7 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        assert!(
-            e.message.contains("is not a finite number"),
-            "got: {}",
-            e.kind
-        );
+        assert!(e.message.contains("is not finite"), "got: {}", e.kind);
     }
 
     #[tokio::test]
@@ -6622,7 +6666,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind == "type-mismatch",
+            e.kind == "eval",
             "expected TypeMismatch for Int vs Float in builtin-lt, got: {}",
             e.kind
         );
@@ -6662,7 +6706,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind == "type-mismatch",
+            e.kind == "eval",
             "expected TypeMismatch for Float vs Int in builtin-lt, got: {}",
             e.kind
         );
@@ -6693,7 +6737,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind == "type-mismatch",
+            e.kind == "eval",
             "expected TypeMismatch for Int vs String in builtin-lt, got: {}",
             e.kind
         );
@@ -7600,7 +7644,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            err.kind == "type-mismatch",
+            err.kind == "eval",
             "expected TypeMismatch for Variant xs, got {:?}",
             err.kind
         );
@@ -8222,7 +8266,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.kind == "key-not-found",
+            err.kind == "eval",
             "expected KeyNotFound, got {:?}",
             err.kind
         );

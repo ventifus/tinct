@@ -22,6 +22,8 @@ use crate::error::Diagnostic;
 use crate::symbol_table::SymbolTable;
 use std::sync::Arc;
 
+const KIND: &str = "resolve";
+
 /// Sentinel slot value stored in SymbolTable entries that represent EffectPerform
 /// typeclass method bindings. When `resolve_name` encounters an entry with this
 /// slot, it consults `effect_perform_addrs` for the actual VarAddr.
@@ -71,6 +73,10 @@ struct SurfaceResolver {
     effect_perform_addrs: std::collections::HashMap<String, VarAddr>,
     /// The initial (outermost) scope passed by the caller, used for unreferenced tracking.
     initial_scope: Option<Arc<SymbolTable>>,
+    /// Scope frames accumulated by this document's Sequential. Recorded by
+    /// walk_surface_document after the walk completes. The caller (pipeline /
+    /// init program) receives these via finish() → scope_frames.
+    document_scope_frames: Vec<Arc<SymbolTable>>,
     /// Names from the initial scope that were referenced during resolution.
     referenced_initial_names: std::collections::HashSet<String>,
 }
@@ -83,6 +89,7 @@ impl SurfaceResolver {
             diagnostics: Vec::new(),
             effect_perform_addrs: std::collections::HashMap::new(),
             initial_scope: Some(Arc::clone(initial_scope)),
+            document_scope_frames: Vec::new(),
             referenced_initial_names: std::collections::HashSet::new(),
         }
     }
@@ -97,22 +104,6 @@ impl SurfaceResolver {
         let arc = Arc::new(st);
         self.scope_stack.push(Arc::clone(&arc));
         arc
-    }
-
-    /// Enter a scope with pre-computed (name, slot) pairs.
-    /// Slots must be contiguous 0-based to match IndexMap insertion order.
-    fn enter_scope_with_slots(&mut self, pairs: &[(String, u32)]) -> Arc<SymbolTable> {
-        let mut st = SymbolTable::new();
-        for (name, slot) in pairs {
-            st.insert(name.clone(), *slot, None);
-        }
-        let arc = Arc::new(st);
-        self.scope_stack.push(Arc::clone(&arc));
-        arc
-    }
-
-    fn exit_scope(&mut self) {
-        self.scope_stack.pop().expect("scope stack underflow");
     }
 
     /// Resolve `name` in the scope stack, returning its `VarAddr`.
@@ -217,7 +208,7 @@ impl SurfaceResolver {
                 } else {
                     resolution.set(None);
                     self.diagnostics.push(Diagnostic::error(
-                        "resolve-error",
+                        KIND,
                         format!("undefined variable: {}", name),
                         arc.span.clone(),
                     ));
@@ -364,6 +355,7 @@ impl SurfaceResolver {
                 if let SurfaceExpression::Dict { scope, .. } = &arc.expr {
                     let _ = scope.set(Arc::clone(&st_arc));
                 }
+                let saved_depth = self.scope_stack.len();
                 self.scope_stack.push(st_arc);
 
                 // Walk key annotations INSIDE the letrec scope so that annotation
@@ -382,7 +374,7 @@ impl SurfaceResolver {
                 for entry in entries {
                     self.walk_surface_node(&entry.node.value);
                 }
-                self.exit_scope();
+                self.scope_stack.truncate(saved_depth);
             }
 
             SurfaceExpression::Fn {
@@ -403,6 +395,7 @@ impl SurfaceResolver {
                 for (i, p) in params.iter().enumerate() {
                     p.node.resolved_dispatch_slot.set(i as u32);
                 }
+                let saved_depth = self.scope_stack.len();
                 let scope_arc = self.enter_scope(&param_names);
                 // Set SymbolTable on the Fn AST node.
                 if let SurfaceExpression::Fn { scope, .. } = &arc.expr {
@@ -411,42 +404,24 @@ impl SurfaceResolver {
 
                 self.walk_surface_node(body);
 
-                self.exit_scope();
+                self.scope_stack.truncate(saved_depth);
             }
 
             SurfaceExpression::Sequential(exprs) => {
-                let mut injected = 0usize;
-                for (i, e) in exprs.iter().enumerate() {
-                    let is_last = i == exprs.len() - 1;
+                for e in exprs.iter() {
+                    self.walk_surface_node(e);
 
-                    if !is_last {
-                        // Intermediate body: walk it as a dict node (which creates its own
-                        // letrec scope via the Dict arm), then inject a sequential scope
-                        // for subsequent bodies.
-                        self.walk_surface_node(e);
-                        // After walking, read the scope from the Dict AST node (if it was
-                        // a dict) and create a sequential scope with the same named entries.
-                        if let SurfaceExpression::Dict { scope, .. } = &e.expr {
-                            if let Some(dict_st) = scope.get() {
-                                let pairs: Vec<(String, u32)> = dict_st
-                                    .entries()
-                                    .iter()
-                                    .filter(|(_, e)| e.slot != EFFECT_SENTINEL)
-                                    .map(|(name, entry)| (name.clone(), entry.slot))
-                                    .collect();
-                                if !pairs.is_empty() {
-                                    self.enter_scope_with_slots(&pairs);
-                                    injected += 1;
-                                }
-                            }
+                    // Re-push the SAME scope object from the AST node (not a copy).
+                    // This ensures resolver, evaluator, and pipeline share one scope.
+                    // ALL dicts' scopes are accumulated — including the final one —
+                    // because the caller consumes the accumulated scopes as the
+                    // Sequential's "return value." The caller controls cleanup
+                    // via save/restore of stack depth.
+                    if let SurfaceExpression::Dict { scope, .. } = &e.expr {
+                        if let Some(dict_st) = scope.get() {
+                            self.scope_stack.push(Arc::clone(dict_st));
                         }
-                    } else {
-                        // Final expression: walk normally.
-                        self.walk_surface_node(e);
                     }
-                }
-                for _ in 0..injected {
-                    self.exit_scope();
                 }
             }
 
@@ -519,6 +494,7 @@ impl SurfaceResolver {
                     let bound_names = extract_case_arm_binding_names(let_bindings);
                     let has_bindings = !bound_names.is_empty();
 
+                    let saved_depth = self.scope_stack.len();
                     if has_bindings {
                         let scope_arc = self.enter_scope(&bound_names);
                         // Set SymbolTable on the MatchArm.
@@ -533,9 +509,7 @@ impl SurfaceResolver {
                     for body_expr in &arm.body {
                         self.walk_surface_node(body_expr);
                     }
-                    if has_bindings {
-                        self.exit_scope();
-                    }
+                    self.scope_stack.truncate(saved_depth);
                 }
             }
 
@@ -735,38 +709,17 @@ impl SurfaceResolver {
     /// Each intermediate dict expression's named entries become scope bindings
     /// for subsequent expressions within the same document (sequential scope injection).
     fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
-        let mut injected = 0usize;
-        let items: Vec<&SurfaceItem> = doc.items.iter().collect();
-        let expr_count = items
-            .iter()
-            .filter(|i| matches!(i, SurfaceItem::Expr(_)))
-            .count();
-        let mut expr_idx = 0usize;
+        let saved_depth = self.scope_stack.len();
 
-        for item in &items {
+        for item in doc.items.iter() {
             match item {
                 SurfaceItem::Expr(node) => {
-                    let is_last_expr = expr_idx == expr_count - 1;
                     self.walk_surface_node(node);
-                    if !is_last_expr {
-                        // After walking, read the scope from the Dict AST node and
-                        // create a sequential scope with the same named entries.
-                        if let SurfaceExpression::Dict { scope, .. } = &node.expr {
-                            if let Some(dict_st) = scope.get() {
-                                let pairs: Vec<(String, u32)> = dict_st
-                                    .entries()
-                                    .iter()
-                                    .filter(|(_, e)| e.slot != EFFECT_SENTINEL)
-                                    .map(|(name, entry)| (name.clone(), entry.slot))
-                                    .collect();
-                                if !pairs.is_empty() {
-                                    self.enter_scope_with_slots(&pairs);
-                                    injected += 1;
-                                }
-                            }
+                    if let SurfaceExpression::Dict { scope, .. } = &node.expr {
+                        if let Some(dict_st) = scope.get() {
+                            self.scope_stack.push(Arc::clone(dict_st));
                         }
                     }
-                    expr_idx += 1;
                 }
                 SurfaceItem::Decl(decl) => {
                     self.walk_surface_declaration(&decl.node);
@@ -774,10 +727,10 @@ impl SurfaceResolver {
             }
         }
 
-        // Exit the injected scopes.
-        for _ in 0..injected {
-            self.exit_scope();
-        }
+        // Record accumulated scopes for the caller (pipeline / init program),
+        // then restore the stack.
+        self.document_scope_frames = self.scope_stack[saved_depth..].to_vec();
+        self.scope_stack.truncate(saved_depth);
     }
 
     fn finish(self) -> ResolveResult {
@@ -795,7 +748,7 @@ impl SurfaceResolver {
             table: self.table,
             diagnostics: self.diagnostics,
             unreferenced,
-            scope_frames: self.scope_stack,
+            scope_frames: self.document_scope_frames,
         }
     }
 }
@@ -895,7 +848,7 @@ pub fn lint_pipeline_stages(
         for key in produced_keys {
             if !consumed_set.contains(key.as_str()) {
                 diagnostics.push(Diagnostic::warn(
-                    "abandoned-output",
+                    KIND,
                     format!(
                         "key '{}' is produced but never consumed by the next pipeline stage",
                         key
@@ -1620,7 +1573,7 @@ mod tests {
         let warnings = lint_pipeline_stages(&stages);
         let abandoned: Vec<&str> = warnings
             .iter()
-            .filter(|w| w.kind == "abandoned-output")
+            .filter(|w| w.kind == "resolve")
             .map(|w| w.message.as_str())
             .collect();
         assert_eq!(

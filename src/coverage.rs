@@ -46,6 +46,8 @@ use crate::value::TYPE_ID_DICT;
 #[cfg(test)]
 use std::sync::Arc;
 
+const KIND: &str = "coverage";
+
 // ---------------------------------------------------------------------------
 // Coverage pattern representation
 // ---------------------------------------------------------------------------
@@ -371,7 +373,7 @@ async fn ast_pattern_to_coverage_inner(
 ) -> Result<CoveragePattern, crate::error::Diagnostic> {
     let coverage_err = |msg: String| {
         Err(crate::error::Diagnostic::error(
-            "coverage-error",
+            KIND,
             msg,
             node.span.clone(),
         ))

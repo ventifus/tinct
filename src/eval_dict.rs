@@ -18,6 +18,10 @@ use crate::value::{string_val, HashableValue, Thunk, Value, TYPE_ID_DICT};
 use super::{materialize, EvalContext};
 use crate::eval_core::eval_core_expr;
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+const KIND_LOWER: &str = "lower";
+
 fn value_to_key(
     value: &Value,
     span: &Span,
@@ -45,7 +49,8 @@ fn value_to_key(
                         Some(Ok(v)) => v,
                         Some(Err(e)) => return Err(Box::new((**e).clone())),
                         None => {
-                            return Err(Diagnostic::internal(
+                            return Err(Diagnostic::error(
+                                KIND_INTERNAL,
                                 "variant payload not materialized".to_string(),
                                 span.clone(),
                             )
@@ -61,9 +66,13 @@ fn value_to_key(
                 payload: hv_payload,
             })
         }
-        _ => Err(Diagnostic::type_mismatch(
-            "String, Int, Float, or Variant",
-            &ctx.type_display_name(value.type_decl_id_of()),
+        _ => Err(Diagnostic::error(
+            KIND,
+            format!(
+                "type mismatch: expected {}, got {}",
+                "String, Int, Float, or Variant",
+                ctx.type_display_name(value.type_decl_id_of())
+            ),
             span.clone(),
         )
         .into()),
@@ -123,7 +132,8 @@ async fn eval_annotation_property_dict(
                     if let Ok(i) = i64::try_from(*n) {
                         HashableValue::Int(i)
                     } else {
-                        return Err(Box::new(Diagnostic::internal(
+                        return Err(Box::new(Diagnostic::error(
+                            KIND_INTERNAL,
                             format!(
                                 "u64 key {n} is too large for a dict integer key (max i64::MAX)"
                             ),
@@ -138,7 +148,7 @@ async fn eval_annotation_property_dict(
                     // Annotation property dict keys must be string literals, int literals,
                     // or bare words. Complex key expressions (calls, fn, pipes) are not
                     // valid annotation syntax.
-                    return Err(Box::new(Diagnostic::user_error(
+                    return Err(Box::new(Diagnostic::error(KIND,
                         format!(
                             "annotation property dict keys must be string literals, int literals, or bare words, got: {:?}",
                             key_node.expr
@@ -151,8 +161,9 @@ async fn eval_annotation_property_dict(
             // Auto-indexed entry
             let k = HashableValue::Int(auto_index);
             auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                Diagnostic::integer_overflow(
-                    "annotation dict auto-index".to_string(),
+                Diagnostic::error(
+                    KIND,
+                    format!("{}: integer overflow", "annotation dict auto-index"),
                     entry.span.clone(),
                 )
             })?;
@@ -212,14 +223,14 @@ async fn eval_annotation_property_dict(
                     .extend(lower_diags);
                 if has_errors {
                     return Err(Box::new(crate::error::Diagnostic::error(
-                        "lower-error",
+                        KIND_LOWER,
                         "expression lowering failed",
                         entry.node.value.span.clone(),
                     )));
                 }
                 match eval_core_expr(&core_expr, &SymbolTable::empty_chain(), ctx).await {
                     Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
-                    Err(e) if e.kind == "unimplemented" => {
+                    Err(e) if e.message.contains("placeholder") => {
                         // Placeholder from nested type expressions → skip this key.
                         continue;
                     }
@@ -242,8 +253,12 @@ async fn eval_annotation_property_dict(
                 None => (auto_index - 1).to_string(),
             };
             return Err(Box::new(
-                Diagnostic::duplicate_key(&key_str, entry.span.clone())
-                    .with_secondary_span(prev_span, "previously defined here"),
+                Diagnostic::error(
+                    KIND,
+                    format!("duplicate key: {}", key_str),
+                    entry.span.clone(),
+                )
+                .with_secondary_span(prev_span, "previously defined here"),
             ));
         }
     }
@@ -359,7 +374,11 @@ pub(crate) async fn eval_dict_core(
             None => {
                 let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                    Diagnostic::integer_overflow("dict auto-index".to_string(), entry.span.clone())
+                    Diagnostic::error(
+                        KIND,
+                        format!("{}: integer overflow", "dict auto-index"),
+                        entry.span.clone(),
+                    )
                 })?;
                 k
             }
@@ -527,8 +546,12 @@ pub(crate) async fn eval_dict_core(
                 None => (auto_index - 1).to_string(),
             };
             return Err(Box::new(
-                Diagnostic::duplicate_key(&key_str, entry.span.clone())
-                    .with_secondary_span(prev_span, "previously defined here"),
+                Diagnostic::error(
+                    KIND,
+                    format!("duplicate key: {}", key_str),
+                    entry.span.clone(),
+                )
+                .with_secondary_span(prev_span, "previously defined here"),
             ));
         }
 
@@ -577,7 +600,7 @@ pub(crate) async fn eval_dict_core(
 
     // Build the letrec ScopeChain: prepend the letrec frame to the outer scope chain.
     let mut letrec_chain = outer_scope.clone();
-    letrec_chain.insert(0, Arc::clone(&letrec_scope));
+    letrec_chain.push(Arc::clone(&letrec_scope));
 
     // Patch non-literal CoreExpr thunks with the real letrec scope chain.
     if has_non_literal {
@@ -638,7 +661,8 @@ pub(crate) async fn eval_key_core(
             if let Ok(i) = i64::try_from(*n) {
                 return Ok(HashableValue::Int(i));
             }
-            return Err(Diagnostic::internal(
+            return Err(Diagnostic::error(
+                KIND_INTERNAL,
                 format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
                 key_expr.span.clone(),
             )

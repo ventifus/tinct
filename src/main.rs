@@ -11,10 +11,14 @@ use tinct::{
     HashableValue, Thunk, Value, TYPE_ID_CLOCKCAP, TYPE_ID_DICT, TYPE_ID_DIRCAP, TYPE_ID_FILE,
     TYPE_ID_INT, TYPE_ID_NETCAP, TYPE_ID_PROGRAM_ITEM,
 };
+
+const KIND_INTERNAL: &str = "internal";
+
 /// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
 /// Uses `internal-error` kind with a synthetic Rust source span.
 fn cli_error(message: impl Into<String>) -> Box<tinct::Diagnostic> {
-    Box::new(tinct::Diagnostic::internal(
+    Box::new(tinct::Diagnostic::error(
+        KIND_INTERNAL,
         message.into(),
         tinct::rust_span!(),
     ))
@@ -3121,9 +3125,9 @@ Fix: remove the dead arm, or if the types are incorrect, update the pattern type
 annotation or the scrutinee expression to align with the intended logic."
         }
 
-        "unknown-type-param" => {
+        "unknown-type-param" | "type-check" => {
             "\
-unknown-type-param: Unknown type parameter annotation (type checker)
+type-check: Unknown type parameter annotation (type checker)
 
 A type alias declaration uses an `@X` annotation on a type parameter where X is
 neither a recognized variance keyword (Covariant, Contravariant, Invariant, Phantom)

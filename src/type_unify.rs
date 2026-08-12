@@ -17,6 +17,8 @@ use crate::type_infer::{
 };
 use crate::type_tags::*;
 
+const KIND: &str = "type-check";
+
 /// Maximum recursion depth for unification.
 /// Prevents stack overflow on deeply nested type unification.
 const MAX_UNIFY_DEPTH: usize = 512;
@@ -228,7 +230,7 @@ fn check_function_arity(
 ) -> Result<(), Diagnostic> {
     if p1_len != p2_len {
         return Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!(
                 "arity mismatch: expected {} arguments, got {}",
                 p1_len, p2_len
@@ -238,7 +240,7 @@ fn check_function_arity(
     }
     if is_variadic_1 != is_variadic_2 {
         return Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!(
                 "variadic mismatch: function with {} params ({}) vs {} params ({})",
                 p1_len,
@@ -430,7 +432,7 @@ pub async fn unify(
 ) -> Result<(), Diagnostic> {
     if depth >= MAX_UNIFY_DEPTH {
         return Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!("unification depth limit exceeded (limit: {MAX_UNIFY_DEPTH})"),
             span,
         ));
@@ -536,7 +538,7 @@ pub async fn unify(
         let alpha_level = ctx.get_level(&name);
         if lower_levels_check_occurs_tv(&b, &name, alpha_level, ctx) {
             return Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!("infinite type: {name} occurs in type"),
                 span,
             ));
@@ -554,7 +556,7 @@ pub async fn unify(
         let alpha_level = ctx.get_level(&name);
         if lower_levels_check_occurs_tv(&a, &name, alpha_level, ctx) {
             return Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!("infinite type: {name} occurs in type"),
                 span,
             ));
@@ -579,7 +581,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -598,7 +600,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -615,7 +617,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -630,7 +632,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -648,7 +650,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -664,7 +666,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -679,7 +681,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -698,7 +700,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -715,7 +717,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -730,7 +732,7 @@ pub async fn unify(
                 Ok(())
             } else {
                 Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -798,7 +800,7 @@ pub async fn unify(
             if members_a.len() != members_b.len() {
                 // Different member counts: cannot unify
                 return Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}: union member count differs ({} vs {})",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -888,7 +890,7 @@ pub async fn unify(
 
                     // No valid b_idx for members_a[a_start] — backtrack to caller.
                     Err(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "cannot unify union types: no matching member found for type {}",
                             crate::eval::format_type_with_names(ma, &ctx.type_display_names)
@@ -929,10 +931,10 @@ pub async fn unify(
         // resolver_injective = false is registered.
         (Some(TV_APP), Some(TV_APP)) => {
             let (op_a, arg_a) = extract_app_parts(&a).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.App", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.App", span.clone())
             })?;
             let (op_b, arg_b) = extract_app_parts(&b).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.App", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.App", span.clone())
             })?;
 
             // Check whether both ops are TV_NOMINAL with the same name and, if so, whether
@@ -1001,10 +1003,10 @@ pub async fn unify(
         // Recursive types: open with fresh TypeVar, bidirectional constrain.
         (Some(TV_RECURSIVE), Some(TV_RECURSIVE)) => {
             let body_a = extract_recursive_body(&a).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Recursive", span.clone())
             })?;
             let body_b = extract_recursive_body(&b).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Recursive", span.clone())
             })?;
             // Open both with the same fresh TypeVar (Pierce 2002 §21.8 simultaneous-opening).
             let fresh = ctx.fresh_typevar("rec");
@@ -1024,7 +1026,7 @@ pub async fn unify(
         // Recursive vs concrete: open recursive, constrain with concrete.
         (Some(TV_RECURSIVE), _) => {
             let body_a = extract_recursive_body(&a).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Recursive", span.clone())
             })?;
             let fresh = ctx.fresh_typevar("rec");
             let opened_a = substitute_rec_ref(&body_a, 0, &fresh);
@@ -1034,7 +1036,7 @@ pub async fn unify(
 
         (_, Some(TV_RECURSIVE)) => {
             let body_b = extract_recursive_body(&b).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Recursive", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Recursive", span.clone())
             })?;
             let fresh = ctx.fresh_typevar("rec");
             let opened_b = substitute_rec_ref(&body_b, 0, &fresh);
@@ -1045,10 +1047,10 @@ pub async fn unify(
         // Negation: contravariant (bidirectional swap).
         (Some(TV_NEG), Some(TV_NEG)) => {
             let inner_a = extract_neg_inner(&a).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Neg", span.clone())
             })?;
             let inner_b = extract_neg_inner(&b).ok_or_else(|| {
-                Diagnostic::error("type-error", "malformed TypeValue.Neg", span.clone())
+                Diagnostic::error(KIND, "malformed TypeValue.Neg", span.clone())
             })?;
             Box::pin(constrain(
                 &inner_b,
@@ -1069,14 +1071,14 @@ pub async fn unify(
         (_, Some(TV_UNION)) => {
             let members = extract_union_members(&b).ok_or_else(|| {
                 Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "TypeValue.Union payload is unsettled or malformed",
                     span.clone(),
                 )
             })?;
             if members.is_empty() {
                 return Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1117,7 +1119,7 @@ pub async fn unify(
                 }
             }
             Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "cannot unify {} with {}",
                     crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1131,14 +1133,14 @@ pub async fn unify(
         (Some(TV_UNION), _) => {
             let members = extract_union_members(&a).ok_or_else(|| {
                 Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "TypeValue.Union payload is unsettled or malformed",
                     span.clone(),
                 )
             })?;
             if members.is_empty() {
                 return Err(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "cannot unify {} with {}",
                         crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1177,7 +1179,7 @@ pub async fn unify(
                 }
             }
             Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "cannot unify {} with {}",
                     crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1193,7 +1195,7 @@ pub async fn unify(
         (Some(TV_INTER), _) => {
             let members = extract_intersection_members(&a).ok_or_else(|| {
                 Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "TypeValue.Intersect payload is unsettled or malformed",
                     span.clone(),
                 )
@@ -1233,7 +1235,7 @@ pub async fn unify(
                 }
             }
             Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "cannot unify {} with {}",
                     crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1245,7 +1247,7 @@ pub async fn unify(
 
         // Cross-ctor mismatch: type error.
         (Some(ca), Some(cb)) if ca != cb => Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!(
                 "cannot unify {} with {}",
                 crate::eval::format_type_with_names(&a, &ctx.type_display_names),
@@ -1404,7 +1406,7 @@ pub(crate) async fn unify_rowtails(
                 Some(name) => {
                     if rowvar_occurs_in_tail(&name, &b) {
                         return Err(Diagnostic::error(
-                            "type-error",
+                            KIND,
                             format!(
                                 "infinite row type: row variable '{}' occurs in its own binding",
                                 name
@@ -1424,7 +1426,7 @@ pub(crate) async fn unify_rowtails(
                 Some(name) => {
                     if rowvar_occurs_in_tail(&name, &a) {
                         return Err(Diagnostic::error(
-                            "type-error",
+                            KIND,
                             format!(
                                 "infinite row type: row variable '{}' occurs in its own binding",
                                 name
@@ -1443,7 +1445,7 @@ pub(crate) async fn unify_rowtails(
         // Closed ~ Uniform: fail (incompatible tails).
         (Some(RT_CLOSED), Some(RT_UNIFORM)) | (Some(RT_UNIFORM), Some(RT_CLOSED)) => {
             Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 "cannot unify closed record with open uniform record",
                 span,
             ))
@@ -1451,7 +1453,7 @@ pub(crate) async fn unify_rowtails(
 
         // Empty dict ~ Uniform: fail (closed ≠ open).
         (None, Some(RT_UNIFORM)) | (Some(RT_UNIFORM), None) => Err(Diagnostic::error(
-            "type-error",
+            KIND,
             "cannot unify closed record (empty tail) with open uniform record",
             span,
         )),
@@ -1569,7 +1571,7 @@ pub async fn constrain(
     if matches!(tv_ctor(&sup), Some(TV_UNION)) {
         let members = extract_union_members(&sup).ok_or_else(|| {
             Diagnostic::error(
-                "type-error",
+                KIND,
                 "TypeValue.Union payload is unsettled or malformed",
                 span.clone(),
             )
@@ -1651,7 +1653,7 @@ pub async fn constrain(
                 // Verify lb <: sup holds.
                 if !crate::bas::is_subtype_bas(lb, &sup, ctx) {
                     return Err(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "accumulated lower bound is not a subtype of upper bound (incompatible constraints on type variable)"
                         ),
@@ -1677,7 +1679,7 @@ pub async fn constrain(
     // constrain(Top, concrete) is rejected here — Top is not a subtype of any concrete type.
     if is_top(&sub) {
         return Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!("Top (⊤) is not a subtype of a specific type"),
             span.clone(),
         ));
@@ -1688,7 +1690,7 @@ pub async fn constrain(
     // constrain(concrete, Never) is rejected here — no specific type is a subtype of Never.
     if is_never(&sup) {
         return Err(Diagnostic::error(
-            "type-error",
+            KIND,
             format!("a specific type is not a subtype of Never (⊥)"),
             span.clone(),
         ));
@@ -1710,10 +1712,10 @@ async fn constrain_fn(
     span: Span,
 ) -> Result<(), Diagnostic> {
     let (params_sub, ret_sub) = extract_fn_parts(sub).ok_or_else(|| {
-        Diagnostic::error("type-error", "malformed TypeValue.Fn (sub)", span.clone())
+        Diagnostic::error(KIND, "malformed TypeValue.Fn (sub)", span.clone())
     })?;
     let (params_sup, ret_sup) = extract_fn_parts(sup).ok_or_else(|| {
-        Diagnostic::error("type-error", "malformed TypeValue.Fn (sup)", span.clone())
+        Diagnostic::error(KIND, "malformed TypeValue.Fn (sup)", span.clone())
     })?;
 
     let sub_variadic = is_fn_variadic(sub);
@@ -1771,7 +1773,7 @@ async fn constrain_record(
             Box::pin(constrain(sub_ty, sup_ty, ctx, constraints, span.clone())).await?;
         } else {
             return Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!("missing field '{}': record subtype constraint", k),
                 span,
             )
@@ -2526,7 +2528,7 @@ pub async fn process_deferred_equalities(
         .and_then(|()| {
             // First pair became satisfiable, but others remain — report generic error.
             Err(Diagnostic::error(
-                "type-error",
+                KIND,
                 "deferred type constraints could not be fully resolved",
                 span,
             ))

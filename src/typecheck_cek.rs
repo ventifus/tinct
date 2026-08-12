@@ -44,6 +44,9 @@ use crate::types::{generalize_tv, instantiate_scheme_tv};
 
 use super::{typecheck_annot, typecheck_call, typecheck_narrow, TypeMap};
 
+const KIND: &str = "type-check";
+const KIND_TRACE: &str = "trace";
+
 // ===== Action enum =====
 
 /// Action returned by `infer_step` and `apply_cont`.
@@ -558,7 +561,7 @@ async fn infer_step(
                     // means the program is malformed (e.g. a corpus test with a syntax error).
                     // Emit a recoverable error so init programs (test-loader) can capture it.
                     errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "expected record type: sequential intermediate body must be a dict expression",
                         intermediate.span.clone(),
                     ));
@@ -634,12 +637,7 @@ async fn infer_step(
         SurfaceExpression::Dict { entries, ref scope } => {
             let record_type =
                 Box::pin(enter_dict_scope(entries, scope, state, type_map, errors)).await;
-            // Pop the scope that enter_dict_scope pushed.
-            if let Some(ref mut chain) = state.current_scope {
-                if !chain.is_empty() {
-                    chain.remove(0);
-                }
-            }
+            state.current_scope.pop();
             TypeCheckAction::Done(record_type)
         }
 
@@ -721,7 +719,7 @@ async fn infer_step(
                     r
                 }
                 other => Err(vec![Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!("declaration node in expression position: {other}"),
                     node.span.clone(),
                 )]),
@@ -774,7 +772,7 @@ async fn infer_step(
                 crate::surface_fields::surface_expr_tag(&node.expr)
             );
             errors.push(Diagnostic::error(
-                "type-error",
+                KIND,
                 msg.clone(),
                 node.span.clone(),
             ));
@@ -900,7 +898,7 @@ async fn apply_cont(
                     // Emit diagnostic for explicit @Unknown return annotation.
                     if typevalue_ctor_index(&declared_ret) == Some(TV_UNKNOWN) {
                         state.diagnostics.push(Diagnostic::info(
-                            "explicit-unknown",
+                            KIND,
                             "explicit @Unknown return annotation — type is not statically known",
                             node_span.clone(),
                         ));
@@ -930,7 +928,7 @@ async fn apply_cont(
                             if is_sub && !is_super {
                                 state.diagnostics.push(
                                     Diagnostic::info(
-                                        "overbroad-annotation",
+                                        KIND,
                                         "return annotation is broader than the inferred body type",
                                         node_span.clone(),
                                     )
@@ -989,7 +987,7 @@ async fn apply_cont(
                     .collect::<Vec<_>>()
                     .join(", ");
                 state.diagnostics.push(Diagnostic::info(
-                    "trace-fn-type",
+                    KIND_TRACE,
                     format!("[{}] → {}", params_str, ret_str),
                     node_span.clone(),
                 ));
@@ -1012,7 +1010,7 @@ async fn apply_cont(
                 );
                 let covered_display =
                     crate::eval::format_type_with_names(&covered, &state.ctx.type_display_names);
-                errors.push(Diagnostic::error("type-error",
+                errors.push(Diagnostic::error(KIND,
                     format!(
                         "non-exhaustive variadic type dispatch: typed buckets cover {} but no fallback (...rest) handles other types — add ...rest for a wildcard bucket",
                         covered_display
@@ -1318,7 +1316,7 @@ async fn apply_cont(
             // Emit diagnostic for explicit @Unknown annotation
             if typevalue_ctor_index(&expected_resolved) == Some(TV_UNKNOWN) {
                 state.diagnostics.push(Diagnostic::info(
-                    "explicit-unknown",
+                    KIND,
                     "explicit @Unknown annotation — type is not statically known",
                     span.clone(),
                 ));
@@ -1379,7 +1377,7 @@ async fn apply_cont(
                 );
                 if !passes {
                     let e = Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "default value type does not match the assertion's expected type",
                         default_n.span.clone(),
                     )
@@ -1505,35 +1503,28 @@ async fn apply_cont(
             saved_current_binding,
             saved_narrowing_map,
         } => {
-            // Pop current_scope (restore to parent) and check for lost bindings.
-            if let Some(ref chain) = state.current_scope {
-                if let Some(popped_scope) = chain.first() {
-                    for slot_idx in 0..popped_scope.len() {
-                        let slot = slot_idx as u32;
-                        if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
-                            if entry.1.type_scheme.get().is_some()
-                                && !entry
-                                    .1
-                                    .referenced
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                if let Some(def_span) = &entry.1.definition_span {
-                                    errors.push(Diagnostic::warn(
-                                        "lost-binding",
-                                        "binding is never used",
-                                        def_span.clone(),
-                                    ));
-                                }
+            if let Some(popped_scope) = state.current_scope.last() {
+                for slot_idx in 0..popped_scope.len() {
+                    let slot = slot_idx as u32;
+                    if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
+                        if entry.1.type_scheme.get().is_some()
+                            && !entry
+                                .1
+                                .referenced
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            if let Some(def_span) = &entry.1.definition_span {
+                                errors.push(Diagnostic::warn(
+                                    KIND,
+                                    "binding is never used",
+                                    def_span.clone(),
+                                ));
                             }
                         }
                     }
                 }
             }
-            if let Some(ref mut chain) = state.current_scope {
-                if !chain.is_empty() {
-                    chain.remove(0);
-                }
-            }
+            state.current_scope.pop();
             // Restore enclosing block's state fields.
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
@@ -1677,7 +1668,7 @@ async fn infer_var_ref(
                     };
                     let (resolver_level, slot) = (*resolver_level, *slot);
                     // Slot lookup via current_scope chain.
-                    let chain_slice = state.current_scope.as_deref().unwrap_or(&[]);
+                    let chain_slice = &state.current_scope;
                     let entry_exists =
                         SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot).is_some();
                     let slot_scheme =
@@ -1687,14 +1678,12 @@ async fn infer_var_ref(
                         let dep_def_span =
                             SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
                                 .and_then(|e| e.definition_span.clone());
-                        if let Some(ref chain) = state.current_scope {
-                            if let Some(entry) =
-                                SymbolTable::lookup_in_chain(chain, resolver_level, slot)
-                            {
-                                entry
-                                    .referenced
-                                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
+                        if let Some(entry) =
+                            SymbolTable::lookup_in_chain(&state.current_scope, resolver_level, slot)
+                        {
+                            entry
+                                .referenced
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         // Check narrowing_map using VarAddr as key.
                         if let Some(narrowed) = state.narrowing_map.get(addr) {
@@ -1718,20 +1707,18 @@ async fn infer_var_ref(
                         slot_scheme
                     } else {
                         let mut diag = Diagnostic::error(
-                        "resolver-slot-miss",
-                        format!(
-                            "resolver assigned slot ({}, {}) for '{}' but scope has no entry at that address",
-                            resolver_level, slot, name
-                        ),
-                        node.span.clone(),
-                    );
-                        // Walk the scope chain for diagnostics.
-                        if let Some(ref chain) = state.current_scope {
-                            for (d, frame) in chain.iter().enumerate() {
-                                let slot_count = frame.len();
-                                diag = diag
-                                    .with_note(format!("scope depth {}: {} slots", d, slot_count));
-                            }
+                            KIND,
+                            format!(
+                                "type checker cannot find '{}' at Dispatch({}, {}) in its scope chain",
+                                name, resolver_level, slot
+                            ),
+                            node.span.clone(),
+                        );
+                        for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                            &state.current_scope,
+                            Some(resolver_level),
+                        ) {
+                            diag = diag.with_note(note);
                         }
                         errors.push(diag);
                         None
@@ -1740,7 +1727,7 @@ async fn infer_var_ref(
             } // close match addr
         } else {
             errors.push(Diagnostic::error(
-                "unresolved-variable",
+                KIND,
                 format!("unresolved variable: '{}'", name),
                 node.span.clone(),
             ));
@@ -1789,7 +1776,7 @@ async fn infer_var_ref(
                     // instantiate_scheme_tv returning None on a TypeValue.Scheme-tagged value
                     // is an invariant violation: the scheme payload is malformed.
                     errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "malformed TypeValue.Scheme: instantiation failed (payload corrupt)",
                         node.span.clone(),
                     ));
@@ -1810,7 +1797,7 @@ async fn infer_var_ref(
         if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
             if let Some(Some(_)) = resolution.get() {
                 errors.push(Diagnostic::warn(
-                    "untyped-binding",
+                    KIND,
                     format!("no type declaration for '{}'", name),
                     node.span.clone(),
                 ));
@@ -1819,7 +1806,7 @@ async fn infer_var_ref(
         }
 
         let mut err = Diagnostic::error(
-            "type-error",
+            KIND,
             format!("undefined variable: {}", name),
             node.span.clone(),
         );
@@ -1937,7 +1924,7 @@ async fn apply_cont_call_func(
                         // typevalue_fn_params_and_ret returning None on a TypeValue.Fn-tagged
                         // value is an invariant violation: the Fn payload is malformed.
                         ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "malformed TypeValue.Fn: params/return extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
@@ -2049,7 +2036,7 @@ async fn apply_cont_call_func(
                         .await;
                     }
                     let mut err = Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "arity mismatch: expected {} argument(s), got {}",
                             min_req, n_total
@@ -2143,7 +2130,7 @@ async fn apply_cont_call_func(
                 .await;
             }
             ctx.state.diagnostics.push(crate::error::Diagnostic::warn(
-                "unknown-call",
+                KIND,
                 "calling expression of Unknown type — may not be a function",
                 call_node.span.clone(),
             ));
@@ -2179,7 +2166,7 @@ async fn apply_cont_call_func(
                     .await;
                 }
                 ctx.errors.push(Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "variant constructor takes at most 1 positional argument, got {}",
                         args.len()
@@ -2268,7 +2255,7 @@ async fn apply_cont_call_func(
                     // typevalue_extract_members_pub returning None on a TypeValue.Inter-tagged
                     // value means the members payload is malformed (corrupt TypeValue structure).
                     ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "malformed TypeValue.Inter: members extraction failed (payload corrupt)",
                         call_node.span.clone(),
                     ));
@@ -2283,7 +2270,7 @@ async fn apply_cont_call_func(
 
             if fn_members.is_empty() {
                 let err = Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "expected function type, got intersection of non-function types",
                     call_node.span.clone(),
                 );
@@ -2308,7 +2295,7 @@ async fn apply_cont_call_func(
 
             if matching.is_empty() {
                 let err = Diagnostic::error(
-                    "type-error",
+                    KIND,
                     format!(
                         "no overload of intersection type accepts {} argument(s)",
                         n_total
@@ -2348,7 +2335,7 @@ async fn apply_cont_call_func(
 
             if fn_members.is_empty() {
                 let err = Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "expected function type, got union of non-function types",
                     call_node.span.clone(),
                 );
@@ -2417,7 +2404,7 @@ async fn apply_cont_call_func(
                 .await;
             }
             let err = Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "expected function type, got {}",
                     crate::eval::format_type_with_names(
@@ -2455,7 +2442,7 @@ async fn finalize_call_no_positional_args(
 
     if named_args.is_empty() && min_required > 0 {
         let err = Diagnostic::error(
-            "type-error",
+            KIND,
             format!("arity mismatch: expected {} arguments, got 0", min_required),
             span.clone(),
         );
@@ -2469,7 +2456,7 @@ async fn finalize_call_no_positional_args(
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
             ctx.errors.push(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
             ));
@@ -2529,7 +2516,7 @@ async fn finalize_call_no_positional_args(
             None => {
                 if !variadic {
                     ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
                             na.node.name
@@ -2628,7 +2615,7 @@ async fn apply_call_args_poly(
                         );
                         if let Some(arg_node) = arg_nodes.first() {
                             ctx.state.diagnostics.push(Diagnostic::info(
-                                "missing-instance",
+                                KIND,
                                 format!(
                                     "no instance of class '{}' found for type {} (method '{}' call may fail at runtime)",
                                     class_decl.name,
@@ -2649,7 +2636,7 @@ async fn apply_call_args_poly(
     // do not flow silently through downstream consistency checks.
     if total_supplied < min_required || (!fn_variadic && arg_types.len() > param_types.len()) {
         let err = Diagnostic::error(
-            "type-error",
+            KIND,
             format!(
                 "arity mismatch: expected {} arguments, got {}",
                 min_required, total_supplied
@@ -2775,7 +2762,7 @@ async fn apply_call_args_poly(
                 } else {
                     // No rest bucket and no matching typed bucket: exhaustiveness error.
                     let err = Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "argument type does not match any variadic bucket, got {}",
                             crate::eval::format_type_with_names(
@@ -2849,7 +2836,7 @@ async fn apply_call_args_poly(
     for na in &named_args {
         if !seen_named_arg_names.insert(na.node.name.clone()) {
             ctx.errors.push(Diagnostic::error(
-                "type-error",
+                KIND,
                 format!("duplicate named argument: '{}'", na.node.name),
                 na.span.clone(),
             ));
@@ -2869,7 +2856,7 @@ async fn apply_call_args_poly(
             Some((param_idx, param_ty)) => {
                 if consumed_params.contains(&param_idx) {
                     ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "named argument '{}' conflicts with positional argument at position {}",
                             na.node.name, param_idx
@@ -2901,7 +2888,7 @@ async fn apply_call_args_poly(
                 .await
                 {
                     ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "named argument '{}' type mismatch: {}",
                             na.node.name, e.message
@@ -2929,7 +2916,7 @@ async fn apply_call_args_poly(
                     unmatched_named_arg_types.push((na.node.name.clone(), arg_ty));
                 } else {
                     ctx.errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         format!(
                             "unknown named argument: function has no parameter named '{}'",
                             na.node.name
@@ -2972,7 +2959,7 @@ async fn apply_call_args_poly(
         // no bucket to go into. Emit an error for each unmatched named arg.
         if rest.is_none() {
             for (name, _) in &unmatched_named_arg_types {
-                ctx.errors.push(Diagnostic::error("type-error",
+                ctx.errors.push(Diagnostic::error(KIND,
                     format!(
                         "named argument '{}' cannot be routed: function has no untyped rest parameter (...rest) to accept unmatched named args",
                         name
@@ -3034,11 +3021,7 @@ async fn infer_fn_push_cont(
             ..
         } => {
             if let Some(sf) = scope.get() {
-                if let Some(ref mut chain) = state.current_scope {
-                    chain.insert(0, Arc::clone(sf));
-                } else {
-                    state.current_scope = Some(vec![Arc::clone(sf)]);
-                }
+                state.current_scope.push(Arc::clone(sf));
             }
             (return_ann, params.as_slice(), body)
         }
@@ -3277,10 +3260,8 @@ async fn infer_fn_push_cont(
             .map(|s| s as usize)
             .unwrap_or(param_slot_idx);
         // Write param type scheme into the Fn's SymbolTable at the resolver-assigned slot.
-        if let Some(ref chain) = state.current_scope {
-            if let Some(frame) = chain.first() {
-                frame.set_type_scheme(slot as u32, Arc::clone(&param_ty));
-            }
+        if let Some(frame) = state.current_scope.last() {
+            frame.set_type_scheme(slot as u32, Arc::clone(&param_ty));
         }
         param_slot_idx += 1;
         if p.node.variadic {
@@ -3291,7 +3272,7 @@ async fn infer_fn_push_cont(
                 // assigns typed buckets before rest. Declaring them in the wrong order
                 // causes silent slot inversion (data corruption at runtime).
                 if rest.is_some() {
-                    let err = Diagnostic::error("type-error",
+                    let err = Diagnostic::error(KIND,
                         format!(
                             "typed variadic `...{}` declared after untyped rest parameter — typed variadics must precede the untyped fallback `...rest`",
                             p.node.name
@@ -3308,7 +3289,7 @@ async fn infer_fn_push_cont(
             // Fixed param: check it was not declared after a variadic (would invert slots).
             let seen_any_variadic = !typed_variadics.is_empty() || rest.is_some();
             if seen_any_variadic {
-                let err = Diagnostic::error("type-error",
+                let err = Diagnostic::error(KIND,
                     format!(
                         "fixed parameter `{}` declared after variadic parameter — fixed params must precede all variadic params",
                         p.node.name
@@ -3511,11 +3492,7 @@ async fn setup_match_arm_env(
 ) -> Option<(TypeValue, Vec<typecheck_narrow::Narrowing>)> {
     // Push match arm SymbolTable if present (case arms with bindings).
     if let Some(sf) = arm.scope.get() {
-        if let Some(ref mut chain) = state.current_scope {
-            chain.insert(0, Arc::clone(sf));
-        } else {
-            state.current_scope = Some(vec![Arc::clone(sf)]);
-        }
+        state.current_scope.push(Arc::clone(sf));
     }
     // Guard inference — run for type-map side effects. Extract narrowings WITHOUT applying.
     // The caller saves the outer narrowing_map (take), then applies these narrowings so the
@@ -3533,7 +3510,7 @@ async fn setup_match_arm_env(
         typecheck_narrow::extract_narrowings(
             guard,
             &state.type_name_to_id,
-            state.current_scope.as_deref().unwrap_or(&[]),
+            &state.current_scope,
         )
     } else {
         Vec::new()
@@ -3559,7 +3536,7 @@ async fn setup_match_arm_env(
                     typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
                 } else {
                     errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "pattern constructor identity not resolved",
                         arm.pattern.span.clone(),
                     ));
@@ -3588,7 +3565,7 @@ async fn setup_match_arm_env(
                     typevalue_normalize_intersection(vec![Arc::clone(remaining_scrutinee), neg_tag])
                 } else {
                     errors.push(Diagnostic::error(
-                        "type-error",
+                        KIND,
                         "pattern constructor identity not resolved",
                         arm.pattern.span.clone(),
                     ));
@@ -3850,7 +3827,7 @@ async fn run_match_exhaustiveness_check(
                 .map(|w| w.render(tycon_env_ref))
                 .collect();
             let mut diag = Diagnostic::error(
-                "type-error",
+                KIND,
                 format!(
                     "non-exhaustive match: missing coverage for {}",
                     witnesses.join(", ")
@@ -3872,7 +3849,7 @@ async fn run_match_exhaustiveness_check(
         for (idx, covering) in &result.redundant {
             let mut diag = Diagnostic::with_spans(
                 crate::error::DiagnosticLevel::Err,
-                "type-error",
+                KIND,
                 "unreachable match arm: this pattern is already covered by prior arms",
                 vec![crate::error::SpanLabel {
                     span: arms[*idx].pattern.span.clone(),
@@ -3896,7 +3873,7 @@ async fn run_match_exhaustiveness_check(
         for &idx in &result.inaccessible {
             errors.push(
                 Diagnostic::error(
-                    "type-error",
+                    KIND,
                     "inaccessible match arm: reachable only via diverging (bottom) values",
                     arms[idx].pattern.span.clone(),
                 )
@@ -4841,11 +4818,7 @@ async fn enter_dict_scope(
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
     if let Some(sf) = scope.get() {
-        if let Some(ref mut chain) = state.current_scope {
-            chain.insert(0, Arc::clone(sf));
-        } else {
-            state.current_scope = Some(vec![Arc::clone(sf)]);
-        }
+        state.current_scope.push(Arc::clone(sf));
     }
     let body_slot_base_pre: Option<u32> = entries
         .first()
@@ -5581,10 +5554,8 @@ pub(crate) async fn typecheck_letrec_group(
                 if let Some(ty) = field_types.get(name) {
                     schemes.insert(name.clone(), Arc::clone(ty));
                     // Write type scheme into the current SymbolTable at the resolver-assigned slot.
-                    if let Some(ref chain) = state.current_scope {
-                        if let Some(frame) = chain.first() {
-                            frame.set_type_scheme(slot, Arc::clone(ty));
-                        }
+                    if let Some(frame) = state.current_scope.last() {
+                        frame.set_type_scheme(slot, Arc::clone(ty));
                     }
                 }
             }
@@ -5790,7 +5761,7 @@ mod tests {
     /// 1. A class declaration with at least one method
     /// 2. An instance for one type (e.g., Int)
     /// 3. A call to the method with a different concrete type (e.g., String) with no instance
-    /// 4. Verification that Diagnostic::info("missing-instance", ...) is emitted
+    /// 4. Verification that Diagnostic::info(KIND, ...) is emitted
     ///
     /// The corpus test in tests/corpus/typecheck/T-2149-missing-instance-diagnostic.llt
     /// provides end-to-end validation. This unit test documents the expected behavior.

@@ -30,6 +30,9 @@ use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::Diagnostic;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
+const KIND: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+
 /// Maximum safe integer for Int→Float promotion (2^53).
 /// Integers with |n| > MAX_SAFE_INT lose precision when cast to f64.
 const MAX_SAFE_INT: i64 = 9007199254740992;
@@ -42,7 +45,7 @@ fn check_int_to_float_precision(
     span: crate::ast::Span,
 ) -> Result<(), Box<crate::error::Diagnostic>> {
     if n.abs() > MAX_SAFE_INT {
-        return Err(Diagnostic::user_error(
+        return Err(Diagnostic::error(KIND, 
             format!(
                 "implicit Int→Float promotion loses precision for {}; use [float {}] for intentional cast",
                 n, n
@@ -69,7 +72,16 @@ pub(crate) fn builtin_div_float(
     Box::pin(async move {
         reject_named("/", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let thunk0 = args[0].clone();
@@ -80,9 +92,12 @@ pub(crate) fn builtin_div_float(
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => {
                 if *b == 0 {
-                    return Err(
-                        Diagnostic::division_by_zero("/".to_string(), call_span.clone()).into(),
-                    );
+                    return Err(Diagnostic::error(
+                        KIND,
+                        format!("{}: division by zero", "/"),
+                        call_span.clone(),
+                    )
+                    .into());
                 }
                 check_float_result(*a as f64 / *b as f64, "/", call_span)
             }
@@ -97,10 +112,10 @@ pub(crate) fn builtin_div_float(
                 check_int_to_float_precision(*b, thunk1.span.clone())?;
                 check_float_result(a / (*b as f64), "/", call_span)
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Int or Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Int or Float, got {} and {}",
                     ctx.type_display_name(left.type_decl_id_of()),
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
@@ -128,7 +143,16 @@ pub(crate) fn builtin_eq_int(
     Box::pin(async move {
         reject_named("builtin-eq-int", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -142,10 +166,10 @@ pub(crate) fn builtin_eq_int(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Int",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Int, got {} and {}",
                     ctx.type_display_name(left.type_decl_id_of()),
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
@@ -173,7 +197,16 @@ pub(crate) fn builtin_eq_float(
     Box::pin(async move {
         reject_named("builtin-eq-float", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -187,10 +220,10 @@ pub(crate) fn builtin_eq_float(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(left.type_decl_id_of()),
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
@@ -218,7 +251,16 @@ pub(crate) fn builtin_eq_string(
     Box::pin(async move {
         reject_named("builtin-eq-string", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let left = args[0].require_value()?.clone();
         let right = args[1].require_value()?.clone();
@@ -248,10 +290,10 @@ pub(crate) fn builtin_eq_string(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "String",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected String, got {} and {}",
                     ctx.type_display_name(left.type_decl_id_of()),
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
@@ -283,7 +325,16 @@ pub(crate) fn builtin_lt(
     Box::pin(async move {
         reject_named("builtin-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         let left = args[0].require_value()?.clone();
@@ -299,10 +350,10 @@ pub(crate) fn builtin_lt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(left.type_decl_id_of()),
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
@@ -327,7 +378,16 @@ pub(crate) fn builtin_float_lt(
     Box::pin(async move {
         reject_named("builtin-float-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -341,10 +401,10 @@ pub(crate) fn builtin_float_lt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -369,7 +429,16 @@ pub(crate) fn builtin_str_lt(
     Box::pin(async move {
         reject_named("builtin-str-lt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -396,10 +465,10 @@ pub(crate) fn builtin_str_lt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "String",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected String, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -427,7 +496,16 @@ pub(crate) fn builtin_lte(
     Box::pin(async move {
         reject_named("<=", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
 
         // a <= b ≡ !(b < a)
@@ -468,7 +546,16 @@ fn extract_single_float(
     call_span: crate::ast::Span,
 ) -> Result<f64, Box<crate::error::Diagnostic>> {
     if args.len() != 1 {
-        return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!(
+                "arity mismatch: expected {}, got {}",
+                crate::error::ArityBound::Exact(1),
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -476,10 +563,13 @@ fn extract_single_float(
     match val {
         Value::Int { n, .. } => Ok(n as f64),
         Value::Float { n: f, .. } => Ok(f),
-        _ => Err(Diagnostic::type_mismatch_ctx(
-            name.to_string(),
-            "Int or Float",
-            ctx.type_display_name(val.type_decl_id_of()),
+        _ => Err(Diagnostic::error(
+            KIND,
+            format!(
+                "{}: expected Int or Float, got {}",
+                name,
+                ctx.type_display_name(val.type_decl_id_of())
+            ),
             thunk0.span.clone(),
         )
         .into()),
@@ -495,7 +585,16 @@ fn extract_two_floats(
     call_span: crate::ast::Span,
 ) -> Result<(f64, f64), Box<crate::error::Diagnostic>> {
     if args.len() != 2 {
-        return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!(
+                "arity mismatch: expected {}, got {}",
+                crate::error::ArityBound::Exact(2),
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -507,10 +606,13 @@ fn extract_two_floats(
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "Int or Float",
-                ctx.type_display_name(left.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected Int or Float, got {}",
+                    name,
+                    ctx.type_display_name(left.type_decl_id_of())
+                ),
                 thunk0.span.clone(),
             )
             .into())
@@ -521,10 +623,13 @@ fn extract_two_floats(
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "Int or Float",
-                ctx.type_display_name(right.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected Int or Float, got {}",
+                    name,
+                    ctx.type_display_name(right.type_decl_id_of())
+                ),
                 thunk1.span.clone(),
             )
             .into())
@@ -874,7 +979,16 @@ fn extract_int_pair(
     call_span: crate::ast::Span,
 ) -> Result<(i64, i64), Box<crate::error::Diagnostic>> {
     if args.len() != 2 {
-        return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+        return Err(Diagnostic::error(
+            KIND,
+            format!(
+                "arity mismatch: expected {}, got {}",
+                crate::error::ArityBound::Exact(2),
+                args.len()
+            ),
+            call_span,
+        )
+        .into());
     }
     reject_named(name, named, call_span)?;
     let thunk0 = &args[0];
@@ -885,10 +999,13 @@ fn extract_int_pair(
     let a = match left {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "Int",
-                ctx.type_display_name(left.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected Int, got {}",
+                    name,
+                    ctx.type_display_name(left.type_decl_id_of())
+                ),
                 thunk0.span.clone(),
             )
             .into())
@@ -898,10 +1015,13 @@ fn extract_int_pair(
     let b = match right {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(Diagnostic::type_mismatch_ctx(
-                name.to_string(),
-                "Int",
-                ctx.type_display_name(right.type_decl_id_of()),
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected Int, got {}",
+                    name,
+                    ctx.type_display_name(right.type_decl_id_of())
+                ),
                 thunk1.span.clone(),
             )
             .into())
@@ -1007,7 +1127,8 @@ pub(crate) fn builtin_shl(
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(Diagnostic::internal(
+            return Err(Diagnostic::error(
+                KIND_INTERNAL,
                 format!("shl: negative shift count {}", bits),
                 call_span,
             )
@@ -1056,7 +1177,8 @@ pub(crate) fn builtin_shr(
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(Diagnostic::internal(
+            return Err(Diagnostic::error(
+                KIND_INTERNAL,
                 format!("shr: negative shift count {}", bits),
                 call_span,
             )
@@ -1108,7 +1230,16 @@ pub(crate) fn builtin_float(
     Box::pin(async move {
         reject_named("float", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let thunk0 = args[0].clone();
         let val = thunk0.require_value()?.clone();
@@ -1131,10 +1262,13 @@ pub(crate) fn builtin_float(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch_ctx(
-                "float".to_string(),
-                "Int or Float",
-                ctx.type_display_name(val.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "{}: expected Int or Float, got {}",
+                    "float",
+                    ctx.type_display_name(val.type_decl_id_of())
+                ),
                 thunk0.span.clone(),
             )
             .into()),
@@ -1159,7 +1293,16 @@ pub(crate) fn builtin_int_add(
     Box::pin(async move {
         reject_named("builtin-int-add", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1178,12 +1321,17 @@ pub(crate) fn builtin_int_add(
                     ))
                 })
                 .ok_or_else(|| {
-                    Diagnostic::integer_overflow("builtin-int-add".to_string(), call_span).into()
+                    Diagnostic::error(
+                        KIND,
+                        format!("{}: integer overflow", "builtin-int-add"),
+                        call_span,
+                    )
+                    .into()
                 }),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1207,7 +1355,16 @@ pub(crate) fn builtin_float_add(
     Box::pin(async move {
         reject_named("builtin-float-add", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1215,10 +1372,10 @@ pub(crate) fn builtin_float_add(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x + y, "builtin-float-add", call_span)
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1242,7 +1399,16 @@ pub(crate) fn builtin_int_to_float(
     Box::pin(async move {
         reject_named("builtin-int-to-float", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let thunk0 = args[0].clone();
         let v = thunk0.require_value()?.clone();
@@ -1260,9 +1426,12 @@ pub(crate) fn builtin_int_to_float(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                ctx.type_display_name(v.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {}",
+                    ctx.type_display_name(v.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1283,28 +1452,40 @@ pub(crate) fn builtin_float_to_int(
     Box::pin(async move {
         reject_named("builtin-float-to-int", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(Diagnostic::arity_mismatch(1, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(1),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let thunk0 = args[0].clone();
         let v = thunk0.require_value()?.clone();
         match v {
             Value::Float { n, .. } => {
                 if n.is_nan() {
-                    return Err(Diagnostic::user_error(
+                    return Err(Diagnostic::error(
+                        KIND,
                         "Float→Integer cast: NaN has no integer representation".to_string(),
                         call_span,
                     )
                     .into());
                 }
                 if n.is_infinite() {
-                    return Err(Diagnostic::user_error(
+                    return Err(Diagnostic::error(
+                        KIND,
                         "Float→Integer cast: infinity has no integer representation".to_string(),
                         call_span,
                     )
                     .into());
                 }
                 if n > i64::MAX as f64 || n < i64::MIN as f64 {
-                    return Err(Diagnostic::user_error(
+                    return Err(Diagnostic::error(
+                        KIND,
                         format!("Float→Integer cast: {} is out of Integer range", n),
                         call_span,
                     )
@@ -1320,9 +1501,12 @@ pub(crate) fn builtin_float_to_int(
                     call_span,
                 )
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                ctx.type_display_name(v.type_decl_id_of()),
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {}",
+                    ctx.type_display_name(v.type_decl_id_of())
+                ),
                 call_span,
             )
             .into()),
@@ -1343,7 +1527,16 @@ pub(crate) fn builtin_int_sub(
     Box::pin(async move {
         reject_named("builtin-int-sub", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1362,12 +1555,17 @@ pub(crate) fn builtin_int_sub(
                     ))
                 })
                 .ok_or_else(|| {
-                    Diagnostic::integer_overflow("builtin-int-sub".to_string(), call_span).into()
+                    Diagnostic::error(
+                        KIND,
+                        format!("{}: integer overflow", "builtin-int-sub"),
+                        call_span,
+                    )
+                    .into()
                 }),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1391,7 +1589,16 @@ pub(crate) fn builtin_float_sub(
     Box::pin(async move {
         reject_named("builtin-float-sub", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1399,10 +1606,10 @@ pub(crate) fn builtin_float_sub(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x - y, "builtin-float-sub", call_span)
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1426,7 +1633,16 @@ pub(crate) fn builtin_int_mul(
     Box::pin(async move {
         reject_named("builtin-int-mul", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1445,12 +1661,17 @@ pub(crate) fn builtin_int_mul(
                     ))
                 })
                 .ok_or_else(|| {
-                    Diagnostic::integer_overflow("builtin-int-mul".to_string(), call_span).into()
+                    Diagnostic::error(
+                        KIND,
+                        format!("{}: integer overflow", "builtin-int-mul"),
+                        call_span,
+                    )
+                    .into()
                 }),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1474,7 +1695,16 @@ pub(crate) fn builtin_float_mul(
     Box::pin(async move {
         reject_named("builtin-float-mul", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1482,10 +1712,10 @@ pub(crate) fn builtin_float_mul(
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
                 check_float_result(x * y, "builtin-float-mul", call_span)
             }
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1512,7 +1742,16 @@ pub(crate) fn builtin_int_gt(
     Box::pin(async move {
         reject_named("builtin-int-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1526,10 +1765,10 @@ pub(crate) fn builtin_int_gt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1553,7 +1792,16 @@ pub(crate) fn builtin_float_gt(
     Box::pin(async move {
         reject_named("builtin-float-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1567,10 +1815,10 @@ pub(crate) fn builtin_float_gt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1594,7 +1842,16 @@ pub(crate) fn builtin_str_gt(
     Box::pin(async move {
         reject_named("builtin-str-gt", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1621,10 +1878,10 @@ pub(crate) fn builtin_str_gt(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "String",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected String, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1648,7 +1905,16 @@ pub(crate) fn builtin_int_gte(
     Box::pin(async move {
         reject_named("builtin-int-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1662,10 +1928,10 @@ pub(crate) fn builtin_int_gte(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Integer",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Integer, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1689,7 +1955,16 @@ pub(crate) fn builtin_float_gte(
     Box::pin(async move {
         reject_named("builtin-float-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1703,10 +1978,10 @@ pub(crate) fn builtin_float_gte(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "Float",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected Float, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -1730,7 +2005,16 @@ pub(crate) fn builtin_str_gte(
     Box::pin(async move {
         reject_named("builtin-str-gte", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
-            return Err(Diagnostic::arity_mismatch(2, args.len(), call_span).into());
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "arity mismatch: expected {}, got {}",
+                    crate::error::ArityBound::Exact(2),
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
         }
         let a = args[0].require_value()?.clone();
         let b = args[1].require_value()?.clone();
@@ -1757,10 +2041,10 @@ pub(crate) fn builtin_str_gte(
                 },
                 call_span,
             ),
-            _ => Err(Diagnostic::type_mismatch(
-                "String",
-                &format!(
-                    "{} and {}",
+            _ => Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type mismatch: expected String, got {} and {}",
                     ctx.type_display_name(a.type_decl_id_of()),
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
@@ -2134,8 +2418,8 @@ mod tests {
         );
         let err = result.unwrap_err();
         assert!(
-            err.kind == "type-mismatch",
-            "expected TypeMismatch, got: {:?}",
+            err.kind == "eval",
+            "expected eval error kind, got: {:?}",
             err.kind
         );
     }

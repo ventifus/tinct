@@ -19,6 +19,8 @@ use indexmap::IndexMap;
 use crate::eval::{call_to_match, materialize, value_matches_type, EvalContext};
 use crate::eval_core::eval_core_expr;
 
+const KIND: &str = "eval";
+
 /// Return `true` if `tv` is a TypeValue.Unknown — either the bootstrap sentinel (empty dict)
 /// or a proper `Value::Variant { ctor_index: TV_UNKNOWN }` after the repr protocol runs.
 pub(crate) fn is_typevalue_unknown(tv: &Arc<Value>) -> bool {
@@ -279,7 +281,7 @@ pub(crate) async fn try_clause(
         // Build a pre-arm scope prepended to the definition chain so pin addresses resolve.
         let pre_frame = Arc::new(SymbolTable::new());
         let mut pre_chain = definition_scope.clone();
-        pre_chain.insert(0, Arc::clone(&pre_frame));
+        pre_chain.push(Arc::clone(&pre_frame));
         // Build the binding_map from clause.params (name → slot).
         let binding_map: IndexMap<String, u32> = clause
             .params
@@ -355,7 +357,7 @@ pub(crate) async fn try_clause(
                 bound_frame.set_value(i as u32, Arc::clone(thunk));
             }
             let mut bound_chain = definition_scope.clone();
-            bound_chain.insert(0, Arc::clone(&bound_frame));
+            bound_chain.push(Arc::clone(&bound_frame));
 
             // Step 4 (guard) with pattern-bound frame.
             if let Some(guard_expr) = &clause.guard {
@@ -392,7 +394,9 @@ pub(crate) async fn try_clause(
         )
         .await
         .map_err(|mut e| {
-            e.set_arity_callee(call_span.name.clone());
+            if let Some(ref name) = call_span.name {
+                e.notes.push(format!("in call to '{}'", name));
+            }
             e
         })?;
         let guard_thunk = eval_core_expr(guard_expr, &bound_chain, ctx).await?;
@@ -424,7 +428,9 @@ pub(crate) async fn try_clause(
     )
     .await
     .map_err(|mut e| {
-        e.set_arity_callee(call_span.name.clone());
+        if let Some(ref name) = call_span.name {
+            e.notes.push(format!("in call to '{}'", name));
+        }
         e
     })?;
     Ok(Some(frame))
@@ -505,7 +511,9 @@ pub(crate) async fn invoke_function_tco(
         .await
         {
             Err(mut e) => {
-                e.set_arity_callee(ctx.call_span.name.clone());
+                if let Some(ref name) = ctx.call_span.name {
+                    e.notes.push(format!("in call to '{}'", name));
+                }
                 return Err(e);
             }
             Ok(_) => {
@@ -517,7 +525,7 @@ pub(crate) async fn invoke_function_tco(
         Some(name) => format!("no matching clause for the given arguments in `{name}`"),
         None => "no matching clause for the given arguments".to_string(),
     };
-    let mut err = Diagnostic::user_error(message, ctx.call_span.clone());
+    let mut err = Diagnostic::error(KIND, message, ctx.call_span.clone());
 
     // Note: actual arg types (peeked from thunk cache — free if already materialized by try_clause).
     let arg_types: Vec<String> = ctx
@@ -642,8 +650,9 @@ pub(crate) async fn bind_args_thunks(
             let covered_positionally = i < positional.len();
             let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
             if !covered_positionally && !covered_by_name {
-                return Err(Diagnostic::missing_required_param(
-                    param.name.clone(),
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!("missing required parameter: {}", param.name),
                     call_span.clone(),
                 )
                 .into());
@@ -659,11 +668,16 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        let param_names: Vec<String> = regular_params.iter().map(|p| p.name.clone()).collect();
-        let mut err =
-            Diagnostic::arity_mismatch_bound(expected, positional.len(), call_span.clone());
-        err.set_arity_params(param_names);
-        return Err(err.into());
+        return Err(Diagnostic::error(
+            "eval",
+            format!(
+                "arity mismatch: expected {}, got {}",
+                expected,
+                positional.len()
+            ),
+            call_span.clone(),
+        )
+        .into());
     }
 
     // BIND-NAMED-VALIDATE: Check named args against params before filling slots.
@@ -683,8 +697,12 @@ pub(crate) async fn bind_args_thunks(
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
                     // C-NO-OVERLAP: named arg targets a positionally-bound parameter
-                    return Err(Box::new(Diagnostic::named_arg_conflict(
-                        name.clone(),
+                    return Err(Box::new(Diagnostic::error(
+                        "eval",
+                        format!(
+                            "parameter '{}' received both positional and named argument",
+                            name
+                        ),
                         call_span.clone(),
                     )));
                 }
@@ -698,11 +716,16 @@ pub(crate) async fn bind_args_thunks(
                         // No variadic param: raise E022
                         let valid_params: Vec<String> =
                             regular_params.iter().map(|p| p.name.clone()).collect();
-                        return Err(Box::new(Diagnostic::unknown_named_arg(
-                            name.clone(),
-                            valid_params,
-                            call_span.clone(),
-                        )));
+                        let msg = if valid_params.is_empty() {
+                            format!("unknown named argument: {}", name)
+                        } else {
+                            format!(
+                                "unknown named argument: {} (valid: {})",
+                                name,
+                                valid_params.join(", ")
+                            )
+                        };
+                        return Err(Box::new(Diagnostic::error(KIND, msg, call_span.clone())));
                     }
                 }
             }
@@ -831,9 +854,13 @@ pub(crate) async fn bind_args_thunks(
                 } else {
                     // No rest bucket and no typed bucket matched: arg cannot be accepted.
                     let expected = ArityBound::Exact(max_positional);
-                    return Err(Diagnostic::arity_mismatch_bound(
-                        expected,
-                        positional.len(),
+                    return Err(Diagnostic::error(
+                        "eval",
+                        format!(
+                            "arity mismatch: expected {}, got {}",
+                            expected,
+                            positional.len()
+                        ),
                         call_span.clone(),
                     )
                     .into());
@@ -922,7 +949,7 @@ pub(crate) async fn bind_args_thunks(
         frame.set_value(i as u32, thunk);
     }
     let mut callee_chain = definition_scope;
-    callee_chain.insert(0, frame);
+    callee_chain.push(frame);
     Ok(callee_chain)
 }
 

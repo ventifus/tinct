@@ -30,6 +30,8 @@ use crate::value::{
     HashableValue, Thunk, Value, TYPE_ID_CONSTRAINT_DECL, TYPE_ID_DICT, TYPE_ID_TYPE_VALUE,
 };
 
+const KIND: &str = "type-check";
+
 /// Global counter for unique class declaration IDs.
 /// Shared between the resolver's Phase 1b scan (which pre-assigns IDs before type-checking)
 /// and the type-checker (which reads the pre-assigned ID from the AST node).
@@ -708,7 +710,7 @@ pub(crate) async fn try_fd_improvement(
                     Ok(None) => continue, // Resolver not applicable — skip.
                     Err(eval_err) => {
                         diagnostics.push(crate::error::Diagnostic::error(
-                            "type-error",
+                            KIND,
                             format!(
                                 "resolver `{}` failed during FD improvement: {}",
                                 resolver_name, eval_err

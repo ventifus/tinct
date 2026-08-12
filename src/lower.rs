@@ -29,6 +29,9 @@ use crate::type_infer::{
     make_typevalue_fn_with_flags, make_typevalue_nominal, make_typevalue_unknown,
 };
 
+const KIND: &str = "lower";
+const KIND_TRACE: &str = "trace";
+
 /// Name of the raise builtin — used in tests to verify consistency with builtins_core.rs
 /// registration. The MethodDispatcher was removed in S-1024; EffectPerform now handles dispatch.
 /// Part of the Rust-tinct protocol (doc/16b §7).
@@ -265,7 +268,7 @@ fn lower_expr(
                 },
                 None => {
                     let message = format!("VarRef: \"{}\" not resolved", name);
-                    diagnostics.push(Diagnostic::error("lower-error", message, arc.span.clone()));
+                    diagnostics.push(Diagnostic::error(KIND, message, arc.span.clone()));
                     CoreExpr::Placeholder {
                         inferred_type: make_typevalue_unknown(),
                     }
@@ -297,7 +300,7 @@ fn lower_expr(
             },
             _ => {
                 diagnostics.push(Diagnostic::error(
-                    "lower-error",
+                    KIND,
                     format!("Field: \"{}\" not resolved", field),
                     arc.span.clone(),
                 ));
@@ -379,7 +382,7 @@ fn lower_expr(
                         {
                             if var_name.as_str() == key_name {
                                 diagnostics.push(Diagnostic::error(
-                                        "lower-error",
+                                        KIND,
                                         format!(
                                             "self-referential binding: '{}' refers to itself; use '.{}' to reference the parent scope",
                                             key_name, key_name
@@ -628,7 +631,7 @@ fn lower_expr(
                     .as_ref()
                     .map(|tv| crate::eval::format_type_with_names(tv, type_display_names))
                     .unwrap_or_else(|| "<no type>".to_string());
-                diagnostics.push(Diagnostic::info("trace-lower", sig, arc.span.clone()));
+                diagnostics.push(Diagnostic::info(KIND_TRACE, sig, arc.span.clone()));
             }
 
             let clause = crate::ast::CoreClause {
@@ -869,7 +872,7 @@ fn lower_expr(
 
         SurfaceExpression::Error(span) => {
             diagnostics.push(Diagnostic::error(
-                "lower-error",
+                KIND,
                 "parse error".to_string(),
                 span.clone(),
             ));
@@ -1528,7 +1531,7 @@ mod tests {
         ))
     }
 
-    /// T-2142: A function with @[trace: 1] annotation must emit a "trace-lower" Info diagnostic
+    /// T-2142: A function with @[trace: 1] annotation must emit a "trace" Info diagnostic
     /// from the lowering pass.
     ///
     /// Proof this is a Rust unit test (category 1): `lower()` returns `(Spanned<CoreExpr>,
@@ -1548,10 +1551,7 @@ mod tests {
         let lower_result = lower(&node, &std::collections::HashMap::new());
         let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.kind == "trace-lower")
-            .collect();
+        let trace_diags: Vec<_> = diagnostics.iter().filter(|d| d.kind == "trace").collect();
         assert!(
             !trace_diags.is_empty(),
             "Expected at least one trace-lower diagnostic for @[trace: 1] fn; got: {:?}",
@@ -1579,10 +1579,7 @@ mod tests {
         let lower_result = lower(&node, &std::collections::HashMap::new());
         let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.kind == "trace-lower")
-            .collect();
+        let trace_diags: Vec<_> = diagnostics.iter().filter(|d| d.kind == "trace").collect();
         assert!(
             trace_diags.is_empty(),
             "Expected NO trace-lower diagnostic for @[trace: 0] — guard requires >= 1; got: {:?}",
@@ -1619,10 +1616,7 @@ mod tests {
         let lower_result = lower(&node, &std::collections::HashMap::new());
         let (_result, diagnostics) = lower_result.into_parts();
 
-        let trace_diags: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.kind == "trace-lower")
-            .collect();
+        let trace_diags: Vec<_> = diagnostics.iter().filter(|d| d.kind == "trace").collect();
         assert!(
             trace_diags.is_empty(),
             "Expected zero trace-lower diagnostics for unannotated function; got: {:?}",

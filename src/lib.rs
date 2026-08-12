@@ -146,6 +146,10 @@ pub use value::{
 /// Unified scope / symbol table.
 pub use symbol_table::{ScopeChain, SymbolTable};
 
+const KIND_EVAL: &str = "eval";
+const KIND_INTERNAL: &str = "internal";
+const KIND_PARSE: &str = "parse";
+
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
 ///
 /// This is the shared evaluation core used by the CLI path
@@ -184,7 +188,7 @@ pub async fn run_loader_pipeline(
         Ok(p) => p,
         Err(e) => {
             return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
-                "parse-error",
+                KIND_PARSE,
                 format!("builtin_core.llt: {e}"),
                 crate::rust_span!(),
             ))
@@ -220,7 +224,7 @@ pub async fn run_loader_pipeline(
         Ok(p) => p,
         Err(e) => {
             return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
-                "parse-error",
+                KIND_PARSE,
                 format!("{init_path}: {e}"),
                 crate::rust_span!(),
             ))
@@ -486,19 +490,26 @@ where
             }
             value::Value::Builtin { def, .. } => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
-            value::Value::DirCap { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("DirCap".to_string(), span),
-            )),
-            value::Value::NetCap { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("NetCap".to_string(), span),
-            )),
-            value::Value::File { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "File".to_string(),
+            value::Value::DirCap { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "DirCap"),
                 span,
             ))),
-            value::Value::RevocableDirCap { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("RevocableDirCap".to_string(), span),
-            )),
+            value::Value::NetCap { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "NetCap"),
+                span,
+            ))),
+            value::Value::File { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "File"),
+                span,
+            ))),
+            value::Value::RevocableDirCap { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "RevocableDirCap"),
+                span,
+            ))),
             value::Value::Variant {
                 type_decl_id,
                 ctor_index,
@@ -525,8 +536,9 @@ where
             }
             value::Value::Decimal { n: d, .. } => Ok(visitor.visit_decimal(*d)),
             value::Value::BigInt { n, .. } => Ok(visitor.visit_bigint(n)),
-            value::Value::Uri { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "Uri".to_string(),
+            value::Value::Uri { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Uri"),
                 span,
             ))),
             value::Value::Timestamp { ts, .. } => {
@@ -535,71 +547,106 @@ where
             value::Value::Duration { nanos, .. } => Ok(visitor.visit_duration(*nanos)),
             value::Value::ClockCap { .. } => visitor.visit_clock_cap(span),
             value::Value::Timezone { .. } => visitor.visit_timezone(span),
-            value::Value::QuicSession { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("QuicSession".to_string(), span),
-            )),
-            value::Value::Http2Session { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Http2Session".to_string(), span),
-            )),
-            value::Value::Http3Session { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Http3Session".to_string(), span),
-            )),
-            value::Value::QuicDatagramHandle { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("QuicDatagramHandle".to_string(), span),
-            )),
-            value::Value::Program { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Program".to_string(), span),
-            )),
-            value::Value::Document { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Document".to_string(), span),
-            )),
+            value::Value::QuicSession { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "QuicSession"),
+                span,
+            ))),
+            value::Value::Http2Session { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Http2Session"),
+                span,
+            ))),
+            value::Value::Http3Session { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Http3Session"),
+                span,
+            ))),
+            value::Value::QuicDatagramHandle { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "QuicDatagramHandle"),
+                span,
+            ))),
+            value::Value::Program { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Program"),
+                span,
+            ))),
+            value::Value::Document { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Document"),
+                span,
+            ))),
             // Expr.* variants (Value::Variant) are handled by the Variant arm above.
-            value::Value::Task { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "Task".to_string(),
+            value::Value::Task { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Task"),
                 span,
             ))),
-            value::Value::Channel { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Channel".to_string(), span),
-            )),
-            value::Value::Context { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Context".to_string(), span),
-            )),
-            value::Value::ReactiveCell { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("ReactiveCell".to_string(), span),
-            )),
-            value::Value::Builder(_) => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "Builder".to_string(),
+            value::Value::Channel { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Channel"),
                 span,
             ))),
-            value::Value::BroadcastChannel { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("BroadcastChannel".to_string(), span),
-            )),
-            value::Value::OneshotSender { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("OneshotSender".to_string(), span),
-            )),
-            value::Value::OneshotReceiver { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("OneshotReceiver".to_string(), span),
-            )),
+            value::Value::Context { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Context"),
+                span,
+            ))),
+            value::Value::ReactiveCell { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "ReactiveCell"),
+                span,
+            ))),
+            value::Value::Builder(_) => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Builder"),
+                span,
+            ))),
+            value::Value::BroadcastChannel { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "BroadcastChannel"),
+                span,
+            ))),
+            value::Value::OneshotSender { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "OneshotSender"),
+                span,
+            ))),
+            value::Value::OneshotReceiver { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "OneshotReceiver"),
+                span,
+            ))),
             // Annotated is transparent — delegate to inner value serialization.
             value::Value::Annotated { inner, .. } => {
                 visit_value(inner, ctx, depth, visitor, span).await
             }
-            value::Value::TypeContext { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("TypeContext".to_string(), span),
-            )),
-            value::Value::Expression { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("Expression".to_string(), span),
-            )),
-            value::Value::Arena { .. } => Err(Box::new(error::Diagnostic::value_not_serializable(
-                "Arena".to_string(),
+            value::Value::TypeContext { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "TypeContext"),
                 span,
             ))),
-            value::Value::CoreDocument { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("CoreDocument".to_string(), span),
-            )),
-            value::Value::SymbolTable { .. } => Err(Box::new(
-                error::Diagnostic::value_not_serializable("SymbolTable".to_string(), span),
-            )),
+            value::Value::Expression { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Expression"),
+                span,
+            ))),
+            value::Value::Arena { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "Arena"),
+                span,
+            ))),
+            value::Value::CoreDocument { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "CoreDocument"),
+                span,
+            ))),
+            value::Value::SymbolTable { .. } => Err(Box::new(error::Diagnostic::error(
+                KIND_EVAL,
+                format!("cannot serialize {} to JSON", "SymbolTable"),
+                span,
+            ))),
         }
     })
 }
@@ -822,7 +869,8 @@ impl ValueVisitor for TinctReprVisitor {
     ) -> Result<String, Box<error::Diagnostic>> {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("{ts}")),
-            Err(e) => Err(Box::new(error::Diagnostic::internal(
+            Err(e) => Err(Box::new(error::Diagnostic::error(
+                KIND_INTERNAL,
                 format!("invalid timestamp: {e}"),
                 span,
             ))),
@@ -931,7 +979,8 @@ impl ValueVisitor for DisplayVisitor {
         // Format as RFC 3339 for readability
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("Timestamp({})", ts)),
-            Err(e) => Err(Box::new(error::Diagnostic::internal(
+            Err(e) => Err(Box::new(error::Diagnostic::error(
+                KIND_INTERNAL,
                 format!("invalid timestamp: {e}"),
                 span,
             ))),

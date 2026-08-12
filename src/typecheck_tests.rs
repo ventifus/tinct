@@ -1569,7 +1569,7 @@ async fn test_resolver_miss_diagnostic_on_unresolved_varref() {
 
     let resolver_miss_errors: Vec<_> = errors
         .iter()
-        .filter(|d| d.kind == "unresolved-variable")
+        .filter(|d| d.message.starts_with("unresolved variable:"))
         .collect();
     assert!(
         !resolver_miss_errors.is_empty(),
