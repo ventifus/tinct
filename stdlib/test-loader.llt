@@ -456,7 +456,7 @@
       [env:         rt.env
        last-result: rt.last-result
        stderr:      rt.stderr
-       diagnostics: [append-diags state.diagnostics rt.diagnostics]]]]]
+       diagnostics: [append-diags state.diagnostics rt.diagnostics]]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Records the exported bindings from the last document's result into state.
@@ -480,6 +480,7 @@
   # A second typecheck pass over the prelude is redundant and extremely expensive.
   set-tc-ready: [fn [let tc state@Dict]
     [merge state [tc-ready: tc  tc-diagnostics: []]]]
+]
 
 # ============================================================================
 # Dict 2 — Test runner functions
