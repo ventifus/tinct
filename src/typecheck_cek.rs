@@ -585,9 +585,9 @@ async fn infer_step(
                 if let SurfaceExpression::Dict { entries, ref scope } = &intermediate.expr {
                     let _ = enter_dict_scope(entries, scope, state, type_map, errors).await;
                 } else {
-                    errors.push(Diagnostic::error(
+                    errors.push(Diagnostic::warn(
                         KIND,
-                        "expected record type: sequential intermediate body must be a dict expression",
+                        "non-dict intermediate in sequential has no effect (no keys to reference)",
                         intermediate.span.clone(),
                     ));
                 }
