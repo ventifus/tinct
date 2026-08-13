@@ -57,15 +57,16 @@ fn value_to_hashable_key(
     builtin_name: &str,
     span: crate::ast::Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<HashableValue> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     match val {
-        Value::Int { n, .. } => Ok(HashableValue::Int(*n)),
-        Value::Float { n: f, .. } => Ok(HashableValue::Float(f.to_bits())),
+        Value::Int { n, .. } => crate::error::DiagnosticResult::ok(HashableValue::Int(*n)).with_diagnostics(_dr_diags),
+        Value::Float { n: f, .. } => crate::error::DiagnosticResult::ok(HashableValue::Float(f.to_bits())).with_diagnostics(_dr_diags),
         Value::String {
             source, start, end, ..
         } => {
             let s = &source[*start..*end];
-            Ok(HashableValue::Str(s.into()))
+            crate::error::DiagnosticResult::ok(HashableValue::Str(s.into())).with_diagnostics(_dr_diags)
         }
         Value::Variant {
             type_decl_id,
@@ -79,31 +80,37 @@ fn value_to_hashable_key(
                 Some(p) => {
                     let p_val = match p.peek_result() {
                         Some(Ok(v)) => v,
-                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()).with_diagnostics(_dr_diags),
                         None => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!("{builtin_name}: variant payload not materialized"),
                                 span.clone(),
-                            )
-                            .into())
+                            )).with_diagnostics(_dr_diags)
                         }
                     };
-                    Some(Box::new(value_to_hashable_key(
-                        p_val,
-                        builtin_name,
-                        span.clone(),
-                        ctx,
-                    )?))
+                    Some(Box::new({
+                        let (result, diags) = value_to_hashable_key(
+                            p_val,
+                            builtin_name,
+                            span.clone(),
+                            ctx,
+                        ).into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    }))
                 }
             };
-            Ok(HashableValue::Variant {
+            crate::error::DiagnosticResult::ok(HashableValue::Variant {
                 type_decl_id: *type_decl_id,
                 ctor_index: *ctor_index,
                 payload: hv_payload,
-            })
+            }).with_diagnostics(_dr_diags)
         }
-        other => Err(Diagnostic::error(
+        other => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "{}: expected {}, got {}",
@@ -112,8 +119,7 @@ fn value_to_hashable_key(
                 ctx.type_display_name(other.type_decl_id_of())
             ),
             span,
-        )
-        .into()),
+        )).with_diagnostics(_dr_diags),
     }
 }
 
@@ -172,7 +178,7 @@ fn hashable_value_to_value(hv: &HashableValue) -> Value {
 /// Inherently materializing: must access IndexMap to enumerate keys.
 pub(crate) fn builtin_keys(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -181,9 +187,17 @@ pub(crate) fn builtin_keys(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("keys", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("keys", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -191,34 +205,49 @@ pub(crate) fn builtin_keys(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
-        let val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "keys",
-            val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
+        let val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "keys",
+                val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let origin = call_span.clone();
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(map.len());
         for (i, (key, _)) in map.iter().enumerate() {
             let key_value = hashable_value_to_value(key);
             let thunk = Arc::new(Thunk::value(key_value, origin.clone()));
+            let idx_key = match i64::try_from(i) {
+                Ok(v) => v,
+                Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                    KIND,
+                    "collection index overflow".to_string(),
+                    call_span.clone(),
+                )).with_diagnostics(_dr_diags),
+            };
             result.insert(
-                HashableValue::Int(i64::try_from(i).map_err(|_| {
-                    Diagnostic::error(
-                        KIND,
-                        "collection index overflow".to_string(),
-                        call_span.clone(),
-                    )
-                })?),
+                HashableValue::Int(idx_key),
                 thunk,
             );
         }
@@ -231,7 +260,7 @@ pub(crate) fn builtin_keys(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -240,7 +269,7 @@ pub(crate) fn builtin_keys(
 /// Inherently materializing: must access IndexMap to count entries or count UTF-8 characters or bytes.
 pub(crate) fn builtin_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -249,9 +278,17 @@ pub(crate) fn builtin_length(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("length", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("length", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -259,25 +296,32 @@ pub(crate) fn builtin_length(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         // arg[0] is pre-forced by force_count.
         let thunk0 = args[0].clone();
-        let val = thunk0.require_value()?.clone();
+        let val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match val {
             Value::String {
                 source, start, end, ..
             } => {
                 let s = &source[start..end];
                 let len = s.chars().count();
-                let len_i64 = i64::try_from(len).map_err(|_| {
-                    Diagnostic::error(
+                let len_i64 = match i64::try_from(len) {
+                    Ok(v) => v,
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "length: string length exceeds i64::MAX".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                };
                 ok_val(
                     Value::Int {
                         n: len_i64,
@@ -286,17 +330,18 @@ pub(crate) fn builtin_length(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             Value::Bytes { start, end, .. } => {
                 let len = end - start;
-                let len_i64 = i64::try_from(len).map_err(|_| {
-                    Diagnostic::error(
+                let len_i64 = match i64::try_from(len) {
+                    Ok(v) => v,
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "length: byte length exceeds i64::MAX".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                };
                 ok_val(
                     Value::Int {
                         n: len_i64,
@@ -305,17 +350,24 @@ pub(crate) fn builtin_length(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             _ => {
-                let map = crate::builtins::require_dict(
-                    "length",
-                    val.clone(),
-                    thunk0.span.clone(),
-                    &ctx,
-                    call_span.clone(),
-                )
-                .await?;
+                let map = {
+                    let (result, diags) = crate::builtins::require_dict(
+                        "length",
+                        val.clone(),
+                        thunk0.span.clone(),
+                        &ctx,
+                        call_span.clone(),
+                    )
+                    .await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
+                };
                 ok_val(
                     Value::Int {
                         n: map.len() as i64,
@@ -324,7 +376,7 @@ pub(crate) fn builtin_length(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
         }
     })
@@ -343,7 +395,7 @@ pub(crate) fn builtin_length(
 /// Used by `[get key dict]` via the Indexable typeclass in prelude.
 pub(crate) fn builtin_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -352,9 +404,17 @@ pub(crate) fn builtin_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-dict-get", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-dict-get", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -362,23 +422,43 @@ pub(crate) fn builtin_get(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
-        let key = value_to_hashable_key(&key_val, "builtin-dict-get", thunk0.span.clone(), &ctx)?;
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let key = {
+            let (result, diags) = value_to_hashable_key(&key_val, "builtin-dict-get", thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let thunk1 = args[1].clone();
-        let target_val = thunk1.require_value()?.clone();
+        let target_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let target_span = thunk1.span.clone();
 
         match target_val {
             Value::Dict { entries: map, .. } => {
                 let key_str = key.to_string();
                 match map.get(&key) {
-                    Some(thunk) => Ok(Arc::clone(thunk)),
+                    Some(thunk) => crate::error::DiagnosticResult::ok(Arc::clone(thunk)).with_diagnostics(_dr_diags),
                     None => {
                         let mut err = Diagnostic::error(
                             KIND,
@@ -390,11 +470,11 @@ pub(crate) fn builtin_get(
                             message: "accessed here".to_string(),
                         });
                         err.notes.push(format!("dict has {} entries", map.len(),));
-                        Err(err.into())
+                        crate::error::DiagnosticResult::err(err).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -402,8 +482,7 @@ pub(crate) fn builtin_get(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 target_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -416,7 +495,7 @@ pub(crate) fn builtin_get(
 /// Prelude composes this with `builtin-dict-get` to implement `get?` without Rust knowing Absent.
 pub(crate) fn builtin_has_key(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -425,9 +504,17 @@ pub(crate) fn builtin_has_key(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-has-key?", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-has-key?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -435,26 +522,53 @@ pub(crate) fn builtin_has_key(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // Materialize the key
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
-        let key = value_to_hashable_key(&key_val, "builtin-has-key?", thunk0.span.clone(), &ctx)?;
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let key = {
+            let (result, diags) = value_to_hashable_key(&key_val, "builtin-has-key?", thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Materialize the dict (spine only, not values)
         let thunk1 = args[1].clone();
-        let dict_val = thunk1.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-has-key?",
-            dict_val,
-            thunk1.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
+        let dict_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-has-key?",
+                dict_val,
+                thunk1.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let exists = if map.contains_key(&key) { 1i64 } else { 0i64 };
         ok_val(
@@ -465,7 +579,7 @@ pub(crate) fn builtin_has_key(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -473,10 +587,10 @@ pub(crate) fn builtin_has_key(
 ///
 /// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
 /// O(1) — used by prelude step functions to drive laziness without constructing Absent.
-/// `Dict a → Int → Int`
+/// `Dict a -> Int -> Int`
 pub(crate) fn builtin_dict_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -485,9 +599,17 @@ pub(crate) fn builtin_dict_has_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-dict-has-nth?", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-dict-has-nth?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -495,23 +617,44 @@ pub(crate) fn builtin_dict_has_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-has-nth?",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-has-nth?",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -519,17 +662,15 @@ pub(crate) fn builtin_dict_has_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         if idx < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "builtin-dict-has-nth?: dict index must be non-negative".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let idx_usize = match usize::try_from(idx) {
             Ok(i) => i,
@@ -543,7 +684,7 @@ pub(crate) fn builtin_dict_has_nth(
                         )),
                     },
                     call_span,
-                );
+                ).with_diagnostics(_dr_diags);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
@@ -555,7 +696,7 @@ pub(crate) fn builtin_dict_has_nth(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -564,10 +705,10 @@ pub(crate) fn builtin_dict_has_nth(
 /// Takes 2 args: (dict, i: Int). Errors if `i` is out of bounds.
 /// O(1) — drives laziness from the tinct side via prelude step functions that
 /// guard with `builtin-dict-has-nth?` before calling this.
-/// `Dict a → Int → a`
+/// `Dict a -> Int -> a`
 pub(crate) fn builtin_dict_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -576,9 +717,17 @@ pub(crate) fn builtin_dict_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-dict-nth", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-dict-nth", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -586,23 +735,44 @@ pub(crate) fn builtin_dict_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-nth",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-nth",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -610,8 +780,7 @@ pub(crate) fn builtin_dict_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         let entry = match usize::try_from(idx) {
@@ -619,16 +788,15 @@ pub(crate) fn builtin_dict_nth(
             Err(_) => None, // idx exceeds addressable range — not in dict
         };
         match entry {
-            Some((_, thunk)) => Ok(Arc::clone(thunk)),
-            None => Err(Diagnostic::error(
+            Some((_, thunk)) => crate::error::DiagnosticResult::ok(Arc::clone(thunk)).with_diagnostics(_dr_diags),
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-dict-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -637,10 +805,10 @@ pub(crate) fn builtin_dict_nth(
 ///
 /// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
 /// Identical to `builtin-dict-has-nth?` but paired with `builtin-dict-key-nth`.
-/// `Dict a → Int → Int`
+/// `Dict a -> Int -> Int`
 pub(crate) fn builtin_dict_has_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -649,13 +817,21 @@ pub(crate) fn builtin_dict_has_key_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named(
-            "builtin-dict-has-key-nth?",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named(
+                "builtin-dict-has-key-nth?",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -663,23 +839,44 @@ pub(crate) fn builtin_dict_has_key_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-has-key-nth?",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-has-key-nth?",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -687,17 +884,15 @@ pub(crate) fn builtin_dict_has_key_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         if idx < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "builtin-dict-has-key-nth?: dict index must be non-negative".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let idx_usize = match usize::try_from(idx) {
             Ok(i) => i,
@@ -711,7 +906,7 @@ pub(crate) fn builtin_dict_has_key_nth(
                         )),
                     },
                     call_span,
-                );
+                ).with_diagnostics(_dr_diags);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
@@ -723,7 +918,7 @@ pub(crate) fn builtin_dict_has_key_nth(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -731,10 +926,10 @@ pub(crate) fn builtin_dict_has_key_nth(
 ///
 /// Takes 2 args: (dict, i: Int). Errors if `i` is out of bounds.
 /// Prelude guards with `builtin-dict-has-key-nth?` before calling this.
-/// `Dict a → Int → Key`
+/// `Dict a -> Int -> Key`
 pub(crate) fn builtin_dict_key_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -743,9 +938,17 @@ pub(crate) fn builtin_dict_key_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-dict-key-nth", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-dict-key-nth", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -753,23 +956,44 @@ pub(crate) fn builtin_dict_key_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-key-nth",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-key-nth",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -777,8 +1001,7 @@ pub(crate) fn builtin_dict_key_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         let entry = match usize::try_from(idx) {
@@ -788,17 +1011,16 @@ pub(crate) fn builtin_dict_key_nth(
         match entry {
             Some((key, _)) => {
                 let key_val = hashable_value_to_value(key);
-                ok_val(key_val, call_span)
+                ok_val(key_val, call_span).with_diagnostics(_dr_diags)
             }
-            None => Err(Diagnostic::error(
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-dict-key-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -807,10 +1029,10 @@ pub(crate) fn builtin_dict_key_nth(
 ///
 /// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
 /// Identical to `builtin-dict-has-nth?` but paired with `builtin-dict-kv-nth`.
-/// `Dict a → Int → Int`
+/// `Dict a -> Int -> Int`
 pub(crate) fn builtin_dict_has_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -819,13 +1041,21 @@ pub(crate) fn builtin_dict_has_kv_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named(
-            "builtin-dict-has-kv-nth?",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named(
+                "builtin-dict-has-kv-nth?",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -833,23 +1063,44 @@ pub(crate) fn builtin_dict_has_kv_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-has-kv-nth?",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-has-kv-nth?",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -857,17 +1108,15 @@ pub(crate) fn builtin_dict_has_kv_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         if idx < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "builtin-dict-has-kv-nth?: dict index must be non-negative".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let idx_usize = match usize::try_from(idx) {
             Ok(i) => i,
@@ -881,7 +1130,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
                         )),
                     },
                     call_span,
-                );
+                ).with_diagnostics(_dr_diags);
             }
         };
         let exists = i64::from(map.get_index(idx_usize).is_some());
@@ -893,7 +1142,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -901,10 +1150,10 @@ pub(crate) fn builtin_dict_has_kv_nth(
 ///
 /// Takes 2 args: (dict, i: Int). Returns a `[key: K  value: V]` dict at that position.
 /// Errors if `i` is out of bounds. Prelude guards with `builtin-dict-has-kv-nth?`.
-/// `Dict a → Int → [key: Key  value: a]`
+/// `Dict a -> Int -> [key: Key  value: a]`
 pub(crate) fn builtin_dict_kv_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -913,9 +1162,17 @@ pub(crate) fn builtin_dict_kv_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-dict-kv-nth", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-dict-kv-nth", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -923,23 +1180,44 @@ pub(crate) fn builtin_dict_kv_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let dict_val = thunk0.require_value()?.clone();
-        let map = crate::builtins::require_dict(
-            "builtin-dict-kv-nth",
-            dict_val,
-            thunk0.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
-        let idx = match args[1].require_value()?.clone() {
+        let dict_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-kv-nth",
+                dict_val,
+                thunk0.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let idx = match idx {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -947,8 +1225,7 @@ pub(crate) fn builtin_dict_kv_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
         let entry = match usize::try_from(idx) {
@@ -959,9 +1236,17 @@ pub(crate) fn builtin_dict_kv_nth(
             Some((key, val_thunk)) => {
                 let key_val = hashable_value_to_value(key);
                 let mut kv: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                let key_thunk_val = {
+                    let (result, diags) = ok_val(key_val, call_span.clone()).into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
+                };
                 kv.insert(
                     HashableValue::Str("key".into()),
-                    ok_val(key_val, call_span.clone())?,
+                    key_thunk_val,
                 );
                 kv.insert(HashableValue::Str("value".into()), Arc::clone(val_thunk));
                 ok_val(
@@ -973,17 +1258,16 @@ pub(crate) fn builtin_dict_kv_nth(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            None => Err(Diagnostic::error(
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-dict-kv-nth: index {idx} out of bounds (dict has {} entries)",
                     map.len()
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1000,7 +1284,7 @@ pub(crate) fn builtin_dict_kv_nth(
 /// Usage pattern: `[builder-set k [cons x [builder-get-or k [] b]] b]`
 pub(crate) fn builtin_builder_get_or(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1009,9 +1293,17 @@ pub(crate) fn builtin_builder_get_or(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-get-or", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-get-or", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1019,13 +1311,19 @@ pub(crate) fn builtin_builder_get_or(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1039,7 +1337,7 @@ pub(crate) fn builtin_builder_get_or(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1048,8 +1346,7 @@ pub(crate) fn builtin_builder_get_or(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1058,11 +1355,18 @@ pub(crate) fn builtin_builder_get_or(
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
         let thunk2 = args[2].clone();
-        let builder_val = thunk2.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1071,18 +1375,20 @@ pub(crate) fn builtin_builder_get_or(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Atomic get-or-insert: single mutex acquisition
-        let result_thunk = builder.get_or(key, default_thunk).map_err(|_| {
-            Diagnostic::error(KIND, "builder already finished", call_span)
-                .with_note(format!("operation: {}", "builder-get-or"))
-        })?;
+        let result_thunk = match builder.get_or(key, default_thunk) {
+            Ok(v) => v,
+            Err(_) => return crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "builder already finished", call_span)
+                    .with_note(format!("operation: {}", "builder-get-or"))
+            ).with_diagnostics(_dr_diags),
+        };
 
-        Ok(result_thunk)
+        crate::error::DiagnosticResult::ok(result_thunk).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1097,11 +1403,11 @@ pub(crate) fn builtin_builder_get_or(
 ///
 /// Pre-allocates the IndexMap when size is known.
 ///
-/// This replaces O(n²) merge-accumulation in dict-building stdlib functions like
+/// This replaces O(n^2) merge-accumulation in dict-building stdlib functions like
 /// `from-entries`, `map-entries`, `walk`, `transpose`, `collect-kv`, etc.
 pub(crate) fn builtin_build_dict(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1110,9 +1416,17 @@ pub(crate) fn builtin_build_dict(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("build-dict", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("build-dict", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1120,13 +1434,19 @@ pub(crate) fn builtin_build_dict(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] is pre-materialized by force_count=1.
         let thunk0 = args[0].clone();
-        let val = thunk0.require_value()?.clone();
+        let val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match val {
             // Dict input: build from key-value pair dicts in insertion order.
@@ -1137,34 +1457,57 @@ pub(crate) fn builtin_build_dict(
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> =
                     IndexMap::with_capacity(map.len());
                 for (_idx, entry_thunk) in map {
-                    let entry_val = materialize(entry_thunk, None, &ctx).await?;
-                    let entry_map = crate::builtins::require_dict(
-                        "build-dict entry",
-                        entry_val,
-                        entry_thunk.span.clone(),
-                        &ctx,
-                        call_span.clone(),
-                    )
-                    .await?;
-                    let key_thunk = entry_map
+                    let entry_val = {
+                        let (result, diags) = materialize(entry_thunk, None, &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
+                    let entry_map = {
+                        let (result, diags) = crate::builtins::require_dict(
+                            "build-dict entry",
+                            entry_val,
+                            entry_thunk.span.clone(),
+                            &ctx,
+                            call_span.clone(),
+                        )
+                        .await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
+                    let key_thunk = match entry_map
                         .get(&HashableValue::Str("key".into()))
-                        .ok_or_else(|| {
-                            Diagnostic::error(
-                                KIND,
-                                format!("key not found: {}", "key"),
-                                call_span.clone(),
-                            )
-                        })?;
-                    let value_thunk = entry_map
+                    {
+                        Some(v) => v,
+                        None => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!("key not found: {}", "key"),
+                            call_span.clone(),
+                        )).with_diagnostics(_dr_diags),
+                    };
+                    let value_thunk = match entry_map
                         .get(&HashableValue::Str("value".into()))
-                        .ok_or_else(|| {
-                            Diagnostic::error(
-                                KIND,
-                                format!("key not found: {}", "value"),
-                                call_span.clone(),
-                            )
-                        })?;
-                    let key_val = materialize(key_thunk, None, &ctx).await?;
+                    {
+                        Some(v) => v,
+                        None => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!("key not found: {}", "value"),
+                            call_span.clone(),
+                        )).with_diagnostics(_dr_diags),
+                    };
+                    let key_val = {
+                        let (result, diags) = materialize(key_thunk, None, &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
                     let key = match key_val {
                         Value::Int { n, .. } => HashableValue::Int(n),
                         Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1175,7 +1518,7 @@ pub(crate) fn builtin_build_dict(
                             ..
                         } => HashableValue::Str((&source[start..end]).into()),
                         other => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!(
                                     "{}: expected {}, got {}",
@@ -1184,8 +1527,7 @@ pub(crate) fn builtin_build_dict(
                                     ctx.type_display_name(other.type_decl_id_of())
                                 ),
                                 key_thunk.span.clone(),
-                            )
-                            .into())
+                            )).with_diagnostics(_dr_diags)
                         }
                     };
                     result.insert(key, Arc::clone(value_thunk));
@@ -1199,10 +1541,10 @@ pub(crate) fn builtin_build_dict(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
 
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1211,8 +1553,7 @@ pub(crate) fn builtin_build_dict(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 thunk0.span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1221,7 +1562,7 @@ pub(crate) fn builtin_build_dict(
 /// Takes 0 args. Returns a new Builder.
 pub(crate) fn builtin_make_builder(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1230,8 +1571,9 @@ pub(crate) fn builtin_make_builder(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1239,8 +1581,7 @@ pub(crate) fn builtin_make_builder(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         // Optional named arg: capacity: <Int> — pre-allocates the inner IndexMap.
         // Any other named arg is rejected.
@@ -1253,14 +1594,26 @@ pub(crate) fn builtin_make_builder(
                 .map(|(k, v)| (k.clone(), Arc::clone(v)))
                 .collect();
             if !unexpected.is_empty() {
-                reject_named("make-builder", Some(&unexpected), call_span.clone())?;
+                let (result, diags) = reject_named("make-builder", Some(&unexpected), call_span.clone()).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(()) => {}
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
             }
             if let Some(cap_thunk) = cap_thunk {
-                let cap_val = materialize(&cap_thunk, None, &ctx).await?;
+                let cap_val = {
+                    let (result, diags) = materialize(&cap_thunk, None, &ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
+                };
                 match cap_val {
                     Value::Int { n, .. } if n >= 0 => n as usize,
                     Value::Int { n, .. } => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "{}: expected {}, got {}",
@@ -1269,11 +1622,10 @@ pub(crate) fn builtin_make_builder(
                                 format!("Int({})", n)
                             ),
                             cap_thunk.span.clone(),
-                        )
-                        .into())
+                        )).with_diagnostics(_dr_diags)
                     }
                     other => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "{}: expected {}, got {}",
@@ -1282,8 +1634,7 @@ pub(crate) fn builtin_make_builder(
                                 ctx.type_display_name(other.type_decl_id_of())
                             ),
                             cap_thunk.span.clone(),
-                        )
-                        .into())
+                        )).with_diagnostics(_dr_diags)
                     }
                 }
             } else {
@@ -1297,7 +1648,7 @@ pub(crate) fn builtin_make_builder(
         } else {
             crate::value::Builder::new()
         };
-        ok_val(Value::Builder(Arc::new(builder)), call_span)
+        ok_val(Value::Builder(Arc::new(builder)), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1306,7 +1657,7 @@ pub(crate) fn builtin_make_builder(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1315,9 +1666,17 @@ pub(crate) fn builtin_builder_set(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-set", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-set", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1325,13 +1684,19 @@ pub(crate) fn builtin_builder_set(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1345,7 +1710,7 @@ pub(crate) fn builtin_builder_set(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1354,8 +1719,7 @@ pub(crate) fn builtin_builder_set(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1364,11 +1728,18 @@ pub(crate) fn builtin_builder_set(
 
         // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
         let thunk2 = args[2].clone();
-        let builder_val = thunk2.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1377,19 +1748,21 @@ pub(crate) fn builtin_builder_set(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Set the key-value pair
-        builder.set(key, value_thunk).map_err(|_| {
-            Diagnostic::error(KIND, "builder already finished", call_span)
-                .with_note(format!("operation: {}", "builder-set"))
-        })?;
+        match builder.set(key, value_thunk) {
+            Ok(()) => {}
+            Err(_) => return crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "builder already finished", call_span)
+                    .with_note(format!("operation: {}", "builder-set"))
+            ).with_diagnostics(_dr_diags),
+        }
 
         // Return the builder for chaining
-        Ok(args[2].clone())
+        crate::error::DiagnosticResult::ok(args[2].clone()).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1398,7 +1771,7 @@ pub(crate) fn builtin_builder_set(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_delete(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1407,9 +1780,17 @@ pub(crate) fn builtin_builder_delete(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-delete", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-delete", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1417,13 +1798,19 @@ pub(crate) fn builtin_builder_delete(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1437,7 +1824,7 @@ pub(crate) fn builtin_builder_delete(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1446,18 +1833,24 @@ pub(crate) fn builtin_builder_delete(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1466,19 +1859,21 @@ pub(crate) fn builtin_builder_delete(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Delete the key
-        builder.delete(&key).map_err(|_| {
-            Diagnostic::error(KIND, "builder already finished", call_span)
-                .with_note(format!("operation: {}", "builder-delete"))
-        })?;
+        match builder.delete(&key) {
+            Ok(()) => {}
+            Err(_) => return crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "builder already finished", call_span)
+                    .with_note(format!("operation: {}", "builder-delete"))
+            ).with_diagnostics(_dr_diags),
+        }
 
         // Return the builder for chaining
-        Ok(args[1].clone())
+        crate::error::DiagnosticResult::ok(args[1].clone()).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1487,7 +1882,7 @@ pub(crate) fn builtin_builder_delete(
 /// Errors if the builder is already frozen.
 pub(crate) fn builtin_builder_finish(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1496,9 +1891,17 @@ pub(crate) fn builtin_builder_finish(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-finish", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-finish", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1506,17 +1909,23 @@ pub(crate) fn builtin_builder_finish(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (builder) is pre-forced by force_count
         let thunk0 = args[0].clone();
-        let builder_val = thunk0.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1525,16 +1934,18 @@ pub(crate) fn builtin_builder_finish(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Take the inner dict, freezing the builder
-        let dict = builder.finish().map_err(|_| {
-            Diagnostic::error(KIND, "builder already finished", call_span.clone())
-                .with_note(format!("operation: {}", "builder-finish"))
-        })?;
+        let dict = match builder.finish() {
+            Ok(v) => v,
+            Err(_) => return crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "builder already finished", call_span.clone())
+                    .with_note(format!("operation: {}", "builder-finish"))
+            ).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -1545,7 +1956,7 @@ pub(crate) fn builtin_builder_finish(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1554,7 +1965,7 @@ pub(crate) fn builtin_builder_finish(
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_snapshot(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1563,9 +1974,17 @@ pub(crate) fn builtin_builder_snapshot(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-snapshot", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-snapshot", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1573,17 +1992,23 @@ pub(crate) fn builtin_builder_snapshot(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (builder) is pre-forced by force_count
         let thunk0 = args[0].clone();
-        let builder_val = thunk0.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1592,16 +2017,18 @@ pub(crate) fn builtin_builder_snapshot(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Clone the inner dict
-        let dict = builder.snapshot().map_err(|_| {
-            Diagnostic::error(KIND, "builder already finished", call_span.clone())
-                .with_note(format!("operation: {}", "builder-snapshot"))
-        })?;
+        let dict = match builder.snapshot() {
+            Ok(v) => v,
+            Err(_) => return crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "builder already finished", call_span.clone())
+                    .with_note(format!("operation: {}", "builder-snapshot"))
+            ).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -1612,7 +2039,7 @@ pub(crate) fn builtin_builder_snapshot(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1620,7 +2047,7 @@ pub(crate) fn builtin_builder_snapshot(
 /// Takes 2 args: key (Int or String), builder. Returns Bool.
 pub(crate) fn builtin_builder_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1629,9 +2056,17 @@ pub(crate) fn builtin_builder_has(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-has?", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-has?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1639,13 +2074,19 @@ pub(crate) fn builtin_builder_has(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1659,7 +2100,7 @@ pub(crate) fn builtin_builder_has(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1668,18 +2109,24 @@ pub(crate) fn builtin_builder_has(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1688,18 +2135,16 @@ pub(crate) fn builtin_builder_has(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Frozen builder: has? is an error, not a silent false
         if builder.is_frozen() {
-            return Err(
+            return crate::error::DiagnosticResult::err(
                 Diagnostic::error(KIND, "builder already finished", call_span.clone())
                     .with_note(format!("operation: {}", "builder-has?"))
-                    .into(),
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         // Check if the key exists
@@ -1712,7 +2157,7 @@ pub(crate) fn builtin_builder_has(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1720,7 +2165,7 @@ pub(crate) fn builtin_builder_has(
 /// Takes 2 args: key (Int or String), builder. Returns the value or errors if key not found.
 pub(crate) fn builtin_builder_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1729,9 +2174,17 @@ pub(crate) fn builtin_builder_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builder-get", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builder-get", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1739,13 +2192,19 @@ pub(crate) fn builtin_builder_get(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
         let thunk0 = args[0].clone();
-        let key_val = thunk0.require_value()?.clone();
+        let key_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let key = match key_val {
             Value::Int { n, .. } => HashableValue::Int(n),
             Value::Float { n: f, .. } => HashableValue::Float(f.to_bits()),
@@ -1759,7 +2218,7 @@ pub(crate) fn builtin_builder_get(
                 HashableValue::Str(s.into())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1768,18 +2227,24 @@ pub(crate) fn builtin_builder_get(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // args[1] (builder) is pre-forced by force_count
         let thunk1 = args[1].clone();
-        let builder_val = thunk1.require_value()?.clone();
+        let builder_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let builder = match builder_val {
             Value::Builder(b) => b,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1788,29 +2253,26 @@ pub(crate) fn builtin_builder_get(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Frozen builder: get is an error distinct from key-not-found
         if builder.is_frozen() {
-            return Err(
+            return crate::error::DiagnosticResult::err(
                 Diagnostic::error(KIND, "builder already finished", call_span.clone())
                     .with_note(format!("operation: {}", "builder-get"))
-                    .into(),
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         // Get the value
         match builder.get(&key) {
-            Some(thunk) => Ok(thunk),
+            Some(thunk) => crate::error::DiagnosticResult::ok(thunk).with_diagnostics(_dr_diags),
             None => {
                 let key_str = key.to_string();
-                Err(
+                crate::error::DiagnosticResult::err(
                     Diagnostic::error(KIND, format!("key not found: {}", key_str), call_span)
-                        .into(),
-                )
+                ).with_diagnostics(_dr_diags)
             }
         }
     })
@@ -1832,7 +2294,7 @@ pub(crate) fn builtin_builder_get(
 /// via the `get` wrapper in prelude.
 pub(crate) fn builtin_get_by_field(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1841,9 +2303,17 @@ pub(crate) fn builtin_get_by_field(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-get-by-field", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-get-by-field", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1851,13 +2321,19 @@ pub(crate) fn builtin_get_by_field(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // arg[0]: field-name (String) — pre-forced by pos_strictness
         let thunk0 = args[0].clone();
-        let field_name_val = thunk0.require_value()?.clone();
+        let field_name_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let field_name: String = match field_name_val {
             Value::String {
                 ref source,
@@ -1866,7 +2342,7 @@ pub(crate) fn builtin_get_by_field(
                 ..
             } => source[start..end].to_string(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1875,20 +2351,33 @@ pub(crate) fn builtin_get_by_field(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // arg[1]: field-value (Any) — pre-forced by pos_strictness
-        let field_value = args[1].require_value()?.clone();
+        let field_value = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // arg[2]: type-dict (Dict of Variants) — pre-forced to Spine by pos_strictness.
-        // Eagerly collect all (unqualified-name → ThunkId) pairs from the dict so we
+        // Eagerly collect all (unqualified-name -> ThunkId) pairs from the dict so we
         // hold no borrow across the upcoming await points.
         let thunk2 = args[2].clone();
-        let type_dict_val = thunk2.require_value()?.clone();
-        // Collect (string-key → Arc<Thunk>) pairs; skip integer-keyed entries.
+        let type_dict_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        // Collect (string-key -> Arc<Thunk>) pairs; skip integer-keyed entries.
         let dict_entries: Vec<(String, Arc<Thunk>)> = match &type_dict_val {
             Value::Dict { entries: map, .. } => map
                 .iter()
@@ -1898,7 +2387,7 @@ pub(crate) fn builtin_get_by_field(
                 })
                 .collect(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1907,24 +2396,29 @@ pub(crate) fn builtin_get_by_field(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         if dict_entries.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "builtin-get-by-field: type dict is empty".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // Get the type_decl_id from the first Variant in the dict.
         let mut variant_type_id: Option<u64> = None;
         for (_name, entry_thunk) in &dict_entries {
-            let entry_val = materialize(entry_thunk, Some(&call_span), &ctx).await?;
+            let entry_val = {
+                let (result, diags) = materialize(entry_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            };
             if let Value::Variant { type_decl_id, .. } = entry_val {
                 variant_type_id = Some(type_decl_id);
                 break;
@@ -1934,19 +2428,18 @@ pub(crate) fn builtin_get_by_field(
         let variant_type_id = match variant_type_id {
             Some(id) => id,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-get-by-field: type dict contains no Variant values".to_string(),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         let tycon_env = match ctx.tycon_env.get() {
             Some(env) => env,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-get-by-field: type info not available for type {} \
@@ -1954,23 +2447,21 @@ pub(crate) fn builtin_get_by_field(
                         ctx.type_display_name(variant_type_id)
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         let def = match tycon_env.get(&variant_type_id) {
             Some(d) => d,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-get-by-field: type {} not found in type environment",
                         ctx.type_display_name(variant_type_id)
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1992,14 +2483,14 @@ pub(crate) fn builtin_get_by_field(
                     // Find the matching ThunkId in our pre-collected dict_entries.
                     if let Some((_name, thunk)) = dict_entries.iter().find(|(n, _)| n == bare_name)
                     {
-                        return Ok(Arc::clone(thunk));
+                        return crate::error::DiagnosticResult::ok(Arc::clone(thunk)).with_diagnostics(_dr_diags);
                     }
                 }
             }
         }
 
         // No match found — error
-        Err(Diagnostic::error(
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "builtin-get-by-field: no constructor of {} has field \"{field_name}\" \
@@ -2007,8 +2498,7 @@ pub(crate) fn builtin_get_by_field(
                 ctx.type_display_name(variant_type_id)
             ),
             call_span,
-        )
-        .into())
+        )).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2024,8 +2514,9 @@ pub(crate) fn builtin_get_by_field(
 /// Args: (a: Dict, b: Dict) — both pre-materialized to Spine.
 pub(crate) fn builtin_dict_merge(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2033,9 +2524,16 @@ pub(crate) fn builtin_dict_merge(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("builtin-dict-merge", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-dict-merge", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2043,31 +2541,58 @@ pub(crate) fn builtin_dict_merge(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let thunk_a = args[0].clone();
-        let val_a = thunk_a.require_value()?.clone();
-        let map_a = crate::builtins::require_dict(
-            "builtin-dict-merge",
-            val_a,
-            thunk_a.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
+        let val_a = {
+            let (result, diags) = thunk_a.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map_a = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-merge",
+                val_a,
+                thunk_a.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let thunk_b = args[1].clone();
-        let val_b = thunk_b.require_value()?.clone();
-        let map_b = crate::builtins::require_dict(
-            "builtin-dict-merge",
-            val_b,
-            thunk_b.span.clone(),
-            &ctx,
-            call_span.clone(),
-        )
-        .await?;
+        let val_b = {
+            let (result, diags) = thunk_b.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let map_b = {
+            let (result, diags) = crate::builtins::require_dict(
+                "builtin-dict-merge",
+                val_b,
+                thunk_b.span.clone(),
+                &ctx,
+                call_span.clone(),
+            )
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Right-biased union: start with all of a's entries, then overlay b.
         // Keys present in both take b's value. Keys only in a are preserved.
@@ -2090,12 +2615,12 @@ pub(crate) fn builtin_dict_merge(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
-// ── Collection operations (moved from builtins_seq_xform.rs and builtins_seq_reduce.rs
-//    in T-1380 — Dict-only dispatch; Seq paths implemented as pure tinct in prelude.llt) ────────
+// -- Collection operations (moved from builtins_seq_xform.rs and builtins_seq_reduce.rs
+//    in T-1380 -- Dict-only dispatch; Seq paths implemented as pure tinct in prelude.llt) ----
 
 /// `builtin-take`: Take the first n elements from a Dict by position.
 ///
@@ -2105,8 +2630,9 @@ pub(crate) fn builtin_dict_merge(
 /// Args: (n, xs)
 pub(crate) fn builtin_take(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2114,9 +2640,16 @@ pub(crate) fn builtin_take(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("take", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("take", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2124,15 +2657,21 @@ pub(crate) fn builtin_take(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
-        let n = args[0].require_value()?.clone();
+        let n = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2141,12 +2680,19 @@ pub(crate) fn builtin_take(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
-        let xs = Arc::clone(&args[1]).require_value()?.clone();
+        let thunk1 = args[1].clone();
+        let xs = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         if n_int <= 0 {
             return ok_val(
@@ -2158,7 +2704,7 @@ pub(crate) fn builtin_take(
                     )),
                 },
                 call_span,
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         match xs {
@@ -2179,9 +2725,9 @@ pub(crate) fn builtin_take(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2190,8 +2736,7 @@ pub(crate) fn builtin_take(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2204,8 +2749,9 @@ pub(crate) fn builtin_take(
 /// Args: (n, xs)
 pub(crate) fn builtin_drop(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2213,9 +2759,16 @@ pub(crate) fn builtin_drop(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("drop", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("drop", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2223,15 +2776,21 @@ pub(crate) fn builtin_drop(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
-        let n = args[0].require_value()?.clone();
+        let n = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let n_int = match n {
             Value::Int { n: i, .. } => i,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2240,16 +2799,22 @@ pub(crate) fn builtin_drop(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         if n_int <= 0 {
-            return Ok(args[1].clone());
+            return crate::error::DiagnosticResult::ok(args[1].clone()).with_diagnostics(_dr_diags);
         }
 
-        let xs = args[1].require_value()?.clone();
+        let xs = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match xs {
             Value::Dict {
@@ -2269,9 +2834,9 @@ pub(crate) fn builtin_drop(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2280,8 +2845,7 @@ pub(crate) fn builtin_drop(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2299,8 +2863,9 @@ pub(crate) fn builtin_drop(
 /// Args: (xs, ys)
 pub(crate) fn builtin_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2308,9 +2873,16 @@ pub(crate) fn builtin_concat(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("concat", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("concat", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2318,15 +2890,21 @@ pub(crate) fn builtin_concat(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let thunk0 = args[0].clone();
         let thunk1 = args[1].clone();
         let xs_span = thunk0.span.clone();
         let ys_span = thunk1.span.clone();
-        let xs = thunk0.require_value()?.clone();
+        let xs = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let ys_thunk = thunk1;
 
         match xs {
@@ -2336,10 +2914,17 @@ pub(crate) fn builtin_concat(
             } => {
                 // Dict path: eagerly merge with integer reindexing.
                 if xs_map.is_empty() {
-                    return Ok(ys_thunk);
+                    return crate::error::DiagnosticResult::ok(ys_thunk).with_diagnostics(_dr_diags);
                 }
 
-                let ys = materialize(&ys_thunk, None, &ctx).await?;
+                let ys = {
+                    let (result, diags) = materialize(&ys_thunk, None, &ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
+                };
                 match ys {
                     Value::Dict {
                         entries: ref ys_map,
@@ -2350,23 +2935,25 @@ pub(crate) fn builtin_concat(
                         let mut idx = 0i64;
                         for (_key, thunk) in xs_map {
                             result.insert(HashableValue::Int(idx), Arc::clone(thunk));
-                            idx = idx.checked_add(1).ok_or_else(|| {
-                                Diagnostic::error(
+                            idx = match idx.checked_add(1) {
+                                Some(v) => v,
+                                None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                                     KIND,
                                     format!("{}: integer overflow", "concat"),
                                     call_span.clone(),
-                                )
-                            })?;
+                                )).with_diagnostics(_dr_diags),
+                            };
                         }
                         for (_key, thunk) in ys_map {
                             result.insert(HashableValue::Int(idx), Arc::clone(thunk));
-                            idx = idx.checked_add(1).ok_or_else(|| {
-                                Diagnostic::error(
+                            idx = match idx.checked_add(1) {
+                                Some(v) => v,
+                                None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                                     KIND,
                                     format!("{}: integer overflow", "concat"),
                                     call_span.clone(),
-                                )
-                            })?;
+                                )).with_diagnostics(_dr_diags),
+                            };
                         }
                         ok_val(
                             Value::Dict {
@@ -2377,9 +2964,9 @@ pub(crate) fn builtin_concat(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
-                    other => Err(Diagnostic::error(
+                    other => crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "{}: expected {}, got {}",
@@ -2389,11 +2976,10 @@ pub(crate) fn builtin_concat(
                         ),
                         ys_span,
                     )
-                    .with_materialization_span(call_span)
-                    .into()),
+                    .with_materialization_span(call_span)).with_diagnostics(_dr_diags),
                 }
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2403,8 +2989,7 @@ pub(crate) fn builtin_concat(
                 ),
                 xs_span,
             )
-            .with_materialization_span(call_span)
-            .into()),
+            .with_materialization_span(call_span)).with_diagnostics(_dr_diags),
         }
     })
 }

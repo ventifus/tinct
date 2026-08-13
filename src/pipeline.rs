@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::ast::{Spanned, SurfaceDocument, SurfaceItem};
+use crate::ast::{Spanned, SurfaceDocument};
 use crate::eval::EvalContext;
 use crate::symbol_table::{ScopeChain, SymbolTable};
 use crate::type_infer::InferState;
@@ -55,9 +55,13 @@ pub async fn typecheck_pipeline_document(
     let doc = doc_spanned.node.as_ref();
 
     // Step 1: Resolve this document against the current scope.
-    let _resolve_diags = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
+    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, &state.infer_state.type_stage_scope);
+    state
+        .infer_state
+        .diagnostics
+        .extend(resolve_result.diagnostics.iter().cloned());
 
-    // Sync type-stage data into InferState before typecheck.
+    // Step 2: Typecheck this document.
     // Step 2: Typecheck this document.
     // InferState is the single source of truth — no sync needed.
     let (_result_ty, tc_errors) = crate::typecheck::process_document(
@@ -84,11 +88,13 @@ pub async fn process_pipeline_document(
     doc_spanned: &Spanned<Arc<SurfaceDocument>>,
     state: &mut PipelineState,
     ctx: &Arc<EvalContext>,
-) -> Result<(), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<()> {
     let doc = doc_spanned.node.as_ref();
+    let mut diagnostics: Vec<crate::error::Diagnostic> = Vec::new();
 
     // Step 1: Resolve this document against the current scope.
-    let resolve_result = crate::resolve::resolve_document(doc, state.current_scope.last().unwrap());
+    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, &state.infer_state.type_stage_scope);
+    diagnostics.extend(resolve_result.diagnostics);
 
     // Step 1b: Wire Rust builtins into the resolver's scope frames.
     let builtin_defs = crate::builtins_core::core_builtins();
@@ -102,24 +108,13 @@ pub async fn process_pipeline_document(
                     },
                     crate::rust_span!(),
                 ));
-                // First-write-wins: builtins wired before eval writes Placeholder.
                 let _ = entry.value.set(thunk);
             }
         }
     }
 
-    // Step 2: Evaluate this document.
-    let expr_nodes: Vec<Arc<crate::ast::SurfaceNode>> = doc
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            SurfaceItem::Expr(node) => Some(Arc::clone(node)),
-            SurfaceItem::Decl(_) => None,
-        })
-        .collect();
+    // Step 2: Lower and evaluate the document body.
 
-    // Prepend the resolver's scope frames to the chain BEFORE eval.
-    // Entries have names/slots; values are written lazily by eval_dict.
     let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
         matches!(
             &stage_node.expr,
@@ -127,42 +122,32 @@ pub async fn process_pipeline_document(
             if content == "type"
         )
     });
-    for frame in resolve_result.scope_frames.iter().rev() {
-        if is_type_stage {
-            state
-                .infer_state
-                .type_stage_scope
-                .insert(0, Arc::clone(frame));
-        } else {
-            state.current_scope.insert(0, Arc::clone(frame));
-        }
-    }
 
-    // Step 3: Lower and evaluate. The scope chain now includes this document's
-    // dict scope, so thunks capture the correct context.
     let display_names = state.infer_state.type_display_names.clone();
-    let entries: Vec<Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> = expr_nodes
-        .iter()
-        .map(|node| {
-            Arc::new(
-                crate::lower::lower(node, &display_names)
-                    .take(&ctx.runtime_diagnostics)
-                    .expect("lowering always succeeds"),
-            )
-        })
-        .collect();
+    let lowered_body = Arc::new(
+        crate::lower::lower(&doc.body, &display_names)
+            .take(&ctx.runtime_diagnostics)
+            .expect("lowering always succeeds"),
+    );
 
-    let (_eval_scope, eval_diags) =
-        crate::eval::eval_document(&entries, ctx, state.current_scope.clone()).await;
-
-    for diag in &eval_diags {
-        if diag.level == crate::error::DiagnosticLevel::Err {
-            return Err(Box::new(diag.clone()));
+    let (eval_result, eval_diags) =
+        crate::eval_core::eval_core_expr(&lowered_body, &state.current_scope, ctx)
+            .await
+            .into_parts();
+    diagnostics.extend(eval_diags);
+    match eval_result {
+        Ok(thunk) => {
+            let (mat_result, mat_diags) =
+                crate::eval::materialize(&thunk, None, ctx).await.into_parts();
+            diagnostics.extend(mat_diags);
+            if let Err(e) = mat_result {
+                diagnostics.push(e);
+            }
         }
+        Err(e) => diagnostics.push(e),
     }
 
-    // Step 4: Typecheck. Type expression evaluation searches type_stage_scope
-    // first, giving type-stage entries priority over runtime entries.
+    // Step 3: Typecheck.
     let (_result_ty, tc_errors) = crate::typecheck::process_document(
         doc,
         &mut state.infer_state,
@@ -170,14 +155,25 @@ pub async fn process_pipeline_document(
         &mut None,
     )
     .await;
+    diagnostics.extend(tc_errors);
 
-    for err in &tc_errors {
-        if err.level == crate::error::DiagnosticLevel::Err {
-            return Err(Box::new(err.clone()));
+    // Step 4: Accumulate this document's scope frames for subsequent documents.
+    for frame in &resolve_result.scope_frames {
+        if is_type_stage {
+            state.infer_state.type_stage_scope.push(Arc::clone(frame));
+        } else {
+            state.current_scope.push(Arc::clone(frame));
         }
     }
 
-    Ok(())
+    let first_error = diagnostics
+        .iter()
+        .find(|d| d.level == crate::error::DiagnosticLevel::Err)
+        .cloned();
+    match first_error {
+        Some(err) => crate::error::DiagnosticResult::err(err).with_diagnostics(diagnostics),
+        None => crate::error::DiagnosticResult::ok(()).with_diagnostics(diagnostics),
+    }
 }
 
 #[cfg(test)]

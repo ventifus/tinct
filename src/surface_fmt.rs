@@ -25,10 +25,10 @@ fn scope_with_names(
 ) -> ScopeChain {
     let mut table = SymbolTable::new();
     for (i, name) in names.into_iter().enumerate() {
-        table.insert(name, i as u32, None);
+        table.insert(name, i as u32, crate::rust_span!());
     }
     let mut chain = parent_chain.clone();
-    chain.insert(0, Arc::new(table));
+    chain.push(Arc::new(table));
     chain
 }
 

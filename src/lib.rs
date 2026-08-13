@@ -120,7 +120,8 @@ pub use imports::{
 
 /// Error types with source spans and stack traces.
 pub use error::{
-    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel, SpanLabel,
+    format_diagnostic, render_span_snippet, ArityBound, Diagnostic, DiagnosticLevel,
+    DiagnosticResult, SpanLabel,
 };
 
 /// TypeValue: the Arc<Value>-based type representation used throughout the type checker.
@@ -198,9 +199,12 @@ pub async fn run_loader_pipeline(
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {
-        if let Err(e) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx).await
-        {
-            return crate::error::DiagnosticResult::err(*e).with_diagnostics(diagnostics);
+        let (result, doc_diags) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
+            .await
+            .into_parts();
+        diagnostics.extend(doc_diags);
+        if let Err(e) = result {
+            return crate::error::DiagnosticResult::err(e).with_diagnostics(diagnostics);
         }
     }
 
@@ -235,9 +239,12 @@ pub async fn run_loader_pipeline(
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
     let loader_program = expand::expand_program(&loader_program);
     for doc in &loader_program.documents {
-        if let Err(e) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx).await
-        {
-            return crate::error::DiagnosticResult::err(*e).with_diagnostics(diagnostics);
+        let (result, doc_diags) = crate::pipeline::process_pipeline_document(doc, &mut state, eval_ctx)
+            .await
+            .into_parts();
+        diagnostics.extend(doc_diags);
+        if let Err(e) = result {
+            return crate::error::DiagnosticResult::err(e).with_diagnostics(diagnostics);
         }
     }
 
@@ -276,6 +283,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     for doc in &core_program.documents {
         crate::pipeline::process_pipeline_document(doc, &mut state, &ctx)
             .await
+            .take(&ctx.runtime_diagnostics)
             .map_err(|e| format!("builtin_core.llt: {e}"))?;
     }
     let mut diagnostics = Vec::new();
@@ -320,6 +328,7 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     for doc in &core_program.documents {
         crate::pipeline::process_pipeline_document(doc, &mut state, &ctx)
             .await
+            .take(&ctx.runtime_diagnostics)
             .map_err(|e| format!("builtin_core.llt: {e}"))?;
     }
     let mut diagnostics = Vec::new();
@@ -361,7 +370,7 @@ pub trait ValueVisitor {
     type Output;
 
     fn visit_int(&self, v: i64) -> Self::Output;
-    fn visit_float(&self, v: f64, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
+    fn visit_float(&self, v: f64, span: ast::Span) -> crate::error::DiagnosticResult<Self::Output>;
     fn visit_str(&self, v: &str) -> Self::Output;
     fn visit_bytes(&self, v: &[u8]) -> Self::Output;
     fn visit_null(&self) -> Self::Output;
@@ -370,18 +379,18 @@ pub trait ValueVisitor {
         &self,
         head: Self::Output,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::Diagnostic>>;
+    ) -> crate::error::DiagnosticResult<Self::Output>;
     fn visit_function(
         &self,
         params: &[ast::Param],
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::Diagnostic>>;
+    ) -> crate::error::DiagnosticResult<Self::Output>;
     fn visit_builtin(
         &self,
         name: &str,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::Diagnostic>>;
-    fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
+    ) -> crate::error::DiagnosticResult<Self::Output>;
+    fn visit_proxy(&self, span: ast::Span) -> crate::error::DiagnosticResult<Self::Output>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
@@ -389,21 +398,21 @@ pub trait ValueVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<Self::Output, Box<error::Diagnostic>>;
+    ) -> crate::error::DiagnosticResult<Self::Output>;
     fn visit_duration(&self, nanos: i64) -> Self::Output;
-    fn visit_clock_cap(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
-    fn visit_timezone(&self, span: ast::Span) -> Result<Self::Output, Box<error::Diagnostic>>;
+    fn visit_clock_cap(&self, span: ast::Span) -> crate::error::DiagnosticResult<Self::Output>;
+    fn visit_timezone(&self, span: ast::Span) -> crate::error::DiagnosticResult<Self::Output>;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
         depth: usize,
         span: ast::Span,
-    ) -> Option<Result<Self::Output, Box<error::Diagnostic>>>;
+    ) -> Option<crate::error::DiagnosticResult<Self::Output>>;
 }
 
 /// Type alias for the pinned future returned by `visit_value`.
 type VisitValueFuture<'a, Output> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Output, Box<error::Diagnostic>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = crate::error::DiagnosticResult<Output>> + Send + 'a>,
 >;
 
 /// Shared structural traversal for materialised `Value` trees.
@@ -429,14 +438,14 @@ where
             return limit_result;
         }
         match val {
-            value::Value::Int { n, .. } => Ok(visitor.visit_int(*n)),
+            value::Value::Int { n, .. } => crate::error::DiagnosticResult::ok(visitor.visit_int(*n)),
             // U64 values: for serialization, emit as Int when they fit in i64,
             // otherwise serialize as BigInt equivalent. The visitor uses visit_bigint.
             value::Value::U64 { n, .. } => {
                 if let Ok(i) = i64::try_from(*n) {
-                    Ok(visitor.visit_int(i))
+                    crate::error::DiagnosticResult::ok(visitor.visit_int(i))
                 } else {
-                    Ok(visitor.visit_bigint(&num_bigint::BigInt::from(*n)))
+                    crate::error::DiagnosticResult::ok(visitor.visit_bigint(&num_bigint::BigInt::from(*n)))
                 }
             }
             value::Value::Float { n, .. } => visitor.visit_float(*n, span),
@@ -447,7 +456,7 @@ where
                 ..
             } => {
                 let s = &source[*start..*end];
-                Ok(visitor.visit_str(s))
+                crate::error::DiagnosticResult::ok(visitor.visit_str(s))
             }
             value::Value::Bytes {
                 ref source,
@@ -456,19 +465,28 @@ where
                 ..
             } => {
                 let bytes = &source[*start..*end];
-                Ok(visitor.visit_bytes(bytes))
+                crate::error::DiagnosticResult::ok(visitor.visit_bytes(bytes))
             }
             value::Value::Dict { entries: map, .. } => {
                 let mut entries = Vec::with_capacity(map.len());
                 for (key, thunk) in map {
-                    let v = eval::materialize(thunk, None, ctx).await?;
+                    let (mat_result, mat_diags) = eval::materialize(thunk, None, ctx).await.into_parts();
+                    let v = match mat_result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(mat_diags),
+                    };
                     let child_span = thunk.span.clone();
+                    let (child_result, child_diags) = visit_value(&v, ctx, depth + 1, visitor, child_span).await.into_parts();
+                    let child_output = match child_result {
+                        Ok(o) => o,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(child_diags),
+                    };
                     entries.push((
                         key.clone(),
-                        visit_value(&v, ctx, depth + 1, visitor, child_span).await?,
+                        child_output,
                     ));
                 }
-                Ok(visitor.visit_dict(entries))
+                crate::error::DiagnosticResult::ok(visitor.visit_dict(entries))
             }
             value::Value::Function { clauses, .. } => {
                 // Extract params from clause 0 (single-clause common case; T-2133 for multi-clause).
@@ -490,26 +508,26 @@ where
             }
             value::Value::Builtin { def, .. } => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
-            value::Value::DirCap { .. } => Err(Box::new(error::Diagnostic::error(
+            value::Value::DirCap { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "DirCap"),
                 span,
-            ))),
-            value::Value::NetCap { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::NetCap { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "NetCap"),
                 span,
-            ))),
-            value::Value::File { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::File { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "File"),
                 span,
-            ))),
-            value::Value::RevocableDirCap { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::RevocableDirCap { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "RevocableDirCap"),
                 span,
-            ))),
+            )),
             value::Value::Variant {
                 type_decl_id,
                 ctor_index,
@@ -519,13 +537,21 @@ where
                 let payload_output = match payload {
                     Some(thunk_id) => {
                         let thunk = Arc::clone(thunk_id);
-                        let v = eval::materialize(&thunk, None, ctx).await?;
+                        let (mat_result, mat_diags) = eval::materialize(&thunk, None, ctx).await.into_parts();
+                        let v = match mat_result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(mat_diags),
+                        };
                         let payload_span = thunk.span.clone();
-                        visit_value(&v, ctx, depth + 1, visitor, payload_span).await?
+                        let (child_result, child_diags) = visit_value(&v, ctx, depth + 1, visitor, payload_span).await.into_parts();
+                        match child_result {
+                            Ok(o) => o,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(child_diags),
+                        }
                     }
                     None => visitor.visit_null(),
                 };
-                Ok(visitor.visit_variant(
+                crate::error::DiagnosticResult::ok(visitor.visit_variant(
                     {
                         let empty = std::collections::HashMap::new();
                         let tycon_env = ctx.tycon_env().unwrap_or(&empty);
@@ -534,119 +560,119 @@ where
                     payload_output,
                 ))
             }
-            value::Value::Decimal { n: d, .. } => Ok(visitor.visit_decimal(*d)),
-            value::Value::BigInt { n, .. } => Ok(visitor.visit_bigint(n)),
-            value::Value::Uri { .. } => Err(Box::new(error::Diagnostic::error(
+            value::Value::Decimal { n: d, .. } => crate::error::DiagnosticResult::ok(visitor.visit_decimal(*d)),
+            value::Value::BigInt { n, .. } => crate::error::DiagnosticResult::ok(visitor.visit_bigint(n)),
+            value::Value::Uri { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Uri"),
                 span,
-            ))),
+            )),
             value::Value::Timestamp { ts, .. } => {
                 visitor.visit_timestamp(ts.as_nanosecond() as i64, span)
             }
-            value::Value::Duration { nanos, .. } => Ok(visitor.visit_duration(*nanos)),
+            value::Value::Duration { nanos, .. } => crate::error::DiagnosticResult::ok(visitor.visit_duration(*nanos)),
             value::Value::ClockCap { .. } => visitor.visit_clock_cap(span),
             value::Value::Timezone { .. } => visitor.visit_timezone(span),
-            value::Value::QuicSession { .. } => Err(Box::new(error::Diagnostic::error(
+            value::Value::QuicSession { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "QuicSession"),
                 span,
-            ))),
-            value::Value::Http2Session { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Http2Session { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Http2Session"),
                 span,
-            ))),
-            value::Value::Http3Session { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Http3Session { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Http3Session"),
                 span,
-            ))),
-            value::Value::QuicDatagramHandle { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::QuicDatagramHandle { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "QuicDatagramHandle"),
                 span,
-            ))),
-            value::Value::Program { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Program { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Program"),
                 span,
-            ))),
-            value::Value::Document { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Document { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Document"),
                 span,
-            ))),
+            )),
             // Expr.* variants (Value::Variant) are handled by the Variant arm above.
-            value::Value::Task { .. } => Err(Box::new(error::Diagnostic::error(
+            value::Value::Task { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Task"),
                 span,
-            ))),
-            value::Value::Channel { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Channel { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Channel"),
                 span,
-            ))),
-            value::Value::Context { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Context { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Context"),
                 span,
-            ))),
-            value::Value::ReactiveCell { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::ReactiveCell { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "ReactiveCell"),
                 span,
-            ))),
-            value::Value::Builder(_) => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Builder(_) => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Builder"),
                 span,
-            ))),
-            value::Value::BroadcastChannel { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::BroadcastChannel { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "BroadcastChannel"),
                 span,
-            ))),
-            value::Value::OneshotSender { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::OneshotSender { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "OneshotSender"),
                 span,
-            ))),
-            value::Value::OneshotReceiver { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::OneshotReceiver { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "OneshotReceiver"),
                 span,
-            ))),
+            )),
             // Annotated is transparent — delegate to inner value serialization.
             value::Value::Annotated { inner, .. } => {
                 visit_value(inner, ctx, depth, visitor, span).await
             }
-            value::Value::TypeContext { .. } => Err(Box::new(error::Diagnostic::error(
+            value::Value::TypeContext { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "TypeContext"),
                 span,
-            ))),
-            value::Value::Expression { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Expression { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Expression"),
                 span,
-            ))),
-            value::Value::Arena { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::Arena { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "Arena"),
                 span,
-            ))),
-            value::Value::CoreDocument { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::CoreDocument { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "CoreDocument"),
                 span,
-            ))),
-            value::Value::SymbolTable { .. } => Err(Box::new(error::Diagnostic::error(
+            )),
+            value::Value::SymbolTable { .. } => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_EVAL,
                 format!("cannot serialize {} to JSON", "SymbolTable"),
                 span,
-            ))),
+            )),
         }
     })
 }
@@ -756,11 +782,11 @@ impl ValueVisitor for TinctReprVisitor {
     fn visit_int(&self, v: i64) -> String {
         v.to_string()
     }
-    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
+    fn visit_float(&self, v: f64, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
         if v.fract() == 0.0 && v.is_finite() {
-            Ok(format!("{v:.1}"))
+            crate::error::DiagnosticResult::ok(format!("{v:.1}"))
         } else {
-            Ok(v.to_string())
+            crate::error::DiagnosticResult::ok(v.to_string())
         }
     }
     fn visit_str(&self, v: &str) -> String {
@@ -827,26 +853,26 @@ impl ValueVisitor for TinctReprVisitor {
         &self,
         head: String,
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
-        Ok(format!("[{head}  ...]"))
+    ) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok(format!("[{head}  ...]"))
     }
     fn visit_function(
         &self,
         params: &[ast::Param],
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<String> {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-        Ok(format!("[fn [let {}] ...]", names.join(" ")))
+        crate::error::DiagnosticResult::ok(format!("[fn [let {}] ...]", names.join(" ")))
     }
     fn visit_builtin(
         &self,
         name: &str,
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
-        Ok(format!("<builtin:{name}>"))
+    ) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok(format!("<builtin:{name}>"))
     }
-    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("<proxy>".to_string())
+    fn visit_proxy(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("<proxy>".to_string())
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
         if payload == "[]" {
@@ -866,32 +892,32 @@ impl ValueVisitor for TinctReprVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<String> {
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
-            Ok(ts) => Ok(format!("{ts}")),
-            Err(e) => Err(Box::new(error::Diagnostic::error(
+            Ok(ts) => crate::error::DiagnosticResult::ok(format!("{ts}")),
+            Err(e) => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_SERIALIZE,
                 format!("invalid timestamp: {e}"),
                 span,
-            ))),
+            )),
         }
     }
     fn visit_duration(&self, nanos: i64) -> String {
         format!("<duration:{nanos}ns>")
     }
-    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("<clock>".to_string())
+    fn visit_clock_cap(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("<clock>".to_string())
     }
-    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("<timezone>".to_string())
+    fn visit_timezone(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("<timezone>".to_string())
     }
     fn depth_limit_output(
         &self,
         depth: usize,
         _span: ast::Span,
-    ) -> Option<Result<String, Box<error::Diagnostic>>> {
+    ) -> Option<crate::error::DiagnosticResult<String>> {
         if depth >= MAX_DISPLAY_DEPTH {
-            Some(Ok("...".to_string()))
+            Some(crate::error::DiagnosticResult::ok("...".to_string()))
         } else {
             None
         }
@@ -906,8 +932,8 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_int(&self, v: i64) -> String {
         format!("Int({v})")
     }
-    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok(format!("Float({v})"))
+    fn visit_float(&self, v: f64, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok(format!("Float({v})"))
     }
     fn visit_str(&self, v: &str) -> String {
         format!("String({v:?})")
@@ -941,26 +967,26 @@ impl ValueVisitor for DisplayVisitor {
         &self,
         head: String,
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
-        Ok(format!("Seq({head}, ...)"))
+    ) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok(format!("Seq({head}, ...)"))
     }
     fn visit_function(
         &self,
         params: &[ast::Param],
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<String> {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-        Ok(format!("Function({})", names.join(", ")))
+        crate::error::DiagnosticResult::ok(format!("Function({})", names.join(", ")))
     }
     fn visit_builtin(
         &self,
         name: &str,
         _span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
-        Ok(format!("Builtin({name})"))
+    ) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok(format!("Builtin({name})"))
     }
-    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("Proxy".to_string())
+    fn visit_proxy(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("Proxy".to_string())
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
         format!("Variant({tag}, {payload})")
@@ -975,33 +1001,33 @@ impl ValueVisitor for DisplayVisitor {
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<String> {
         // Format as RFC 3339 for readability
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
-            Ok(ts) => Ok(format!("Timestamp({})", ts)),
-            Err(e) => Err(Box::new(error::Diagnostic::error(
+            Ok(ts) => crate::error::DiagnosticResult::ok(format!("Timestamp({})", ts)),
+            Err(e) => crate::error::DiagnosticResult::err(error::Diagnostic::error(
                 KIND_SERIALIZE,
                 format!("invalid timestamp: {e}"),
                 span,
-            ))),
+            )),
         }
     }
     fn visit_duration(&self, nanos: i64) -> String {
         format!("Duration({} ns)", nanos)
     }
-    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("ClockCap".to_string())
+    fn visit_clock_cap(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("ClockCap".to_string())
     }
-    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::Diagnostic>> {
-        Ok("Timezone".to_string())
+    fn visit_timezone(&self, _span: ast::Span) -> crate::error::DiagnosticResult<String> {
+        crate::error::DiagnosticResult::ok("Timezone".to_string())
     }
     fn depth_limit_output(
         &self,
         depth: usize,
         _span: ast::Span,
-    ) -> Option<Result<String, Box<error::Diagnostic>>> {
+    ) -> Option<crate::error::DiagnosticResult<String>> {
         if depth >= MAX_DISPLAY_DEPTH {
-            Some(Ok("...".to_string()))
+            Some(crate::error::DiagnosticResult::ok("...".to_string()))
         } else {
             None
         }
@@ -1028,7 +1054,7 @@ pub async fn value_to_tinct_repr_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     span: ast::Span,
-) -> Result<String, Box<error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<String> {
     visit_value(val, ctx, 0, &TinctReprVisitor, span).await
 }
 
@@ -1036,7 +1062,7 @@ pub async fn value_to_display_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     span: ast::Span,
-) -> Result<String, Box<error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<String> {
     let depth = 0;
     visit_value(val, ctx, depth, &DisplayVisitor, span).await
 }
@@ -1102,7 +1128,7 @@ mod tests {
         val: &value::Value,
         ctx: &Arc<eval::EvalContext>,
         span: ast::Span,
-    ) -> Result<String, Box<error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<String> {
         super::value_to_display_string(val, ctx, span).await
     }
 
@@ -1148,10 +1174,10 @@ mod tests {
 
         let red_display = value_to_display_string(&red_val, &ctx, rust_span!())
             .await
-            .expect("display should succeed for Color.Red");
+            .into_parts().0.expect("display should succeed for Color.Red");
         let green_display = value_to_display_string(&green_val, &ctx, rust_span!())
             .await
-            .expect("display should succeed for Color.Green");
+            .into_parts().0.expect("display should succeed for Color.Green");
 
         // Must serialize as a generic variant.
         assert_eq!(
@@ -1172,7 +1198,7 @@ mod tests {
         };
         let user_display = value_to_display_string(&user_val, &ctx, rust_span!())
             .await
-            .expect("display should succeed for MyBool.Yes");
+            .into_parts().0.expect("display should succeed for MyBool.Yes");
         assert_eq!(
             user_display, "Variant(Ctor(501.0), Null)",
             "User-defined unit variant must serialise uniformly"
@@ -1195,7 +1221,7 @@ mod tests {
         };
         let display = value_to_display_string(&proxy, &ctx, rust_span!())
             .await
-            .expect("display failed");
+            .into_parts().0.expect("display failed");
         assert_eq!(display, "Proxy");
     }
 

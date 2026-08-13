@@ -70,7 +70,7 @@ pub(crate) struct Scc {
 /// Instantiated function signature — groups the five signature fields that always travel
 /// together through call-checking helpers. Owned data; no lifetime parameters.
 struct FnSig {
-    params: Vec<(Option<String>, TypeValue)>,
+    params: Vec<(Option<String>, TypeValue, Span)>,
     ret: TypeValue,
     typed_variadics: Vec<(String, TypeValue)>,
     rest: Option<Box<(String, TypeValue)>>,
@@ -83,6 +83,35 @@ struct TypeCheckCtx<'a, 'b> {
     state: &'a mut InferState,
     errors: &'a mut Vec<Diagnostic>,
     type_map: &'a mut Option<&'b mut TypeMap>,
+}
+
+fn attach_type_definition_spans(
+    diag: &mut Diagnostic,
+    actual_ty: &crate::type_infer::TypeValue,
+    expected_ty: &crate::type_infer::TypeValue,
+    ctx: &crate::type_infer::InferenceContext,
+) {
+    let id_a = crate::type_infer::typevalue_nominal_id(actual_ty);
+    let id_b = crate::type_infer::typevalue_nominal_id(expected_ty);
+    let fmt = |ty: &crate::type_infer::TypeValue| {
+        crate::eval::format_type_with_names(ty, &ctx.type_display_names)
+    };
+    if let Some(id) = id_a {
+        if let Some(def_span) = ctx.type_definition_spans.get(&id) {
+            diag.push_label(def_span.clone(), format!(
+                "{} (type_decl_id {}) defined here", fmt(actual_ty), id,
+            ));
+        }
+    }
+    if let Some(id) = id_b {
+        if id_a != Some(id) {
+            if let Some(def_span) = ctx.type_definition_spans.get(&id) {
+                diag.push_label(def_span.clone(), format!(
+                    "{} (type_decl_id {}) defined here", fmt(expected_ty), id,
+                ));
+            }
+        }
+    }
 }
 
 // ===== FD improvement ========================================================
@@ -214,7 +243,7 @@ pub(crate) enum TypeCheckCont {
         /// Pre-resolved return annotation TypeValue (overrides body type when concrete).
         return_ann: Option<TypeValue>,
         /// Resolved fixed param types (non-variadic).
-        params: Vec<(Option<String>, TypeValue)>,
+        params: Vec<(Option<String>, TypeValue, Span)>,
         /// Typed variadic buckets: (name, Seq[T]) in declaration order.
         typed_variadics: Vec<(String, TypeValue)>,
         /// Untyped variadic fallback: (name, TypeVar_whole_dict).
@@ -244,7 +273,7 @@ pub(crate) enum TypeCheckCont {
         /// All positional arg nodes (full list, not just remaining) — used for type_guard.
         arg_nodes: Vec<Arc<SurfaceNode>>,
         /// Param types from the instantiated function type.
-        param_types: Vec<(Option<String>, TypeValue)>,
+        param_types: Vec<(Option<String>, TypeValue, Span)>,
         fn_ret: TypeValue,
         /// Typed variadic buckets in declaration order: (name, Seq[T]).
         typed_variadics: Vec<(String, TypeValue)>,
@@ -284,9 +313,7 @@ pub(crate) enum TypeCheckCont {
     ///
     /// Lost-binding detection uses SymbolTable unreferenced-entry checks.
     AfterBlock {
-        /// Saved state.use_def from the enclosing block (or empty map if at top level).
-        /// Restored after AfterBlock fires so that nested blocks do not corrupt
-        /// the outer block's liveness graph.
+        saved_scope_depth: usize,
         saved_use_def: std::collections::HashMap<BindingId, std::collections::HashSet<BindingId>>,
         saved_current_binding: Option<BindingId>,
         saved_narrowing_map:
@@ -550,6 +577,7 @@ async fn infer_step(
             // so that edges from a previous (or outer) Sequential scope don't contaminate this
             // one. The saved values are restored by AfterBlock so that nested
             // Sequentials do not corrupt the outer Sequential's liveness graph.
+            let saved_scope_depth = state.current_scope.len();
             let saved_use_def = std::mem::take(&mut state.use_def);
             let saved_current_binding = state.current_binding.take();
 
@@ -557,9 +585,6 @@ async fn infer_step(
                 if let SurfaceExpression::Dict { entries, ref scope } = &intermediate.expr {
                     let _ = enter_dict_scope(entries, scope, state, type_map, errors).await;
                 } else {
-                    // Every tinct expression is a dict. A non-Dict in intermediate position
-                    // means the program is malformed (e.g. a corpus test with a syntax error).
-                    // Emit a recoverable error so init programs (test-loader) can capture it.
                     errors.push(Diagnostic::error(
                         KIND,
                         "expected record type: sequential intermediate body must be a dict expression",
@@ -568,12 +593,10 @@ async fn infer_step(
                 }
             }
 
-            // Clear current_binding: typecheck_letrec_group leaves state.current_binding set to the
-            // last entry it processed. If left set, VarRefs in the final expression would be
-            // attributed to that stale binding, creating spurious use_def edges.
             state.current_binding = None;
             stack.push((
                 TypeCheckCont::AfterBlock {
+                    saved_scope_depth,
                     saved_use_def,
                     saved_current_binding,
                     saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
@@ -964,7 +987,7 @@ async fn apply_cont(
             // Build the function TypeValue — include variadic flag and typed variadic buckets
             // so call sites can perform correct arity checking and bucket-type dispatch.
             let is_variadic_fn = rest.is_some() || !typed_variadics.is_empty();
-            // Convert typed_variadics from Vec<(String, TypeValue)> to Vec<(Option<String>, TypeValue)>
+            // Convert typed_variadics from Vec<(String, TypeValue)> to Vec<(Option<String>, TypeValue, Span)>
             // for make_typevalue_fn_with_flags (which uses Option<String> to match the param pattern).
             let typed_variadics_for_fn: Vec<(Option<String>, TypeValue)> = typed_variadics
                 .iter()
@@ -977,7 +1000,7 @@ async fn apply_cont(
                     crate::eval::format_type_with_names(&fn_ret_ty, &state.ctx.type_display_names);
                 let params_str = params
                     .iter()
-                    .map(|(name, ty)| {
+                    .map(|(name, ty, _span)| {
                         format!(
                             "{}: {}",
                             name.as_deref().unwrap_or("_"),
@@ -1177,10 +1200,10 @@ async fn apply_cont(
 
             // Set up the first arm's environment iteratively; subsequent arms via MatchArm.
             let remaining_scrutinee = scrutinee_ty.clone();
+            let saved_scope_depth = state.current_scope.len();
             match setup_match_arm_env(&arms[0], &remaining_scrutinee, state, errors, type_map).await
             {
                 None => {
-                    // Setup failed: fresh TypeVar (unconstrained)
                     TypeCheckAction::Done(state.fresh_type_var(&span))
                 }
                 Some((next_remaining_scrutinee, guard_narrowings)) => {
@@ -1198,6 +1221,7 @@ async fn apply_cont(
                     ));
                     stack.push((
                         TypeCheckCont::AfterBlock {
+                            saved_scope_depth,
                             saved_use_def: std::mem::take(&mut state.use_def),
                             saved_current_binding: state.current_binding.take(),
                             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
@@ -1244,7 +1268,7 @@ async fn apply_cont(
                 };
                 TypeCheckAction::Done(match_ty)
             } else {
-                // Set up environment for the next arm and push another MatchArm.
+                let saved_scope_depth = state.current_scope.len();
                 match setup_match_arm_env(
                     &remaining_arms[0],
                     &remaining_scrutinee,
@@ -1255,9 +1279,7 @@ async fn apply_cont(
                 .await
                 {
                     None => {
-                        // Setup failed — normalize accumulated arm types and stop
                         let match_ty = if accumulated_types.is_empty() {
-                            // No arms: fresh TypeVar (unconstrained)
                             state.fresh_type_var(&span)
                         } else {
                             typevalue_normalize_union_ctx(accumulated_types, Some(&state.ctx))
@@ -1279,6 +1301,7 @@ async fn apply_cont(
                         ));
                         stack.push((
                             TypeCheckCont::AfterBlock {
+                                saved_scope_depth,
                                 saved_use_def: std::mem::take(&mut state.use_def),
                                 saved_current_binding: state.current_binding.take(),
                                 saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
@@ -1499,33 +1522,30 @@ async fn apply_cont(
         //
         // Lost-binding detection uses SymbolTable unreferenced-entry checks.
         TypeCheckCont::AfterBlock {
+            saved_scope_depth,
             saved_use_def,
             saved_current_binding,
             saved_narrowing_map,
         } => {
-            if let Some(popped_scope) = state.current_scope.last() {
-                for slot_idx in 0..popped_scope.len() {
-                    let slot = slot_idx as u32;
-                    if let Some(entry) = popped_scope.entries().get_index(slot as usize) {
+            for frame in state.current_scope[saved_scope_depth..].iter() {
+                for slot_idx in 0..frame.len() {
+                    if let Some(entry) = frame.entries().get_index(slot_idx) {
                         if entry.1.type_scheme.get().is_some()
                             && !entry
                                 .1
                                 .referenced
                                 .load(std::sync::atomic::Ordering::Relaxed)
                         {
-                            if let Some(def_span) = &entry.1.definition_span {
-                                errors.push(Diagnostic::warn(
-                                    KIND,
-                                    "binding is never used",
-                                    def_span.clone(),
-                                ));
-                            }
+                            errors.push(Diagnostic::warn(
+                                KIND,
+                                "binding is never used",
+                                entry.1.definition_span.clone(),
+                            ));
                         }
                     }
                 }
             }
-            state.current_scope.pop();
-            // Restore enclosing block's state fields.
+            state.current_scope.truncate(saved_scope_depth);
             state.use_def = saved_use_def;
             state.current_binding = saved_current_binding;
             state.narrowing_map = saved_narrowing_map;
@@ -1677,7 +1697,7 @@ async fn infer_var_ref(
                     if entry_exists {
                         let dep_def_span =
                             SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
-                                .and_then(|e| e.definition_span.clone());
+                                .map(|e| e.definition_span.clone());
                         if let Some(entry) =
                             SymbolTable::lookup_in_chain(&state.current_scope, resolver_level, slot)
                         {
@@ -1726,11 +1746,31 @@ async fn infer_var_ref(
                 }
             } // close match addr
         } else {
-            errors.push(Diagnostic::error(
+            let resolution_status = if let SurfaceExpression::VarRef { resolution, .. } = &node.expr {
+                match resolution.get() {
+                    Some(Some(_)) => "resolved but no addr match (bug)",
+                    Some(None) => "resolver visited, name not found in scope",
+                    None => "resolver did not visit this node",
+                }
+            } else {
+                "not a VarRef"
+            };
+            let mut diag = Diagnostic::error(
                 KIND,
                 format!("unresolved variable: '{}'", name),
                 node.span.clone(),
-            ));
+            );
+            diag.push_label(node.span.clone(), resolution_status.to_string());
+            for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                &state.current_scope,
+                None,
+            ) {
+                diag = diag.with_note(note);
+            }
+            if !state.type_stage_scope.is_empty() {
+                diag = diag.with_note(format!("type_stage_scope: {} frames", state.type_stage_scope.len()));
+            }
+            errors.push(diag);
             None
         }
     } else {
@@ -1942,12 +1982,14 @@ async fn apply_cont_call_func(
             // named-arg matching in finalize_call_with_args can distinguish "has an identifier
             // name" from "is positional-only." Index strings ("0", "1") must never be used as
             // if they were identifier names.
-            let inst_params: Vec<(Option<String>, TypeValue)> = fn_params_tv
+            let param_spans = crate::type_infer::typevalue_fn_param_spans(&func_ty, fn_params_tv.len());
+            let inst_params: Vec<(Option<String>, TypeValue, Span)> = fn_params_tv
                 .iter()
                 .enumerate()
                 .map(|(i, tv)| {
                     let name = param_names.get(i).and_then(|n| n.clone());
-                    (name, ctx.state.apply(tv))
+                    let span = param_spans[i].clone();
+                    (name, ctx.state.apply(tv), span)
                 })
                 .collect();
             let inst_ret = ctx.state.apply(&fn_ret_tv);
@@ -1976,7 +2018,6 @@ async fn apply_cont_call_func(
             let inst_variadic = !inst_typed_variadics.is_empty() || inst_rest.is_some();
 
             if args.is_empty() {
-                // No positional args — arity is checked inside finalize_call_no_positional_args.
                 let sig = FnSig {
                     params: inst_params,
                     ret: inst_ret,
@@ -1984,9 +2025,13 @@ async fn apply_cont_call_func(
                     rest: inst_rest,
                     required_count: inst_required,
                 };
-                let result =
-                    finalize_call_no_positional_args(sig, named_args, call_node.span.clone(), ctx)
-                        .await;
+                let action = apply_call_args_poly(
+                    Vec::new(), Vec::new(), sig, named_args, call_node.span.clone(), None, ctx,
+                ).await;
+                let result = match action {
+                    TypeCheckAction::Done(ty) => ty,
+                    _ => make_typevalue_never(),
+                };
                 // Wire type instantiation on call_node.
                 if let Some(renaming) = ctx.state.last_scheme_renaming.take() {
                     let mut type_inst = std::collections::HashMap::new();
@@ -2421,126 +2466,6 @@ async fn apply_cont_call_func(
     }
 }
 
-// ===== Inline helper: finalize call with no positional args =====
-
-async fn finalize_call_no_positional_args(
-    sig: FnSig,
-    named_args: Vec<Spanned<SurfaceNamedArg>>,
-    span: Span,
-    ctx: &mut TypeCheckCtx<'_, '_>,
-) -> TypeValue {
-    let FnSig {
-        params,
-        ret,
-        typed_variadics,
-        rest,
-        required_count,
-    } = sig;
-    let variadic = !typed_variadics.is_empty() || rest.is_some();
-    // required_count is fixed-params-only (variadics not included) — no saturating_sub needed.
-    let min_required = required_count;
-
-    if named_args.is_empty() && min_required > 0 {
-        let err = Diagnostic::error(
-            KIND,
-            format!("arity mismatch: expected {} arguments, got 0", min_required),
-            span.clone(),
-        );
-        ctx.errors.push(err.clone());
-        // Arity error: Never (error recovery)
-        return make_typevalue_never();
-    }
-
-    let mut consumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut seen_named_arg_names: std::collections::HashSet<String> = Default::default();
-    for na in &named_args {
-        if !seen_named_arg_names.insert(na.node.name.clone()) {
-            ctx.errors.push(Diagnostic::error(
-                KIND,
-                format!("duplicate named argument: '{}'", na.node.name),
-                na.span.clone(),
-            ));
-            continue;
-        }
-        let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
-            if pname.as_ref().map(|s| s.as_str()) == Some(na.node.name.as_str()) {
-                Some((idx, pty.clone()))
-            } else {
-                None
-            }
-        });
-        match param_match {
-            Some((param_idx, param_ty)) => {
-                consumed.insert(param_idx);
-                let arg_ty = {
-                    let mut local_stack = Vec::new();
-                    Box::pin(run_typecheck(
-                        &na.node.value,
-                        ctx.state,
-                        ctx.errors,
-                        ctx.type_map,
-                        &mut local_stack,
-                    ))
-                    .await
-                };
-                let mut constraints = std::mem::take(&mut ctx.state.constraints);
-                if let Err(mut e) = constrain(
-                    &arg_ty,
-                    &param_ty,
-                    &mut ctx.state.ctx,
-                    &mut constraints,
-                    na.span.clone(),
-                )
-                .await
-                {
-                    e = e.with_note(format!(
-                        "expected: {} (parameter '{}')",
-                        crate::eval::format_type_with_names(
-                            &ctx.state.apply(&param_ty),
-                            &ctx.state.ctx.type_display_names
-                        ),
-                        na.node.name
-                    ));
-                    e = e.with_note(format!(
-                        "actual:   {}",
-                        crate::eval::format_type_with_names(
-                            &ctx.state.apply(&arg_ty),
-                            &ctx.state.ctx.type_display_names
-                        )
-                    ));
-                    ctx.errors.push(e);
-                }
-                ctx.state.constraints = constraints;
-                run_fd_improvement_fixpoint(ctx.state, ctx.errors, na.span.clone()).await;
-            }
-            None => {
-                if !variadic {
-                    ctx.errors.push(Diagnostic::error(
-                        KIND,
-                        format!(
-                            "unknown named argument: function has no parameter named '{}'",
-                            na.node.name
-                        ),
-                        na.span.clone(),
-                    ));
-                } else {
-                    let mut local_stack = Vec::new();
-                    let _ = Box::pin(run_typecheck(
-                        &na.node.value,
-                        ctx.state,
-                        ctx.errors,
-                        ctx.type_map,
-                        &mut local_stack,
-                    ))
-                    .await;
-                }
-            }
-        }
-    }
-
-    ctx.state.apply(&ret)
-}
-
 // ===== Inline helper: CALL-POLY arg unification =====
 
 async fn apply_call_args_poly(
@@ -2650,7 +2575,7 @@ async fn apply_call_args_poly(
 
     // Unify positional args against fixed params (Robinson unification via unify())
     let mut consumed_params: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for (idx, ((param_name, param_ty), arg_ty)) in param_types
+    for (idx, ((param_name, param_ty, param_def_span), arg_ty)) in param_types
         .iter()
         .take(non_variadic_param_count)
         .zip(arg_types.iter())
@@ -2687,27 +2612,31 @@ async fn apply_call_args_poly(
             // Attach the specific argument's span as a secondary annotation so users
             // can navigate to the exact expression that has the wrong type.
             if let Some(arg_node) = arg_nodes.get(idx) {
-                e = e.with_span(arg_node.span.clone(), "this argument".to_string());
+                e = e.with_label(arg_node.span.clone(), format!(
+                    "actual: {}",
+                    crate::eval::format_type_with_names(
+                        &ctx.state.apply(&widened_arg),
+                        &ctx.state.ctx.type_display_names
+                    ),
+                ));
             }
-            let param_label = match param_name {
-                Some(name) => format!(" (parameter '{}')", name),
-                None => String::new(),
-            };
-            e = e.with_note(format!(
-                "expected: {}{}",
-                crate::eval::format_type_with_names(
-                    &ctx.state.apply(param_ty),
-                    &ctx.state.ctx.type_display_names
-                ),
-                param_label,
-            ));
-            e = e.with_note(format!(
-                "actual:   {}",
-                crate::eval::format_type_with_names(
-                    &ctx.state.apply(&widened_arg),
-                    &ctx.state.ctx.type_display_names
-                ),
-            ));
+            {
+                let param_name_str = param_name.as_deref().unwrap_or("_");
+                e = e.with_label(param_def_span.clone(), format!(
+                    "expected: {} (parameter '{}')",
+                    crate::eval::format_type_with_names(
+                        &ctx.state.apply(param_ty),
+                        &ctx.state.ctx.type_display_names
+                    ),
+                    param_name_str,
+                ));
+            }
+            attach_type_definition_spans(
+                &mut e,
+                &ctx.state.apply(&widened_arg),
+                &ctx.state.apply(param_ty),
+                &ctx.state.ctx,
+            );
             ctx.errors.push(e);
         }
         ctx.state.constraints = constraints;
@@ -2845,15 +2774,15 @@ async fn apply_call_args_poly(
         let param_match = param_types
             .iter()
             .enumerate()
-            .find_map(|(idx, (pname, pty))| {
+            .find_map(|(idx, (pname, pty, pspan))| {
                 if pname.as_ref().map(|s| s.as_str()) == Some(na.node.name.as_str()) {
-                    Some((idx, pty.clone()))
+                    Some((idx, pty.clone(), pspan.clone()))
                 } else {
                     None
                 }
             });
         match param_match {
-            Some((param_idx, param_ty)) => {
+            Some((param_idx, param_ty, param_span)) => {
                 if consumed_params.contains(&param_idx) {
                     ctx.errors.push(Diagnostic::error(
                         KIND,
@@ -2887,14 +2816,25 @@ async fn apply_call_args_poly(
                 )
                 .await
                 {
-                    ctx.errors.push(Diagnostic::error(
+                    let mut diag = Diagnostic::error(
                         KIND,
                         format!(
                             "named argument '{}' type mismatch: {}",
                             na.node.name, e.message
                         ),
                         na.span.clone(),
+                    );
+                    diag = diag.with_label(param_span.clone(), format!(
+                        "expected: parameter '{}'",
+                        na.node.name,
                     ));
+                    attach_type_definition_spans(
+                        &mut diag,
+                        &ctx.state.apply(&arg_ty),
+                        &ctx.state.apply(&param_ty),
+                        &ctx.state.ctx,
+                    );
+                    ctx.errors.push(diag);
                 }
                 ctx.state.constraints = constraints;
                 run_fd_improvement_fixpoint(ctx.state, ctx.errors, na.span.clone()).await;
@@ -3012,6 +2952,7 @@ async fn infer_fn_push_cont(
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<(TypeCheckCont, Arc<SurfaceNode>)>,
 ) -> TypeCheckAction {
+    let saved_scope_depth = state.current_scope.len();
     let (return_ann, params, body) = match &node.expr {
         SurfaceExpression::Fn {
             return_ann,
@@ -3159,7 +3100,7 @@ async fn infer_fn_push_cont(
     let expected_params: Option<Vec<TypeValue>> = state.expected_fn_params.take();
 
     // Fn param types are written to SymbolTable at the resolver-assigned slot.
-    let mut param_types: Vec<(Option<String>, TypeValue)> = Vec::new();
+    let mut param_types: Vec<(Option<String>, TypeValue, Span)> = Vec::new();
     let mut typed_variadics: Vec<(String, TypeValue)> = Vec::new();
     let mut rest: Option<Box<(String, TypeValue)>> = None;
     let mut fixed_param_idx: usize = 0;
@@ -3298,7 +3239,7 @@ async fn infer_fn_push_cont(
                 );
                 errors.push(err);
             }
-            param_types.push((Some(p.node.name.clone()), param_ty));
+            param_types.push((Some(p.node.name.clone()), param_ty, p.span.clone()));
             fixed_param_idx += 1;
         }
     }
@@ -3316,7 +3257,7 @@ async fn infer_fn_push_cont(
         // to collect free TypeVar names from each TypeValue.
         let used_var_set: std::collections::HashSet<String> = {
             let mut s = std::collections::HashSet::new();
-            for (_, pt) in &param_types {
+            for (_, pt, _) in &param_types {
                 for v in state.ctx.free_vars(pt) {
                     s.insert(v);
                 }
@@ -3429,6 +3370,7 @@ async fn infer_fn_push_cont(
     ));
     stack.push((
         TypeCheckCont::AfterBlock {
+            saved_scope_depth,
             saved_use_def: std::mem::take(&mut state.use_def),
             saved_current_binding: state.current_binding.take(),
             saved_narrowing_map: std::mem::take(&mut state.narrowing_map),
@@ -3436,7 +3378,6 @@ async fn infer_fn_push_cont(
         Arc::clone(node),
     ));
 
-    // Evaluate body iteratively via the CEK loop.
     TypeCheckAction::Eval(Arc::clone(body))
 }
 
@@ -4376,8 +4317,8 @@ pub(crate) fn adt_value_type(alias_body: &TypeValue) -> TypeValue {
                 } else {
                     // Payload constructor: wrap as a function that takes named fields and returns the variant.
                     let fields = typevalue_record_fields_pub(m);
-                    let fn_params: Vec<(Option<String>, TypeValue)> =
-                        fields.into_iter().map(|(k, v)| (Some(k), v)).collect();
+                    let fn_params: Vec<(Option<String>, TypeValue, Span)> =
+                        fields.into_iter().map(|(k, v)| (Some(k), v, crate::rust_span!())).collect();
                     make_typevalue_fn(fn_params, Arc::clone(m))
                 };
                 ctor_dict_fields.insert(ctor_s, ctor_type);
@@ -4918,6 +4859,10 @@ pub(crate) async fn typecheck_letrec_group(
                             .ctx
                             .type_display_names
                             .insert(*type_decl_id, name.clone());
+                        state
+                            .ctx
+                            .type_definition_spans
+                            .insert(*type_decl_id, entries[idx].span.clone());
                     }
                 }
             }
@@ -4993,14 +4938,14 @@ pub(crate) async fn typecheck_letrec_group(
                 if let Some(ref name) = key_name {
                     let _abs_slot = entry_slots[idx];
                     if let SurfaceExpression::Fn { params, .. } = &entry.node.value.expr {
-                        let mut fn_params: Vec<(Option<String>, TypeValue)> = Vec::new();
+                        let mut fn_params: Vec<(Option<String>, TypeValue, Span)> = Vec::new();
                         let mut pre_is_variadic = false;
                         for p in params {
                             if p.node.variadic {
                                 pre_is_variadic = true;
                             } else {
                                 let ty = state.fresh_type_var(&p.span);
-                                fn_params.push((Some(p.node.name.clone()), ty));
+                                fn_params.push((Some(p.node.name.clone()), ty, p.span.clone()));
                             }
                         }
                         let ret_var = state.fresh_type_var(&entry.span);
@@ -5318,12 +5263,7 @@ pub(crate) async fn typecheck_letrec_group(
         // accumulated during this SCC's inference. Must run after the subst merge so that
         // normalized types reflect all bindings made during this SCC.
         {
-            let scc_span = scc
-                .indices
-                .first()
-                .and_then(|&idx| entries.get(idx))
-                .map(|e| e.node.value.span.clone())
-                .unwrap_or_else(|| crate::rust_span!());
+            let scc_span = entries[scc.indices[0]].node.value.span.clone();
             let mut scc_constraints = std::mem::take(&mut state.constraints);
             match crate::types::process_deferred_equalities(
                 &mut state.deferred_equalities,

@@ -36,22 +36,23 @@ pub(crate) async fn call_strict_resolver(
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Result<Option<Arc<Value>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<Arc<Value>>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Leaf value (TypeNode Variant): convert to TypeValue directly without calling.
     if let Some(tv) = typenode_leaf_to_typevalue(&resolver_val) {
         if args.is_empty() {
-            return Ok(Some(tv));
+            return crate::error::DiagnosticResult::ok(Some(tv)).with_diagnostics(_dr_diags);
         }
         // Leaf with args: apply them as TypeValue.App chain.
         let mut result = tv;
         for arg in args {
             result = make_typevalue_app(result, Arc::clone(arg));
         }
-        return Ok(Some(result));
+        return crate::error::DiagnosticResult::ok(Some(result)).with_diagnostics(_dr_diags);
     }
 
     if args.is_empty() {
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
 
     // Must be a parameterized type constructor (Function).
@@ -67,11 +68,11 @@ pub(crate) async fn call_strict_resolver(
                 .clone();
             (clause, definition_scope)
         }
-        _ => return Ok(None),
+        _ => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     };
 
     if clause.params.len() != args.len() {
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
 
     // Pass TypeValue args directly as TypeNode values (TypeValue IS the TypeNode after migration).
@@ -94,14 +95,14 @@ pub(crate) async fn call_strict_resolver(
                 .get(i)
                 .map(|p| p.node.name.clone())
                 .unwrap_or_else(|| format!("_param{i}"));
-            table.insert(name, i as u32, None);
+            table.insert(name, i as u32, crate::rust_span!());
         }
         for (i, thunk) in param_thunks.into_iter().enumerate() {
             table.set_value(i as u32, thunk);
         }
         let new_frame = std::sync::Arc::new(table);
         let mut chain = definition_scope.clone();
-        chain.insert(0, new_frame);
+        chain.push(new_frame);
         chain
     };
 
@@ -112,16 +113,27 @@ pub(crate) async fn call_strict_resolver(
         Arc::clone(eval_ctx),
         crate::rust_span!(),
     ));
-    let result_val = crate::eval::materialize(&body_thunk, None, eval_ctx).await?;
+    let (mat_result, mat_diags) = crate::eval::materialize(&body_thunk, None, eval_ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    let result_val = match mat_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     // The result is already a TypeValue — typenode_value_to_type returns Arc<Value> TypeValue.
-    crate::typecheck::typecheck_annot::typenode_value_to_type(
+    let (tv_result, tv_diags) = crate::typecheck::typecheck_annot::typenode_value_to_type(
         &result_val,
         eval_ctx,
         &[],
         type_name_to_id,
     )
     .await
+    .into_parts();
+    _dr_diags.extend(tv_diags);
+    match tv_result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
 }
 
 /// Evaluate a resolver by Arc<Thunk> — materializes the thunk then delegates to `call_strict_resolver`.
@@ -135,9 +147,20 @@ pub(crate) async fn evaluate_resolver_with_thunk(
     args: &[Arc<Value>],
     eval_ctx: &Arc<crate::eval::EvalContext>,
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Result<Option<Arc<Value>>, Box<crate::error::Diagnostic>> {
-    let resolver_val = crate::eval::materialize(&thunk, None, eval_ctx).await?;
-    call_strict_resolver(resolver_val, args, eval_ctx, type_name_to_id).await
+) -> crate::error::DiagnosticResult<Option<Arc<Value>>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (mat_result, mat_diags) = crate::eval::materialize(&thunk, None, eval_ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    let resolver_val = match mat_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    let (result, inner_diags) = call_strict_resolver(resolver_val, args, eval_ctx, type_name_to_id).await.into_parts();
+    _dr_diags.extend(inner_diags);
+    match result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
 }
 
 /// Create a TypeValue.App { op: TypeValue, arg: TypeValue } — type constructor application.

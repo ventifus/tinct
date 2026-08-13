@@ -12,19 +12,22 @@
 [
 
 # Entry type — dict entry (keyed or auto-indexed)
-[type Entry
+# repr: 41 — reserved TYPE_ID_ENTRY for Rust-tinct protocol identity.
+[type Entry repr: 41
   KeyedEntry:   [key: String  value: Expr]
   UnkeyedEntry: [value: Expr]]
 
 # Annotation type — type annotations in the AST
-[type Annotation
+# repr: 42 — reserved TYPE_ID_ANNOTATION for Rust-tinct protocol identity.
+[type Annotation repr: 42
   Simple:   [name: String]                    # @Integer, @Boolean
   PropDict: [entries: [Seq Entry]]            # @[return: T  constraint: ...]
   Null]                                       # no annotation
 
 # Expr type — the central expression type
 # Matches the Rust Expr enum in src/ast.rs
-[type Expr
+# repr: 40 — reserved TYPE_ID_EXPR for Rust-tinct protocol identity.
+[type Expr repr: 40
   # Literals — all literal types share the Literal constructor
   # kind: "int"|"float"|"bool"|"str"  value: the literal value  bare: only emitted for kind:"str" nodes (Bool if unquoted, Null for other kinds)
   Literal:    [kind: String  value: Unknown  bare: [Bool Null]]

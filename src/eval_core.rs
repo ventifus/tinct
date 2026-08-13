@@ -38,58 +38,56 @@ fn value_to_surface_node(
     value: &Value,
     span: Span,
     ctx: &Arc<EvalContext>,
-) -> Result<Arc<crate::ast::SurfaceNode>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<crate::ast::SurfaceNode>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
     let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
     match value {
-        Value::Int { n, .. } => Ok(make_node(SurfaceExpression::Int(*n))),
-        Value::Float { n, .. } => Ok(make_node(SurfaceExpression::Float(*n))),
+        Value::Int { n, .. } => crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Int(*n))),
+        Value::Float { n, .. } => crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Float(*n))),
         Value::String {
             source, start, end, ..
-        } => Ok(make_node(SurfaceExpression::StringLiteral {
+        } => crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::StringLiteral {
             prefix: String::new(),
             delimiter: "\"".to_string(),
             content: source[*start..*end].to_string(),
         })),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
-            crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                Diagnostic::error(
+            match crate::surface_convert::dict_to_surface_node(value, &span, ctx) {
+                Ok(node) => crate::error::DiagnosticResult::ok(node),
+                Err(err) => crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
-                )
-                .into()
-            })
+                )),
+            }
         }
         Value::Dict { entries: dict, .. } => {
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
-                crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
-                    Diagnostic::error(
+                match crate::surface_convert::dict_to_surface_node(value, &span, ctx) {
+                    Ok(node) => crate::error::DiagnosticResult::ok(node),
+                    Err(err) => crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,
-                    )
-                    .into()
-                })
+                    )),
+                }
             } else {
                 // It's a regular dict — dict values are thunk IDs, conversion not yet supported
-                Err(Diagnostic::error(
+                crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "unquote of non-AST dict is not yet supported".to_string(),
                     span,
-                )
-                .into())
+                ))
             }
         }
-        _ => Err(Diagnostic::error(
+        _ => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("unquote of {:?} is not supported", value),
             span,
-        )
-        .into()),
+        )),
     }
 }
 
@@ -100,7 +98,8 @@ async fn collect_seq_elements(
     value: &Value,
     span: Span,
     ctx: &Arc<EvalContext>,
-) -> Result<Vec<Value>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Vec<Value>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut elements = Vec::new();
     let current = value.clone();
 
@@ -115,15 +114,14 @@ async fn collect_seq_elements(
                 if let HashableValue::Int(i) = key {
                     int_entries.push((*i, Arc::clone(thunk)));
                 } else {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "type mismatch: expected {}, got {}",
                             "Seq or integer-keyed Dict", "Dict with non-integer keys"
                         ),
                         span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
             }
 
@@ -133,7 +131,7 @@ async fn collect_seq_elements(
             // Validate sequential from 0
             for (idx, (i, _)) in int_entries.iter().enumerate() {
                 if *i != idx as i64 {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "type mismatch: expected {}, got {}",
@@ -144,19 +142,23 @@ async fn collect_seq_elements(
                             )
                         ),
                         span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
             }
 
             // Materialize each element
             for (_, thunk) in int_entries {
-                let value = materialize(&thunk, Some(&span), ctx).await?;
+                let (result, diags) = materialize(&thunk, Some(&span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 elements.push(value);
             }
         }
         _ => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -164,12 +166,11 @@ async fn collect_seq_elements(
                     ctx.type_display_name(current.type_decl_id_of())
                 ),
                 span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
     }
 
-    Ok(elements)
+    crate::error::DiagnosticResult::ok(elements).with_diagnostics(_dr_diags)
 }
 
 /// Recursively preprocess a quoted SurfaceNode tree to handle nested unquotes.
@@ -188,7 +189,7 @@ fn eval_quote_preprocess<'a>(
 ) -> std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<Arc<crate::ast::SurfaceNode>, Box<crate::error::Diagnostic>>,
+                Output = crate::error::DiagnosticResult<Arc<crate::ast::SurfaceNode>>,
             > + Send
             + 'a,
     >,
@@ -197,6 +198,7 @@ fn eval_quote_preprocess<'a>(
         SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode,
     };
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let span = node.span.clone();
         let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
 
@@ -205,21 +207,30 @@ fn eval_quote_preprocess<'a>(
                 // Evaluate the unquoted expression and convert back to SurfaceNode
                 let dn = ctx.type_display_names_snapshot();
                 let core = crate::lower::lower_inner(inner, &mut Vec::new(), &dn);
-                let thunk = eval_core_expr(&core, &scope, ctx).await?;
-                let value = materialize(&thunk, Some(&inner.span), ctx).await?;
-                value_to_surface_node(&value, inner.span.clone(), ctx)
+                let (result, diags) = eval_core_expr(&core, &scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let thunk = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = materialize(&thunk, Some(&inner.span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                value_to_surface_node(&value, inner.span.clone(), ctx).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::UnquoteSplice(_) => {
                 // UnquoteSplice outside of call args or dict entries is an error.
                 // Call args and dict entries handle UnquoteSplice in their own loops.
-                Err(Diagnostic::error(
+                crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "unquote-splice must be in a list position (inside call args or dict entries)"
                         .to_string(),
                     span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
 
             // Recursively process composite expressions
@@ -231,9 +242,19 @@ fn eval_quote_preprocess<'a>(
                         // Evaluate the unquote-splice expression
                         let dn = ctx.type_display_names_snapshot();
                         let core = crate::lower::lower_inner(inner, &mut Vec::new(), &dn);
-                        let thunk = eval_core_expr(&core, &scope, ctx).await?;
+                        let (result, diags) = eval_core_expr(&core, &scope, ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let thunk = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         let inner_span = inner.span.clone();
-                        let value = materialize(&thunk, Some(&inner_span), ctx).await?;
+                        let (result, diags) = materialize(&thunk, Some(&inner_span), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let value = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
 
                         // Value must be Dict or Seq for splicing
                         match value {
@@ -243,10 +264,19 @@ fn eval_quote_preprocess<'a>(
                                 // Splice dict entries into the current dict
                                 for (key, value_thunk) in dict {
                                     // Convert the thunk to a Value, then to a SurfaceNode
-                                    let value_val =
-                                        materialize(value_thunk, Some(&inner_span), ctx).await?;
-                                    let value_node =
-                                        value_to_surface_node(&value_val, inner_span.clone(), ctx)?;
+                                    let (result, diags) = materialize(value_thunk, Some(&inner_span), ctx).await.into_parts();
+                                    _dr_diags.extend(diags);
+                                    let value_val = match result {
+                                        Ok(v) => v,
+                                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                    };
+                                    let (result, diags) =
+                                        value_to_surface_node(&value_val, inner_span.clone(), ctx).into_parts();
+                                    _dr_diags.extend(diags);
+                                    let value_node = match result {
+                                        Ok(v) => v,
+                                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                    };
 
                                     // Convert the key to a SurfaceNode
                                     let key_node = match key {
@@ -308,7 +338,7 @@ fn eval_quote_preprocess<'a>(
                                 }
                             }
                             _ => {
-                                return Err(Diagnostic::error(
+                                return crate::error::DiagnosticResult::err(Diagnostic::error(
                                     KIND,
                                     format!(
                                         "type mismatch: expected {}, got {}",
@@ -316,23 +346,31 @@ fn eval_quote_preprocess<'a>(
                                         ctx.type_display_name(value.type_decl_id_of())
                                     ),
                                     inner_span,
-                                )
-                                .into())
+                                )).with_diagnostics(_dr_diags)
                             }
                         }
                     } else {
                         // Regular entry - recursively process
-                        let processed_value = eval_quote_preprocess(
+                        let (result, diags) = eval_quote_preprocess(
                             Arc::clone(&entry.node.value),
                             scope.clone(),
                             ctx,
                         )
-                        .await?;
+                        .await.into_parts();
+                        _dr_diags.extend(diags);
+                        let processed_value = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         let processed_key = if let Some(ref key_node) = entry.node.key {
-                            Some(
+                            let (result, diags) =
                                 eval_quote_preprocess(Arc::clone(key_node), scope.clone(), ctx)
-                                    .await?,
-                            )
+                                    .await.into_parts();
+                            _dr_diags.extend(diags);
+                            match result {
+                                Ok(v) => Some(v),
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            }
                         } else {
                             None
                         };
@@ -346,10 +384,10 @@ fn eval_quote_preprocess<'a>(
                         ));
                     }
                 }
-                Ok(make_node(SurfaceExpression::Dict {
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Dict {
                     entries: processed_entries,
                     scope: std::sync::OnceLock::new(),
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Call {
@@ -359,8 +397,13 @@ fn eval_quote_preprocess<'a>(
                 implied,
                 ..
             } => {
-                let processed_func =
-                    eval_quote_preprocess(Arc::clone(func), scope.clone(), ctx).await?;
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(func), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_func = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 let mut processed_args: Vec<Arc<SurfaceNode>> = Vec::new();
                 for arg in args {
                     // Handle unquote-splicing in call argument position
@@ -368,31 +411,60 @@ fn eval_quote_preprocess<'a>(
                         // Evaluate the unquote-splice expression
                         let dn = ctx.type_display_names_snapshot();
                         let core = crate::lower::lower_inner(inner, &mut Vec::new(), &dn);
-                        let thunk = eval_core_expr(&core, &scope, ctx).await?;
+                        let (result, diags) = eval_core_expr(&core, &scope, ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let thunk = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         let inner_span = inner.span.clone();
-                        let value = materialize(&thunk, Some(&inner_span), ctx).await?;
+                        let (result, diags) = materialize(&thunk, Some(&inner_span), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let value = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
 
                         // Extract elements from the sequence and convert each to SurfaceNode
-                        let elements =
-                            collect_seq_elements(&value, inner_span.clone(), ctx).await?;
+                        let (result, diags) =
+                            collect_seq_elements(&value, inner_span.clone(), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let elements = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         for elem_value in elements {
-                            let elem_node =
-                                value_to_surface_node(&elem_value, inner_span.clone(), ctx)?;
+                            let (result, diags) =
+                                value_to_surface_node(&elem_value, inner_span.clone(), ctx).into_parts();
+                            _dr_diags.extend(diags);
+                            let elem_node = match result {
+                                Ok(v) => v,
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            };
                             processed_args.push(elem_node);
                         }
                     } else {
                         // Regular argument - recursively process
-                        processed_args.push(
-                            eval_quote_preprocess(Arc::clone(arg), scope.clone(), ctx).await?,
-                        );
+                        let (result, diags) =
+                            eval_quote_preprocess(Arc::clone(arg), scope.clone(), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => processed_args.push(v),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                     }
                 }
                 let mut processed_named_args: Vec<Spanned<SurfaceNamedArg>> =
                     Vec::with_capacity(named_args.len());
                 for na in named_args {
-                    let processed_value =
+                    let (result, diags) =
                         eval_quote_preprocess(Arc::clone(&na.node.value), scope.clone(), ctx)
-                            .await?;
+                            .await.into_parts();
+                    _dr_diags.extend(diags);
+                    let processed_value = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                     processed_named_args.push(Spanned::new(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
@@ -402,13 +474,13 @@ fn eval_quote_preprocess<'a>(
                         na.span.clone(),
                     ));
                 }
-                Ok(make_node(SurfaceExpression::Call {
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Call {
                     func: processed_func,
                     args: processed_args,
                     named_args: processed_named_args,
                     implied: *implied,
                     pipe_span: None,
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Fn {
@@ -418,16 +490,21 @@ fn eval_quote_preprocess<'a>(
                 desugared,
                 ..
             } => {
-                let processed_body =
-                    eval_quote_preprocess(Arc::clone(body), scope.clone(), ctx).await?;
-                Ok(make_node(SurfaceExpression::Fn {
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(body), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_body = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Fn {
                     return_ann: return_ann.clone(),
                     params: params.clone(),
                     body: processed_body,
                     desugared: *desugared,
                     resolved_return_annotation: crate::ast::TypeAnnotation::new(),
                     scope: std::sync::OnceLock::new(),
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Field {
@@ -435,47 +512,67 @@ fn eval_quote_preprocess<'a>(
                 field,
                 ..
             } => {
-                let processed_target =
-                    eval_quote_preprocess(Arc::clone(target), scope.clone(), ctx).await?;
-                Ok(make_node(SurfaceExpression::Field {
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(target), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_target = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Field {
                     expr: Some(processed_target),
                     field: field.clone(),
                     resolution: crate::ast::Resolution::new(),
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
             SurfaceExpression::Field {
                 expr: None, field, ..
-            } => Ok(make_node(SurfaceExpression::Field {
+            } => crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Field {
                 expr: None,
                 field: field.clone(),
                 resolution: crate::ast::Resolution::new(),
-            })),
+            })).with_diagnostics(_dr_diags),
 
             SurfaceExpression::Pipe {
                 lhs,
                 rhs,
                 pipe_span,
             } => {
-                let processed_lhs =
-                    eval_quote_preprocess(Arc::clone(lhs), scope.clone(), ctx).await?;
-                let processed_rhs =
-                    eval_quote_preprocess(Arc::clone(rhs), scope.clone(), ctx).await?;
-                Ok(make_node(SurfaceExpression::Pipe {
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(lhs), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_lhs = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(rhs), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_rhs = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Pipe {
                     lhs: processed_lhs,
                     rhs: processed_rhs,
                     pipe_span: pipe_span.clone(),
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Sequential(exprs) => {
                 let mut processed_exprs = Vec::with_capacity(exprs.len());
                 for e in exprs {
-                    processed_exprs
-                        .push(eval_quote_preprocess(Arc::clone(e), scope.clone(), ctx).await?);
+                    let (result, diags) =
+                        eval_quote_preprocess(Arc::clone(e), scope.clone(), ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => processed_exprs.push(v),
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                 }
-                Ok(make_node(SurfaceExpression::Sequential(processed_exprs)))
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Sequential(processed_exprs))).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::TypeAssert {
@@ -483,41 +580,71 @@ fn eval_quote_preprocess<'a>(
                 expr: inner,
                 ..
             } => {
-                let processed_expr =
-                    eval_quote_preprocess(Arc::clone(inner), scope.clone(), ctx).await?;
-                Ok(make_node(SurfaceExpression::TypeAssert {
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(inner), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_expr = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: processed_expr,
                     resolved_type: crate::ast::TypeAnnotation::new(),
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Quote(inner) => {
                 // Nested quote: recurse so inner unquotes are still processed.
-                let processed_inner =
-                    eval_quote_preprocess(Arc::clone(inner), scope.clone(), ctx).await?;
-                Ok(make_node(SurfaceExpression::Quote(processed_inner)))
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(inner), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_inner = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Quote(processed_inner))).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Match { scrutinee, arms } => {
-                let processed_scrutinee =
-                    eval_quote_preprocess(Arc::clone(scrutinee), scope.clone(), ctx).await?;
+                let (result, diags) =
+                    eval_quote_preprocess(Arc::clone(scrutinee), scope.clone(), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let processed_scrutinee = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 let mut processed_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
                     let mut processed_body = Vec::with_capacity(arm.body.len());
                     for body_expr in &arm.body {
-                        processed_body.push(
+                        let (result, diags) =
                             eval_quote_preprocess(Arc::clone(body_expr), scope.clone(), ctx)
-                                .await?,
-                        );
+                                .await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => processed_body.push(v),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                     }
                     let processed_guard = if let Some(ref guard) = arm.guard {
-                        Some(eval_quote_preprocess(Arc::clone(guard), scope.clone(), ctx).await?)
+                        let (result, diags) =
+                            eval_quote_preprocess(Arc::clone(guard), scope.clone(), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => Some(v),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
                     } else {
                         None
                     };
-                    let processed_pattern =
-                        eval_quote_preprocess(Arc::clone(&arm.pattern), scope.clone(), ctx).await?;
+                    let (result, diags) =
+                        eval_quote_preprocess(Arc::clone(&arm.pattern), scope.clone(), ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let processed_pattern = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                     processed_arms.push(SurfaceMatchArm {
                         pattern: processed_pattern,
                         let_bindings: arm.let_bindings.clone(),
@@ -527,10 +654,10 @@ fn eval_quote_preprocess<'a>(
                         scope: std::sync::OnceLock::new(),
                     });
                 }
-                Ok(make_node(SurfaceExpression::Match {
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Match {
                     scrutinee: processed_scrutinee,
                     arms: processed_arms,
-                }))
+                })).with_diagnostics(_dr_diags)
             }
 
             SurfaceExpression::Decl(decl) => {
@@ -540,8 +667,13 @@ fn eval_quote_preprocess<'a>(
                 // unquotes inside the alias body to be evaluated.
                 let processed_decl = match decl.as_ref() {
                     SurfaceDeclaration::TypeAlias { params, body } => {
-                        let processed_body =
-                            eval_quote_preprocess(Arc::clone(body), scope.clone(), ctx).await?;
+                        let (result, diags) =
+                            eval_quote_preprocess(Arc::clone(body), scope.clone(), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let processed_body = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         SurfaceDeclaration::TypeAlias {
                             params: params.clone(),
                             body: processed_body,
@@ -552,8 +684,13 @@ fn eval_quote_preprocess<'a>(
                         pattern,
                         message,
                     } => {
-                        let processed_pattern =
-                            eval_quote_preprocess(Arc::clone(pattern), scope.clone(), ctx).await?;
+                        let (result, diags) =
+                            eval_quote_preprocess(Arc::clone(pattern), scope.clone(), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let processed_pattern = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         SurfaceDeclaration::SyntaxClass {
                             name: name.clone(),
                             pattern: processed_pattern,
@@ -563,20 +700,24 @@ fn eval_quote_preprocess<'a>(
                     SurfaceDeclaration::Splice(forms) => {
                         let mut processed_forms = Vec::with_capacity(forms.len());
                         for form in forms {
-                            processed_forms.push(
-                                eval_quote_preprocess(Arc::clone(form), scope.clone(), ctx).await?,
-                            );
+                            let (result, diags) =
+                                eval_quote_preprocess(Arc::clone(form), scope.clone(), ctx).await.into_parts();
+                            _dr_diags.extend(diags);
+                            match result {
+                                Ok(v) => processed_forms.push(v),
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            };
                         }
                         SurfaceDeclaration::Splice(processed_forms)
                     }
                     // ClassDecl, InstanceDecl — complex; treat as leaves (no unquote recursion)
                     other => other.clone(),
                 };
-                Ok(make_node(SurfaceExpression::Decl(Box::new(processed_decl))))
+                crate::error::DiagnosticResult::ok(make_node(SurfaceExpression::Decl(Box::new(processed_decl)))).with_diagnostics(_dr_diags)
             }
 
             // All other expressions have no child SurfaceNodes — return unchanged
-            _ => Ok(node),
+            _ => crate::error::DiagnosticResult::ok(node).with_diagnostics(_dr_diags),
         }
     }) // end Box::pin(async move {
 }
@@ -585,15 +726,21 @@ async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
     scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let span = node.span.clone();
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
-    let processed_node = eval_quote_preprocess(node, scope.clone(), ctx).await?;
+    let (result, diags) = eval_quote_preprocess(node, scope.clone(), ctx).await.into_parts();
+    _dr_diags.extend(diags);
+    let processed_node = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         crate::surface_convert::surface_node_to_expr_variant(&processed_node, ctx),
         span,
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Extract non-standard annotation fields from a function `@[...]` annotation into an
@@ -613,13 +760,14 @@ pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
     scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
-) -> Result<IndexMap<String, Value>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<IndexMap<String, Value>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let Some(ann_spanned) = return_ann else {
-        return Ok(IndexMap::new());
+        return crate::error::DiagnosticResult::ok(IndexMap::new());
     };
 
     let crate::ast::Annotation::PropertyDict(entries) = &ann_spanned.node else {
-        return Ok(IndexMap::new());
+        return crate::error::DiagnosticResult::ok(IndexMap::new());
     };
 
     let mut extra = IndexMap::new();
@@ -667,13 +815,22 @@ pub(crate) async fn extract_fn_annotation_extra(
                     crate::lower::lower_inner(&e.node.value, &mut Vec::new(), &display_names);
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
-                match eval_core_expr(&core_expr, scope, ctx).await {
-                    Ok(thunk) => materialize(&thunk, Some(&e.node.value.span), ctx).await?,
+                let (result, diags) = eval_core_expr(&core_expr, scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(thunk) => {
+                        let (mat_result, mat_diags) = materialize(&thunk, Some(&e.node.value.span), ctx).await.into_parts();
+                        _dr_diags.extend(mat_diags);
+                        match mat_result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    },
                     Err(e) if e.message.contains("placeholder") => {
                         // Placeholder from nested type expressions → skip this key.
                         continue;
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                 }
             }
         };
@@ -681,7 +838,7 @@ pub(crate) async fn extract_fn_annotation_extra(
         extra.insert(key_str.clone(), val);
     }
 
-    Ok(extra)
+    crate::error::DiagnosticResult::ok(extra).with_diagnostics(_dr_diags)
 }
 
 /// Evaluate a CoreExpr to a thunk.
@@ -694,16 +851,17 @@ pub(crate) fn eval_core_expr<'a>(
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
     Box<
-        dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+        dyn std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>
             + Send
             + 'a,
     >,
 > {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let span = expr.span.clone();
         match &expr.node {
             // Literals produce values directly — no thunk wrapping needed
-            CoreExpr::Int { value: n, .. } => Ok(Arc::new(Thunk::value(
+            CoreExpr::Int { value: n, .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                 Value::Int {
                     n: *n,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -712,7 +870,7 @@ pub(crate) fn eval_core_expr<'a>(
                 },
                 span.clone(),
             ))),
-            CoreExpr::U64 { value: n, .. } => Ok(Arc::new(Thunk::value(
+            CoreExpr::U64 { value: n, .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                 Value::U64 {
                     n: *n,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -721,7 +879,7 @@ pub(crate) fn eval_core_expr<'a>(
                 },
                 span.clone(),
             ))),
-            CoreExpr::Float { value: f, .. } => Ok(Arc::new(Thunk::value(
+            CoreExpr::Float { value: f, .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                 Value::Float {
                     n: *f,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -731,7 +889,7 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             ))),
             CoreExpr::Str { value: s, .. } => {
-                Ok(Arc::new(Thunk::value(string_val(s), span.clone())))
+                crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(string_val(s), span.clone())))
             }
 
             // Variable lookup via SymbolTable scope chain.
@@ -749,35 +907,38 @@ pub(crate) fn eval_core_expr<'a>(
                         class_decl_id,
                         method_slot,
                     } => {
-                        let evidence = SymbolTable::lookup_evidence_in_chain(scope, *class_decl_id)
-                            .ok_or_else(|| Diagnostic::error(KIND,
+                        let evidence = match SymbolTable::lookup_evidence_in_chain(scope, *class_decl_id) {
+                            Some(v) => v,
+                            None => return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                                 format!("no instance found for typeclass method (class_decl_id={}) — no evidence entry in scope chain", class_decl_id),
                                 span.clone(),
-                            ))?;
-                        let actual_slot = evidence.method_slots.get(*method_slot as usize)
-                            .ok_or_else(|| Diagnostic::error(KIND,
+                            )).with_diagnostics(_dr_diags),
+                        };
+                        let actual_slot = match evidence.method_slots.get(*method_slot as usize) {
+                            Some(v) => v,
+                            None => return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                                 format!("typeclass method_slot {} out of range (class has {} methods)",
                                         method_slot, evidence.method_slots.len()),
                                 span.clone(),
-                            ))?;
-                        let method_thunk =
-                            evidence
+                            )).with_diagnostics(_dr_diags),
+                        };
+                        let method_thunk = match evidence
                                 .handler_frame
                                 .entries()
                                 .get_index(*actual_slot as usize)
-                                .and_then(|(_, e)| e.value.get().cloned())
-                                .ok_or_else(|| {
-                                    Diagnostic::error(KIND,
+                                .and_then(|(_, e)| e.value.get().cloned()) {
+                            Some(v) => v,
+                            None => return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                                 format!("typeclass method at slot {} not found in handler frame",
                                         actual_slot),
                                 span.clone(),
-                            )
-                                })?;
+                            )).with_diagnostics(_dr_diags),
+                        };
                         Some(method_thunk)
                     }
                 };
                 match thunk {
-                    Some(t) => Ok(t),
+                    Some(t) => crate::error::DiagnosticResult::ok(t).with_diagnostics(_dr_diags),
                     None => {
                         let mut diag = Diagnostic::error(
                             KIND,
@@ -802,7 +963,7 @@ pub(crate) fn eval_core_expr<'a>(
                                 diag = diag.with_note(note);
                             }
                         }
-                        Err(diag.into())
+                        crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags)
                     }
                 }
             }
@@ -822,7 +983,7 @@ pub(crate) fn eval_core_expr<'a>(
                 type_decl_id,
                 ..
             } => match payload {
-                None => Ok(Arc::new(Thunk::value(
+                None => crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                     Value::Variant {
                         type_decl_id: *type_decl_id,
                         ctor_index: *ctor_index,
@@ -830,11 +991,21 @@ pub(crate) fn eval_core_expr<'a>(
                         type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                     },
                     span.clone(),
-                ))),
+                ))).with_diagnostics(_dr_diags),
                 Some(inner_expr) => {
-                    let payload_thunk = eval_core_expr(inner_expr, scope, ctx).await?;
-                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                    Ok(Arc::new(Thunk::value(
+                    let (result, diags) = eval_core_expr(inner_expr, scope, ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let payload_thunk = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    let (result, diags) = materialize(&payload_thunk, Some(&span), ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let payload_val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                         Value::Variant {
                             type_decl_id: *type_decl_id,
                             ctor_index: *ctor_index,
@@ -844,7 +1015,7 @@ pub(crate) fn eval_core_expr<'a>(
                             )),
                         },
                         span.clone(),
-                    )))
+                    ))).with_diagnostics(_dr_diags)
                 }
             },
 
@@ -856,7 +1027,7 @@ pub(crate) fn eval_core_expr<'a>(
                 ctor_index,
                 type_decl_id,
                 ..
-            } => Ok(Arc::new(Thunk::value(
+            } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                 Value::Variant {
                     type_decl_id: *type_decl_id,
                     ctor_index: *ctor_index,
@@ -864,14 +1035,24 @@ pub(crate) fn eval_core_expr<'a>(
                     type_val: Some(crate::type_infer::make_typevalue_nominal(*type_decl_id)),
                 },
                 span.clone(),
-            ))),
+            ))).with_diagnostics(_dr_diags),
 
             // Field: dot-access `target.key`. Evaluate target, materialize it to get the dict,
             // then look up the key. Previously lowered to Call(builtin-dict-get, [key, target]);
             // now a first-class CoreExpr variant.
             CoreExpr::Field { target, key, .. } => {
-                let target_thunk = eval_core_expr(target, scope, ctx).await?;
-                let target_val = materialize(&target_thunk, Some(&span), ctx).await?;
+                let (result, diags) = eval_core_expr(target, scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let target_thunk = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = materialize(&target_thunk, Some(&span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let target_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 match target_val {
                     Value::Dict { entries: map, .. } => {
@@ -884,19 +1065,18 @@ pub(crate) fn eval_core_expr<'a>(
                         };
 
                         match map.get(&hashable_key) {
-                            Some(thunk) => Ok(Arc::clone(thunk)),
+                            Some(thunk) => crate::error::DiagnosticResult::ok(Arc::clone(thunk)).with_diagnostics(_dr_diags),
                             None => {
                                 let key_str = key.to_string();
-                                Err(Diagnostic::error(
+                                crate::error::DiagnosticResult::err(Diagnostic::error(
                                     KIND,
                                     format!("key not found: {}", key_str),
                                     span,
-                                )
-                                .into())
+                                )).with_diagnostics(_dr_diags)
                             }
                         }
                     }
-                    _ => Err(Diagnostic::error(
+                    _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "type mismatch: expected {}, got {}",
@@ -904,8 +1084,7 @@ pub(crate) fn eval_core_expr<'a>(
                             ctx.type_display_name(target_val.type_decl_id_of())
                         ),
                         target.span.clone(),
-                    )
-                    .into()),
+                    )).with_diagnostics(_dr_diags),
                 }
             }
 
@@ -914,12 +1093,12 @@ pub(crate) fn eval_core_expr<'a>(
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
             // evaluation via LetrecChainStep continuations.
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
-            CoreExpr::Sequential { .. } => Ok(Arc::new(Thunk::core_expr(
+            CoreExpr::Sequential { .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
                 scope.clone(),
                 Arc::clone(ctx),
                 span.clone(),
-            ))),
+            ))).with_diagnostics(_dr_diags),
 
             // Dict: call eval_dict_core with the current scope so dict value thunks inherit
             // the definition-site scope for variable lookups, and so the letrec group Vec
@@ -928,7 +1107,14 @@ pub(crate) fn eval_core_expr<'a>(
                 entries,
                 scope: ref resolver_scope,
                 ..
-            } => eval_dict_core(entries, scope, resolver_scope.as_ref(), ctx, &span).await,
+            } => {
+                let (result, diags) = eval_dict_core(entries, scope, resolver_scope.as_ref(), ctx, &span).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            },
 
             // Call: use eval_call_core with the current scope so argument expressions
             // resolve Dispatch variables against the call site's scope.
@@ -948,6 +1134,7 @@ pub(crate) fn eval_core_expr<'a>(
                     scope,
                 )
                 .await
+                .with_diagnostics(_dr_diags)
             }
 
             // Fn: build Value::Function carrying the full clause list (T-2131).
@@ -969,7 +1156,12 @@ pub(crate) fn eval_core_expr<'a>(
                 // Expression-valued fields are evaluated at function-definition time.
                 // return_ann is now carried from SurfaceExpression::Fn through CoreExpr::Fn
                 // so that trace: and other annotation-driven runtime behaviors work correctly.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref(), scope, ctx).await?;
+                let (result, diags) = extract_fn_annotation_extra(return_ann.as_ref(), scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let extra = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
                 // (evaluated via `[unindent "..."]`) produce the correct runtime string.
@@ -1002,36 +1194,35 @@ pub(crate) fn eval_core_expr<'a>(
                     },
                     span.clone(),
                 ));
-                Ok(thunk)
+                crate::error::DiagnosticResult::ok(thunk).with_diagnostics(_dr_diags)
             }
 
             // TypeAssert: wrap as CoreExpr thunk — force_step's take_core_expr branch
             // handles CoreExpr::TypeAssert inline, pushing a TypeAssertCheck continuation.
             // Wrapping here prevents direct recursion back through eval_core_expr.
-            CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::core_expr(
+            CoreExpr::TypeAssert { .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
                 scope.clone(),
                 Arc::clone(ctx),
                 span.clone(),
-            ))),
+            ))).with_diagnostics(_dr_diags),
 
             // Rest: error (only valid in type expressions)
-            CoreExpr::Rest { .. } => Err(Diagnostic::error(
+            CoreExpr::Rest { .. } => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "rest marker (...) is only valid inside type expressions".to_string(),
                 span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
 
             // Match: wrap as CoreExpr thunk — the CEK machine will handle iterative
             // evaluation via MatchDispatch and MatchGuardCheck continuations.
             // This eliminates async recursion on the Rust stack for deeply nested match chains.
-            CoreExpr::Match { .. } => Ok(Arc::new(Thunk::core_expr(
+            CoreExpr::Match { .. } => crate::error::DiagnosticResult::ok(Arc::new(Thunk::core_expr(
                 Arc::new(expr.clone()),
                 scope.clone(),
                 Arc::clone(ctx),
                 span.clone(),
-            ))),
+            ))).with_diagnostics(_dr_diags),
 
             // Quote: convert CoreExpr→SurfaceNode and walk with eval_quote_walk.
             // The inner CoreExpr was lowered (giving unquotes proper variable slots),
@@ -1039,32 +1230,29 @@ pub(crate) fn eval_core_expr<'a>(
             // the original name alongside the slot so the round-trip is lossless.
             CoreExpr::Quote { expr: inner, .. } => {
                 let surface_node = crate::lower::core_expr_to_surface_node(inner);
-                eval_quote_walk(surface_node, scope, ctx).await
+                eval_quote_walk(surface_node, scope, ctx).await.with_diagnostics(_dr_diags)
             }
 
             // Unquote: error (only valid inside quote)
-            CoreExpr::Unquote { .. } => Err(Diagnostic::error(
+            CoreExpr::Unquote { .. } => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "unquote is only valid inside [quote ...]".to_string(),
                 span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
 
             // UnquoteSplice: error (only valid inside quote)
-            CoreExpr::UnquoteSplice { .. } => Err(Diagnostic::error(
+            CoreExpr::UnquoteSplice { .. } => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "unquote-splice is only valid inside [quote ...]".to_string(),
                 span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
 
             // PatternDecl: error (not an expression)
-            CoreExpr::PatternDecl { .. } => Err(Diagnostic::error(
+            CoreExpr::PatternDecl { .. } => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "pattern declaration is only valid in instance match arms".to_string(),
                 span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
 
             // LetDecl in sequential fn-body context: evaluate as a Dict of (name → lazy-thunk) pairs.
             //
@@ -1085,15 +1273,14 @@ pub(crate) fn eval_core_expr<'a>(
                         // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
                         _ => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!(
                                     "let binding name must be an identifier, got: {:?}",
                                     name_expr.node
                                 ),
                                 name_expr.span.clone(),
-                            )
-                            .into());
+                            )).with_diagnostics(_dr_diags);
                         }
                     };
                     let val_thunk = Arc::new(Thunk::core_expr(
@@ -1108,7 +1295,7 @@ pub(crate) fn eval_core_expr<'a>(
                     );
                     i += 2;
                 }
-                Ok(Arc::new(Thunk::value(
+                crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
                     Value::Dict {
                         entries: dict,
                         type_decl_id: TYPE_ID_DICT,
@@ -1117,15 +1304,14 @@ pub(crate) fn eval_core_expr<'a>(
                         )),
                     },
                     span.clone(),
-                )))
+                ))).with_diagnostics(_dr_diags)
             }
 
-            CoreExpr::Placeholder { .. } => Err(Diagnostic::error(
+            CoreExpr::Placeholder { .. } => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
                 span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
 
             // TypeDecl: create a stable Arc-level identity for the type, register it in
             // ctx.type_identity_registry, evaluate the inner constructor dict, stamp the
@@ -1168,7 +1354,7 @@ pub(crate) fn eval_core_expr<'a>(
                 // In practice, unit variant thunks are CoreExpr::UnitVariant and are only
                 // forced when accessed (e.g., Color.Red), which happens AFTER this TypeDecl
                 // evaluation completes and the dict is returned.
-                ctx.type_identity_registry
+                match ctx.type_identity_registry
                     .lock()
                     .map_err(|e| {
                         Diagnostic::error(
@@ -1176,13 +1362,20 @@ pub(crate) fn eval_core_expr<'a>(
                             format!("type_identity_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
-                    })?
-                    .insert(*type_decl_id, Arc::clone(&type_id));
+                    }) {
+                    Ok(mut guard) => { guard.insert(*type_decl_id, Arc::clone(&type_id)); }
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Evaluate the inner constructor dict (or ReprDecl wrapping a dict).
-                let inner_thunk = eval_core_expr(inner, scope, ctx).await?;
+                let (result, diags) = eval_core_expr(inner, scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let inner_thunk = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
-                Ok(inner_thunk)
+                crate::error::DiagnosticResult::ok(inner_thunk).with_diagnostics(_dr_diags)
             }
 
             // ReprDecl: evaluate the inner constructor dict, register in ctx.repr_registry,
@@ -1199,16 +1392,26 @@ pub(crate) fn eval_core_expr<'a>(
                 ..
             } => {
                 // Evaluate the inner constructor dict.
-                let inner_thunk = eval_core_expr(inner, scope, ctx).await?;
+                let (result, diags) = eval_core_expr(inner, scope, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let inner_thunk = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Materialize to get the constructor dict Value for registration.
                 // This is a necessary strictness point: we need the concrete Value to store
                 // in repr_registry. The thunk is returned as the expression result so callers
                 // still see a lazy thunk (already-settled at this point).
-                let inner_val = materialize(&inner_thunk, Some(&span), ctx).await?;
+                let (result, diags) = materialize(&inner_thunk, Some(&span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let inner_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Register in repr_registry: type_decl_id → Arc<Value> (the constructor dict).
-                ctx.repr_registry
+                match ctx.repr_registry
                     .lock()
                     .map_err(|e| {
                         Diagnostic::error(
@@ -1216,14 +1419,26 @@ pub(crate) fn eval_core_expr<'a>(
                             format!("repr_registry mutex poisoned: {e}"),
                             span.clone(),
                         )
-                    })?
-                    .insert(*repr, Arc::new(inner_val));
+                    }) {
+                    Ok(mut guard) => { guard.insert(*repr, Arc::new(inner_val)); }
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // If an is: predicate is present, evaluate and register it.
                 if let Some(is_expr) = is_pred {
-                    let is_thunk = eval_core_expr(is_expr, scope, ctx).await?;
-                    let is_val = materialize(&is_thunk, Some(&span), ctx).await?;
-                    ctx.is_predicates
+                    let (result, diags) = eval_core_expr(is_expr, scope, ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let is_thunk = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    let (result, diags) = materialize(&is_thunk, Some(&span), ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let is_val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    match ctx.is_predicates
                         .lock()
                         .map_err(|e| {
                             Diagnostic::error(
@@ -1231,12 +1446,14 @@ pub(crate) fn eval_core_expr<'a>(
                                 format!("is_predicates mutex poisoned: {e}"),
                                 span.clone(),
                             )
-                        })?
-                        .insert(*repr, Arc::new(is_val));
+                        }) {
+                        Ok(mut guard) => { guard.insert(*repr, Arc::new(is_val)); }
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                 }
 
                 // Return the inner dict thunk — ReprDecl is transparent.
-                Ok(inner_thunk)
+                crate::error::DiagnosticResult::ok(inner_thunk).with_diagnostics(_dr_diags)
             }
         }
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
@@ -1261,12 +1478,23 @@ mod tests {
     async fn eval_and_materialize(
         expr: CoreExpr,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Value, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Value> {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let span = test_span(1, 1, 1, 5);
         let spanned = Spanned::new(expr, span.clone());
         let scope = SymbolTable::empty_chain();
-        let thunk = super::eval_core_expr(&spanned, &scope, ctx).await?;
-        crate::eval::materialize(&thunk, Some(&span), ctx).await
+        let (result, diags) = super::eval_core_expr(&spanned, &scope, ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = crate::eval::materialize(&thunk, Some(&span), ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     }
 
     /// `CoreExpr::Int { value: 42 }` evaluates to `Value::Int(42)`.

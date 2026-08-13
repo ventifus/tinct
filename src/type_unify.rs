@@ -17,7 +17,7 @@ use crate::type_infer::{
 };
 use crate::type_tags::*;
 
-const KIND: &str = "type-check";
+const KIND: &str = "type-check/unify";
 
 /// Maximum recursion depth for unification.
 /// Prevents stack overflow on deeply nested type unification.
@@ -571,6 +571,9 @@ pub async fn unify(
     // Structural arms: both sides are concrete (non-TypeVar, non-Unknown, non-Never, non-Top).
     let ctor_a = tv_ctor(&a);
     let ctor_b = tv_ctor(&b);
+    let fmt_ty = |t: &Arc<crate::value::Value>, c: &InferenceContext| -> String {
+        crate::eval::format_type_with_names(t, &c.type_display_names)
+    };
 
     match (ctor_a, ctor_b) {
         // Nominal types: same id = equal, different = error.
@@ -583,63 +586,45 @@ pub async fn unify(
                 Err(Diagnostic::error(
                     KIND,
                     format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
+                        "cannot unify {} with {}: nominal type id mismatch ({:?} vs {:?})",
+                        fmt_ty(&a, ctx), fmt_ty(&b, ctx), id_a, id_b,
                     ),
                     span,
                 ))
             }
         }
 
-        // IntLit, FloatLit, StrLit: equal iff same literal value.
         (Some(TV_INT_LIT), Some(TV_INT_LIT)) => {
             let va = extract_int_lit(&a);
             let vb = extract_int_lit(&b);
             if va == vb {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: int literal values differ ({:?} vs {:?})",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx), va, vb,
+                ), span))
             }
         }
 
         (Some(TV_INT_LIT), Some(TV_NOMINAL)) => {
-            // IntLiteral promotes to Int: IntLit(n) ~ Value::Int is allowed.
             if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_INT) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: IntLit only promotes to Int",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
         (Some(TV_NOMINAL), Some(TV_INT_LIT)) => {
             if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_INT) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: IntLit only promotes to Int",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
 
@@ -649,15 +634,10 @@ pub async fn unify(
             if va == vb {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: string literal values differ",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
 
@@ -665,81 +645,54 @@ pub async fn unify(
             if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_STRING) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: StrLit only promotes to String",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
         (Some(TV_NOMINAL), Some(TV_STR_LIT)) => {
             if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_STRING) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: StrLit only promotes to String",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
 
         (Some(TV_FLOAT_LIT), Some(TV_FLOAT_LIT)) => {
-            // Float comparison: bit equality
             let va = extract_float_lit(&a);
             let vb = extract_float_lit(&b);
             if va.map(|f| f.to_bits()) == vb.map(|f| f.to_bits()) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: float literal values differ ({:?} vs {:?})",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx), va, vb,
+                ), span))
             }
         }
 
-        // FloatLiteral promotes to Float (mirrors IntLiteral promotion).
         (Some(TV_FLOAT_LIT), Some(TV_NOMINAL)) => {
             if crate::type_infer::typevalue_nominal_id(&b) == Some(crate::value::TYPE_ID_FLOAT) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: FloatLit only promotes to Float",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
         (Some(TV_NOMINAL), Some(TV_FLOAT_LIT)) => {
             if crate::type_infer::typevalue_nominal_id(&a) == Some(crate::value::TYPE_ID_FLOAT) {
                 Ok(())
             } else {
-                Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ))
+                Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: FloatLit only promotes to Float",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span))
             }
         }
 
@@ -1077,17 +1030,11 @@ pub async fn unify(
                 )
             })?;
             if members.is_empty() {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ));
+                return Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: union has no members",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span));
             }
-            // Try concrete members first (avoid premature TypeVar binding).
             let mut ordered: Vec<TypeValue> = members
                 .iter()
                 .filter(|m| typevalue_var_name(m).is_none())
@@ -1100,7 +1047,6 @@ pub async fn unify(
                     .cloned(),
             );
             for member in &ordered {
-                // Clone ctx state before attempt; restore on failure.
                 let mut attempt_ctx = ctx.clone();
                 let mut attempt_constraints = constraints.clone();
                 let result = Box::pin(unify(
@@ -1118,36 +1064,21 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(Diagnostic::error(
-                KIND,
-                format!(
-                    "cannot unify {} with {}",
-                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                ),
-                span,
-            ))
+            Err(Diagnostic::error(KIND, format!(
+                "cannot unify {} with {}: no union member matched",
+                fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+            ), span))
         }
 
-        // C-Var1 symmetric: Union vs concrete — symmetric version of the above.
         (Some(TV_UNION), _) => {
             let members = extract_union_members(&a).ok_or_else(|| {
-                Diagnostic::error(
-                    KIND,
-                    "TypeValue.Union payload is unsettled or malformed",
-                    span.clone(),
-                )
+                Diagnostic::error(KIND, "TypeValue.Union payload is unsettled or malformed", span.clone())
             })?;
             if members.is_empty() {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "cannot unify {} with {}",
-                        crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                        crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                    ),
-                    span,
-                ));
+                return Err(Diagnostic::error(KIND, format!(
+                    "cannot unify {} with {}: union has no members",
+                    fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+                ), span));
             }
             let mut ordered: Vec<TypeValue> = members
                 .iter()
@@ -1178,33 +1109,19 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(Diagnostic::error(
-                KIND,
-                format!(
-                    "cannot unify {} with {}",
-                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                ),
-                span,
-            ))
+            Err(Diagnostic::error(KIND, format!(
+                "cannot unify {} with {}: no union member matched",
+                fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+            ), span))
         }
 
-        // C-Var2: Intersection vs concrete — try to unify each intersection member with the
-        // concrete type. TypeVar members are tried first (C-Var2 priority: binding TypeVar).
-        // Rule: α ∧ τ₁ ≤ τ₂  →  α ≤ ~τ₁ ∨ τ₂  (conservative: try TypeVar binding).
         (Some(TV_INTER), _) => {
             let members = extract_intersection_members(&a).ok_or_else(|| {
-                Diagnostic::error(
-                    KIND,
-                    "TypeValue.Intersect payload is unsettled or malformed",
-                    span.clone(),
-                )
+                Diagnostic::error(KIND, "TypeValue.Intersect payload is unsettled or malformed", span.clone())
             })?;
             if members.is_empty() {
-                // Empty intersection = Top: Top <: T for all T — accept.
                 return Ok(());
             }
-            // Try TypeVar members first (C-Var2 priority).
             let mut ordered: Vec<TypeValue> = members
                 .iter()
                 .filter(|m| typevalue_var_name(m).is_some())
@@ -1234,27 +1151,16 @@ pub async fn unify(
                     return Ok(());
                 }
             }
-            Err(Diagnostic::error(
-                KIND,
-                format!(
-                    "cannot unify {} with {}",
-                    crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                    crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-                ),
-                span,
-            ))
+            Err(Diagnostic::error(KIND, format!(
+                "cannot unify {} with {}: no intersection member matched",
+                fmt_ty(&a, ctx), fmt_ty(&b, ctx),
+            ), span))
         }
 
-        // Cross-ctor mismatch: type error.
-        (Some(ca), Some(cb)) if ca != cb => Err(Diagnostic::error(
-            KIND,
-            format!(
-                "cannot unify {} with {}",
-                crate::eval::format_type_with_names(&a, &ctx.type_display_names),
-                crate::eval::format_type_with_names(&b, &ctx.type_display_names),
-            ),
-            span,
-        )),
+        (Some(ca), Some(cb)) if ca != cb => Err(Diagnostic::error(KIND, format!(
+            "cannot unify {} with {}: different type constructors ({} vs {})",
+            fmt_ty(&a, ctx), fmt_ty(&b, ctx), ca, cb,
+        ), span)),
 
         // Unknown ctor (unsettled thunks, etc.): conservative accept.
         _ => Ok(()),

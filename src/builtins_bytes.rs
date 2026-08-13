@@ -24,8 +24,9 @@ const KIND: &str = "eval";
 /// ```
 pub(crate) fn builtin_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -36,44 +37,51 @@ pub(crate) fn builtin_bytes(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "bytes does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.is_empty() {
             // Empty bytes
-            return ok_val(bytes_val(&[]), call_span);
+            return ok_val(bytes_val(&[]), call_span).with_diagnostics(_dr_diags);
         }
 
         // Directly concatenate bytes without intermediate storage
         let mut result = Vec::new();
 
         for arg_thunk in &args {
-            let val = materialize(&arg_thunk, Some(&call_span), &ctx).await?; // H3: loop materialize (iterating bytes args)
+            let val = {
+                let (result, diags) = materialize(&arg_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            }; // H3: loop materialize (iterating bytes args)
             match val.as_bytes() {
                 Some(bytes) => {
                     result.extend_from_slice(bytes);
                 }
                 None => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "bytes: expected Bytes, got {}",
                             ctx.type_display_name(val.type_decl_id_of())
                         ),
                         arg_thunk.span.clone(),
-                    )
-                    .into());
+                    ))
+                    .with_diagnostics(_dr_diags);
                 }
             }
         }
 
-        ok_val(bytes_val(&result), call_span)
+        ok_val(bytes_val(&result), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -89,8 +97,9 @@ pub(crate) fn builtin_bytes(
 /// ```
 pub(crate) fn builtin_bytes_find(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -101,59 +110,73 @@ pub(crate) fn builtin_bytes_find(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "bytes-find does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "bytes-find requires exactly 2 arguments, got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let haystack_val = thunk0.require_value()?.clone();
-        let needle_val = thunk1.require_value()?.clone();
+        let haystack_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let needle_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let haystack = match haystack_val.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-find: expected Bytes, got {}",
                         ctx.type_display_name(haystack_val.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let needle = match needle_val.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-find: expected Bytes, got {}",
                         ctx.type_display_name(needle_val.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -167,7 +190,8 @@ pub(crate) fn builtin_bytes_find(
                     )),
                 },
                 call_span,
-            );
+            )
+            .with_diagnostics(_dr_diags);
         }
 
         // Find the first occurrence
@@ -189,6 +213,7 @@ pub(crate) fn builtin_bytes_find(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -204,8 +229,9 @@ pub(crate) fn builtin_bytes_find(
 /// ```
 pub(crate) fn builtin_bytes_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -214,7 +240,14 @@ pub(crate) fn builtin_bytes_of(
             ..
         } = ctx_arg;
 
-        let val = expect_one_arg("bytes-of", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let val = {
+            let (result, diags) = expect_one_arg("bytes-of", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let mut bytes = Vec::new();
 
@@ -222,48 +255,55 @@ pub(crate) fn builtin_bytes_of(
             Value::Dict { entries: map, .. } => {
                 // Iterate dict values in insertion order — map is owned (Send)
                 for (_key, item_thunk) in map {
-                    let item_val = materialize(&item_thunk, Some(&call_span), &ctx).await?;
+                    let item_val = {
+                        let (result, diags) = materialize(&item_thunk, Some(&call_span), &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
 
                     match item_val {
                         Value::Int { n, .. } if (0..=255).contains(&n) => {
                             bytes.push(n as u8);
                         }
                         Value::Int { n, .. } => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!("bytes-of: integer {n} out of range 0-255"),
                                 call_span,
-                            )
-                            .into());
+                            ))
+                            .with_diagnostics(_dr_diags);
                         }
                         _ => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!(
                                     "bytes-of: expected Int, got {}",
                                     ctx.type_display_name(item_val.type_decl_id_of())
                                 ),
                                 call_span,
-                            )
-                            .into());
+                            ))
+                            .with_diagnostics(_dr_diags);
                         }
                     }
                 }
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-of: expected Seq or Dict, got {}",
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
-        ok_val(bytes_val(&bytes), call_span)
+        ok_val(bytes_val(&bytes), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -279,8 +319,9 @@ pub(crate) fn builtin_bytes_of(
 /// ```
 pub(crate) fn builtin_bytes_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -291,59 +332,73 @@ pub(crate) fn builtin_bytes_concat(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "bytes-concat does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "bytes-concat requires exactly 2 arguments, got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0.require_value()?.clone();
-        let val2 = thunk1.require_value()?.clone();
+        let val1 = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let val2 = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-concat: expected Bytes, got {}",
                         ctx.type_display_name(val1.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-concat: expected Bytes, got {}",
                         ctx.type_display_name(val2.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -351,7 +406,7 @@ pub(crate) fn builtin_bytes_concat(
         result.extend_from_slice(bytes1);
         result.extend_from_slice(bytes2);
 
-        ok_val(bytes_val(&result), call_span)
+        ok_val(bytes_val(&result), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -367,8 +422,9 @@ pub(crate) fn builtin_bytes_concat(
 /// ```
 pub(crate) fn builtin_bytes_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -379,59 +435,73 @@ pub(crate) fn builtin_bytes_equal(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "bytes-equal? does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "bytes-equal? requires exactly 2 arguments, got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0.require_value()?.clone();
-        let val2 = thunk1.require_value()?.clone();
+        let val1 = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let val2 = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-equal?: expected Bytes, got {}",
                         ctx.type_display_name(val1.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "bytes-equal?: expected Bytes, got {}",
                         ctx.type_display_name(val2.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -444,6 +514,7 @@ pub(crate) fn builtin_bytes_equal(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -462,8 +533,9 @@ pub(crate) fn builtin_bytes_equal(
 /// ```
 pub(crate) fn builtin_ct_equal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -474,56 +546,70 @@ pub(crate) fn builtin_ct_equal(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "ct-equal? does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("ct-equal? requires exactly 2 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let val1 = thunk0.require_value()?.clone();
-        let val2 = thunk1.require_value()?.clone();
+        let val1 = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let val2 = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let bytes1 = match val1.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "ct-equal?: expected Bytes, got {}",
                         ctx.type_display_name(val1.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let bytes2 = match val2.as_bytes() {
             Some(bytes) => bytes,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "ct-equal?: expected Bytes, got {}",
                         ctx.type_display_name(val2.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -537,7 +623,8 @@ pub(crate) fn builtin_ct_equal(
                     )),
                 },
                 call_span,
-            );
+            )
+            .with_diagnostics(_dr_diags);
         }
 
         // Constant-time comparison
@@ -551,6 +638,7 @@ pub(crate) fn builtin_ct_equal(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -568,8 +656,9 @@ pub(crate) fn builtin_ct_equal(
 /// Returns Bytes of the appropriate length.
 pub(crate) fn builtin_encode(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -580,46 +669,60 @@ pub(crate) fn builtin_encode(
 
         if let Some(named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-encode does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-encode requires exactly 2 arguments (format, value), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let fmt_val = thunk0.require_value()?.clone();
-        let num_val = thunk1.require_value()?.clone();
+        let fmt_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let num_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract the Int discriminant from the format argument.
         // The prelude wrapper converts from the nominal ByteOrder type to Int before calling.
         let fmt_int = match &fmt_val {
             Value::Int { n, .. } => *n,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-encode: expected Int (format discriminant), got {}",
                         ctx.type_display_name(fmt_val.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -665,26 +768,80 @@ pub(crate) fn builtin_encode(
         //   6=Int32LE, 7=Int32BE, 8=UInt32LE, 9=UInt32BE, 10=Int64LE, 11=Int64BE,
         //   12=UInt64LE, 13=UInt64BE, 14=Float32LE, 15=Float32BE, 16=Float64LE, 17=Float64BE
         let bytes: Vec<u8> = match fmt_int {
-            0 => vec![require_int()? as i8 as u8],                  // Int8
-            1 => vec![require_int()? as u8],                        // UInt8
-            2 => (require_int()? as i16).to_le_bytes().to_vec(),    // Int16LE
-            3 => (require_int()? as i16).to_be_bytes().to_vec(),    // Int16BE
-            4 => (require_int()? as u16).to_le_bytes().to_vec(),    // UInt16LE
-            5 => (require_int()? as u16).to_be_bytes().to_vec(),    // UInt16BE
-            6 => (require_int()? as i32).to_le_bytes().to_vec(),    // Int32LE
-            7 => (require_int()? as i32).to_be_bytes().to_vec(),    // Int32BE
-            8 => (require_int()? as u32).to_le_bytes().to_vec(),    // UInt32LE
-            9 => (require_int()? as u32).to_be_bytes().to_vec(),    // UInt32BE
-            10 => require_int()?.to_le_bytes().to_vec(),            // Int64LE
-            11 => require_int()?.to_be_bytes().to_vec(),            // Int64BE
-            12 => (require_int()? as u64).to_le_bytes().to_vec(),   // UInt64LE
-            13 => (require_int()? as u64).to_be_bytes().to_vec(),   // UInt64BE
-            14 => (require_float()? as f32).to_le_bytes().to_vec(), // Float32LE
-            15 => (require_float()? as f32).to_be_bytes().to_vec(), // Float32BE
-            16 => require_float()?.to_le_bytes().to_vec(),          // Float64LE
-            17 => require_float()?.to_be_bytes().to_vec(),          // Float64BE
+            0 => vec![match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as i8 as u8],                  // Int8
+            1 => vec![match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u8],                        // UInt8
+            2 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as i16).to_le_bytes().to_vec(),    // Int16LE
+            3 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as i16).to_be_bytes().to_vec(),    // Int16BE
+            4 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u16).to_le_bytes().to_vec(),    // UInt16LE
+            5 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u16).to_be_bytes().to_vec(),    // UInt16BE
+            6 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as i32).to_le_bytes().to_vec(),    // Int32LE
+            7 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as i32).to_be_bytes().to_vec(),    // Int32BE
+            8 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u32).to_le_bytes().to_vec(),    // UInt32LE
+            9 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u32).to_be_bytes().to_vec(),    // UInt32BE
+            10 => match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }.to_le_bytes().to_vec(),            // Int64LE
+            11 => match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }.to_be_bytes().to_vec(),            // Int64BE
+            12 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u64).to_le_bytes().to_vec(),   // UInt64LE
+            13 => (match require_int() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as u64).to_be_bytes().to_vec(),   // UInt64BE
+            14 => (match require_float() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as f32).to_le_bytes().to_vec(), // Float32LE
+            15 => (match require_float() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            } as f32).to_be_bytes().to_vec(), // Float32BE
+            16 => match require_float() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }.to_le_bytes().to_vec(),          // Float64LE
+            17 => match require_float() {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }.to_be_bytes().to_vec(),          // Float64BE
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-encode: unknown format discriminant {}. Expected 0..17 \
@@ -695,27 +852,28 @@ pub(crate) fn builtin_encode(
                         other
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
-        ok_val(bytes_val(&bytes), call_span)
+        ok_val(bytes_val(&bytes), call_span).with_diagnostics(_dr_diags)
     })
 }
 
-/// `builtin-bytes-get`: Return the byte at index `i` as an Int (0–255).
+/// `builtin-bytes-get`: Return the byte at index `i` as an Int (0-255).
 ///
 /// Takes 2 args:
-/// - `i`: Int — zero-based byte index
-/// - `b`: Bytes — the byte sequence
+/// - `i`: Int -- zero-based byte index
+/// - `b`: Bytes -- the byte sequence
 ///
-/// Returns `Int` in range 0–255. Errors if `i` is out of bounds.
-/// O(1) — direct slice index into the underlying `Arc<[u8]>`.
+/// Returns `Int` in range 0-255. Errors if `i` is out of bounds.
+/// O(1) -- direct slice index into the underlying `Arc<[u8]>`.
 pub(crate) fn builtin_bytes_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -726,73 +884,87 @@ pub(crate) fn builtin_bytes_get(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-bytes-get does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-get requires exactly 2 arguments (i, b), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let i_val = thunk0.require_value()?.clone();
-        let b_val = thunk1.require_value()?.clone();
+        let i_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let b_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let i = match i_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-get: expected Int, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let bytes = match b_val.as_bytes() {
             Some(b) => b,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-get: expected Bytes, got {}",
                         ctx.type_display_name(b_val.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let len = bytes.len() as i64;
         if i < 0 || i >= len {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-get: index {} out of bounds for Bytes of length {}",
                     i, len
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let byte_val = bytes[i as usize] as i64;
@@ -805,21 +977,23 @@ pub(crate) fn builtin_bytes_get(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// `builtin-bytes-to-int`: Reinterpret a Bytes value as a little-endian i64.
 ///
 /// Takes 1 arg:
-/// - `b`: Bytes — the byte sequence to reinterpret (must be exactly 8 bytes)
+/// - `b`: Bytes -- the byte sequence to reinterpret (must be exactly 8 bytes)
 ///
-/// Returns `Int` — the raw bit pattern of the bytes as a 64-bit signed integer.
+/// Returns `Int` -- the raw bit pattern of the bytes as a 64-bit signed integer.
 /// Used by `float-bits` to extract the IEEE 754 bit representation of a Float.
 /// O(1).
 pub(crate) fn builtin_bytes_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -830,55 +1004,62 @@ pub(crate) fn builtin_bytes_to_int(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-bytes-to-int does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-to-int requires exactly 1 argument (b), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
-        let b_val = thunk0.require_value()?.clone();
+        let b_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let bytes = match b_val.as_bytes() {
             Some(b) => b,
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-to-int: expected Bytes, got {}",
                         ctx.type_display_name(b_val.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         if bytes.len() != 8 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-to-int requires exactly 8 bytes, got {}",
                     bytes.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let arr: [u8; 8] = bytes[..8].try_into().unwrap();
@@ -892,23 +1073,25 @@ pub(crate) fn builtin_bytes_to_int(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// `builtin-bytes-slice`: Return a sub-slice of a Bytes value as a new Bytes.
 ///
 /// Takes 3 args:
-/// - `b`: Bytes — the source byte sequence
-/// - `start`: Int — zero-based start index (inclusive)
-/// - `len`: Int — number of bytes to include
+/// - `b`: Bytes -- the source byte sequence
+/// - `start`: Int -- zero-based start index (inclusive)
+/// - `len`: Int -- number of bytes to include
 ///
 /// Returns `Bytes`. Errors if `start` or `start + len` is out of bounds,
 /// or if `len` is negative.
-/// O(1) — shares the underlying `Arc<[u8]>` without copying, just adjusts offsets.
+/// O(1) -- shares the underlying `Arc<[u8]>` without copying, just adjusts offsets.
 pub(crate) fn builtin_bytes_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -919,116 +1102,137 @@ pub(crate) fn builtin_bytes_slice(
 
         if let Some(ref named_map) = named {
             if !named_map.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-bytes-slice does not accept named arguments".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-slice requires exactly 3 arguments (b, start, len), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let b_val = thunk0.require_value()?.clone();
-        let start_val = thunk1.require_value()?.clone();
-        let len_val = thunk2.require_value()?.clone();
+        let b_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let start_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let len_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let (source, base_start, base_end) = match &b_val {
             Value::Bytes {
                 source, start, end, ..
             } => (Arc::clone(source), *start, *end),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-slice: expected Bytes, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let start_i = match start_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-slice: expected Int, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let len_i = match len_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-bytes-slice: expected Int, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let total_len = (base_end - base_start) as i64;
 
         if len_i < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-slice: len must be non-negative, got {}",
                     len_i
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         if start_i < 0 || start_i > total_len {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-slice: start {} out of bounds for Bytes of length {}",
                     start_i, total_len
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         let end_i = start_i + len_i;
         if end_i > total_len {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-bytes-slice: start {} + len {} = {} exceeds Bytes length {}",
                     start_i, len_i, end_i, total_len
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Zero-copy subslice: share the same Arc<[u8]>, adjust offsets only.
@@ -1045,5 +1249,6 @@ pub(crate) fn builtin_bytes_slice(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }

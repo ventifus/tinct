@@ -189,7 +189,7 @@ mod tests {
                         assigned_slot: std::sync::OnceLock::new(),
                     }),
                 ],
-                scope_frame: std::sync::OnceLock::new(),
+                scope: std::sync::OnceLock::new(),
             }),
             assigned_slot: std::sync::OnceLock::new(),
         });

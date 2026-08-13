@@ -1448,7 +1448,7 @@ async fn test_t2150_effectperform_infers_method_signature_not_unknown() {
     let param_var = make_typevalue_var("a");
 
     let ret_type = make_typevalue_nominal(crate::value::TYPE_ID_STRING);
-    let params_list = vec![(None, param_var)];
+    let params_list = vec![(None, param_var, crate::rust_span!())];
     let method_sig = make_typevalue_fn(params_list, ret_type);
 
     let method_signatures = vec![("print".to_string(), method_sig)];

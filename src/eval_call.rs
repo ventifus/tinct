@@ -69,8 +69,14 @@ pub(crate) async fn eval_call_core(
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
     caller_scope: &ScopeChain,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let func_thunk = eval_core_expr(func_expr, caller_scope, ctx).await?;
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (result, diags) = eval_core_expr(func_expr, caller_scope, ctx).await.into_parts();
+    _dr_diags.extend(diags);
+    let func_thunk = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (Arc<Thunk> directly).
     // Use the caller's SymbolTable so that Dispatch variable
@@ -111,7 +117,7 @@ pub(crate) async fn eval_call_core(
     } else {
         call_span.clone()
     };
-    Ok(Arc::new(Thunk::fn_call(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::fn_call(
         func_thunk,
         pos_args,
         named_args_map,
@@ -122,7 +128,7 @@ pub(crate) async fn eval_call_core(
             original_call,
             scope: caller_scope.clone(),
         },
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Arguments for invoking a user-defined function.
@@ -173,7 +179,8 @@ pub(crate) async fn try_clause(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<Option<ScopeChain>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<ScopeChain>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Convert CoreParam → Param for use with bind_args_thunks.
     // This mirrors the conversion in the CoreExpr::Fn evaluator arm (eval_core.rs).
     let params: Vec<Param> = clause
@@ -215,13 +222,13 @@ pub(crate) async fn try_clause(
             let covered_positionally = i < args.len();
             let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
             if !covered_positionally && !covered_by_name {
-                return Ok(None);
+                return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
             }
         }
     }
 
     if !has_variadic && args.len() > max_positional {
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
 
     // Step 2 — Type guard params: check type for annotated params.
@@ -239,11 +246,16 @@ pub(crate) async fn try_clause(
         };
         match crate::eval::thunk_matches_nominal_type(arg, tv, ctx) {
             Some(true) => continue,
-            Some(false) => return Ok(None),
+            Some(false) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
             None => {
-                let value = materialize(arg, Some(call_span), ctx).await?;
+                let (result, diags) = materialize(arg, Some(call_span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 if !value_matches_type(&value, tv, ctx) {
-                    return Ok(None);
+                    return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
                 }
             }
         }
@@ -261,11 +273,16 @@ pub(crate) async fn try_clause(
             if let Some(named_thunk) = named_map.get(&param.name) {
                 match crate::eval::thunk_matches_nominal_type(named_thunk, tv, ctx) {
                     Some(true) => continue,
-                    Some(false) => return Ok(None),
+                    Some(false) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                     None => {
-                        let value = materialize(named_thunk, Some(call_span), ctx).await?;
+                        let (result, diags) = materialize(named_thunk, Some(call_span), ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let value = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         if !value_matches_type(&value, tv, ctx) {
-                            return Ok(None);
+                            return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
                         }
                     }
                 }
@@ -290,30 +307,41 @@ pub(crate) async fn try_clause(
             .collect();
         // Materialize the first positional arg as the pattern scrutinee.
         let scrutinee = match args.first() {
-            Some(arg) => materialize(arg, Some(call_span), ctx).await?,
+            Some(arg) => {
+                let (result, diags) = materialize(arg, Some(call_span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            }
             None => {
                 // No first arg — pattern cannot match (arity would have caught zero-arg).
-                return Ok(None);
+                return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
             }
         };
         // Capture the structural pattern bindings for use in the arm frame.
-        let pattern_bindings: Option<Vec<(u32, Arc<Thunk>)>> =
-            match crate::eval_materialize::eval_case_arm_structural_pattern(
-                lowered_pattern,
-                &binding_map,
-                &scrutinee,
-                call_span.clone(),
-                &pre_chain,
-                ctx,
-            )
-            .await?
-            {
-                Some(bindings) => Some(bindings),
-                None => {
-                    // Pattern did not match — this clause does not apply.
-                    return Ok(None);
-                }
-            };
+        let (result, diags) = crate::eval_materialize::eval_case_arm_structural_pattern(
+            lowered_pattern,
+            &binding_map,
+            &scrutinee,
+            call_span.clone(),
+            &pre_chain,
+            ctx,
+        )
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let pattern_result = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let pattern_bindings: Option<Vec<(u32, Arc<Thunk>)>> = match pattern_result {
+            Some(bindings) => Some(bindings),
+            None => {
+                // Pattern did not match — this clause does not apply.
+                return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
+            }
+        };
 
         // If the structural pattern produced bindings, build the frame directly from them
         // (matching the `eval_materialize.rs` MatchDispatch path for case arms).
@@ -349,8 +377,8 @@ pub(crate) async fn try_clause(
                 .collect();
             // Build SymbolTable for the pattern-bound call frame.
             let mut bound_st = SymbolTable::new();
-            for p in params.iter() {
-                bound_st.insert(p.name.clone(), p.slot, None);
+            for cp in clause.params.iter() {
+                bound_st.insert(cp.node.name.clone(), cp.node.slot, cp.span.clone());
             }
             let bound_frame = Arc::new(bound_st);
             for (i, thunk) in params_final.iter().enumerate() {
@@ -361,20 +389,35 @@ pub(crate) async fn try_clause(
 
             // Step 4 (guard) with pattern-bound frame.
             if let Some(guard_expr) = &clause.guard {
-                let guard_thunk = eval_core_expr(guard_expr, &bound_chain, ctx).await?;
-                let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
-                if !Box::pin(call_to_match(
+                let (result, diags) = eval_core_expr(guard_expr, &bound_chain, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let guard_thunk = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = materialize(&guard_thunk, Some(call_span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let guard_value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = Box::pin(call_to_match(
                     &guard_value,
                     ctx,
                     call_span,
                     bound_chain.clone(),
                 ))
-                .await?
-                {
-                    return Ok(None);
+                .await.into_parts();
+                _dr_diags.extend(diags);
+                let matched = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                if !matched {
+                    return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
                 }
             }
-            return Ok(Some(bound_chain));
+            return crate::error::DiagnosticResult::ok(Some(bound_chain)).with_diagnostics(_dr_diags);
         }
     }
 
@@ -382,7 +425,7 @@ pub(crate) async fn try_clause(
     // Bind args first so the guard can reference bound parameter names.
     // If the guard is falsy, this clause does not match.
     if let Some(guard_expr) = &clause.guard {
-        let bound_chain = bind_args_thunks(
+        let (result, diags) = bind_args_thunks(
             &params,
             args,
             named,
@@ -392,31 +435,50 @@ pub(crate) async fn try_clause(
             call_span,
             type_inst.clone(),
         )
-        .await
-        .map_err(|mut e| {
-            if let Some(ref name) = call_span.name {
-                e.notes.push(format!("in call to '{}'", name));
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let bound_chain = match result {
+            Ok(v) => v,
+            Err(mut e) => {
+                if let Some(ref name) = call_span.name {
+                    e.notes.push(format!("in call to '{}'", name));
+                }
+                return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags);
             }
-            e
-        })?;
-        let guard_thunk = eval_core_expr(guard_expr, &bound_chain, ctx).await?;
-        let guard_value = materialize(&guard_thunk, Some(call_span), ctx).await?;
-        if !Box::pin(call_to_match(
+        };
+        let (result, diags) = eval_core_expr(guard_expr, &bound_chain, ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let guard_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&guard_thunk, Some(call_span), ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let guard_value = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = Box::pin(call_to_match(
             &guard_value,
             ctx,
             call_span,
             bound_chain.clone(),
         ))
-        .await?
-        {
-            return Ok(None);
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let matched = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        if !matched {
+            return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
         }
         // Guard passed — return the already-bound chain.
-        return Ok(Some(bound_chain));
+        return crate::error::DiagnosticResult::ok(Some(bound_chain)).with_diagnostics(_dr_diags);
     }
 
     // Step 5 — All checks pass: bind args and return the call frame.
-    let frame = bind_args_thunks(
+    let (result, diags) = bind_args_thunks(
         &params,
         args,
         named,
@@ -426,14 +488,18 @@ pub(crate) async fn try_clause(
         call_span,
         type_inst,
     )
-    .await
-    .map_err(|mut e| {
-        if let Some(ref name) = call_span.name {
-            e.notes.push(format!("in call to '{}'", name));
+    .await.into_parts();
+    _dr_diags.extend(diags);
+    let frame = match result {
+        Ok(v) => v,
+        Err(mut e) => {
+            if let Some(ref name) = call_span.name {
+                e.notes.push(format!("in call to '{}'", name));
+            }
+            return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags);
         }
-        e
-    })?;
-    Ok(Some(frame))
+    };
+    crate::error::DiagnosticResult::ok(Some(frame)).with_diagnostics(_dr_diags)
 }
 
 /// Invoke a user-defined function with pre-evaluated thunks.
@@ -449,14 +515,20 @@ pub(crate) async fn try_clause(
 /// and `bind_args_thunks` on an arbitrary clause would give a misleading error.
 pub async fn invoke_function(
     ctx: &CallContext<'_>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let (body, frame) = invoke_function_tco(ctx).await?;
-    Ok(Arc::new(Thunk::core_expr(
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (result, diags) = invoke_function_tco(ctx).await.into_parts();
+    _dr_diags.extend(diags);
+    let (body, frame) = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::core_expr(
         body,
         frame,
         Arc::clone(ctx.ctx),
         ctx.call_span.clone(),
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// TCO variant of `invoke_function` that returns the body expression and call ScopeChain
@@ -466,9 +538,10 @@ pub async fn invoke_function(
 /// Returns `(body_expr, call_scope)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> Result<(Arc<Spanned<CoreExpr>>, ScopeChain), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(Arc<Spanned<CoreExpr>>, ScopeChain)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     for clause in ctx.clauses.iter() {
-        let result = try_clause(
+        let (result, diags) = try_clause(
             clause,
             ctx.positional,
             ctx.named,
@@ -478,9 +551,14 @@ pub(crate) async fn invoke_function_tco(
             &ctx.call_span,
             ctx.type_instantiation.clone(),
         )
-        .await?;
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let result = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         if let Some(frame) = result {
-            return Ok((Arc::clone(&clause.body), frame));
+            return crate::error::DiagnosticResult::ok((Arc::clone(&clause.body), frame)).with_diagnostics(_dr_diags);
         }
     }
     // No clause matched — same fallback logic as invoke_function.
@@ -498,7 +576,7 @@ pub(crate) async fn invoke_function_tco(
                 resolved_type: p.node.resolved_type.clone(),
             })
             .collect();
-        match bind_args_thunks(
+        let (result, diags) = bind_args_thunks(
             &params,
             ctx.positional,
             ctx.named,
@@ -508,13 +586,14 @@ pub(crate) async fn invoke_function_tco(
             &ctx.call_span,
             ctx.type_instantiation.clone(),
         )
-        .await
-        {
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        match result {
             Err(mut e) => {
                 if let Some(ref name) = ctx.call_span.name {
                     e.notes.push(format!("in call to '{}'", name));
                 }
-                return Err(e);
+                return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags);
             }
             Ok(_) => {
                 // bind_args_thunks succeeded: try_clause rejected for type reasons only.
@@ -598,7 +677,7 @@ pub(crate) async fn invoke_function_tco(
         }
     }
 
-    Err(err.into())
+    crate::error::DiagnosticResult::err(err).with_diagnostics(_dr_diags)
 }
 
 /// Validate function arguments, build a call-frame ScopeChain, and return it.
@@ -615,7 +694,8 @@ pub(crate) async fn bind_args_thunks(
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
-) -> Result<ScopeChain, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<ScopeChain> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
     // Untyped rest has variadic=true and resolved_type=None (or Unknown).
@@ -650,12 +730,11 @@ pub(crate) async fn bind_args_thunks(
             let covered_positionally = i < positional.len();
             let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
             if !covered_positionally && !covered_by_name {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("missing required parameter: {}", param.name),
                     call_span.clone(),
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
         }
     }
@@ -668,7 +747,7 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             "eval",
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -676,8 +755,7 @@ pub(crate) async fn bind_args_thunks(
                 positional.len()
             ),
             call_span.clone(),
-        )
-        .into());
+        )).with_diagnostics(_dr_diags);
     }
 
     // BIND-NAMED-VALIDATE: Check named args against params before filling slots.
@@ -697,14 +775,14 @@ pub(crate) async fn bind_args_thunks(
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
                     // C-NO-OVERLAP: named arg targets a positionally-bound parameter
-                    return Err(Box::new(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         "eval",
                         format!(
                             "parameter '{}' received both positional and named argument",
                             name
                         ),
                         call_span.clone(),
-                    )));
+                    )).with_diagnostics(_dr_diags);
                 }
                 Some(_) => {
                     // Valid: named arg targets an existing param that wasn't positionally bound.
@@ -725,7 +803,7 @@ pub(crate) async fn bind_args_thunks(
                                 valid_params.join(", ")
                             )
                         };
-                        return Err(Box::new(Diagnostic::error(KIND, msg, call_span.clone())));
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND, msg, call_span.clone())).with_diagnostics(_dr_diags);
                     }
                 }
             }
@@ -835,7 +913,12 @@ pub(crate) async fn bind_args_thunks(
 
             if !bucket_types.is_empty() {
                 // Materialize to inspect the runtime type for bucket dispatch.
-                let value = materialize(arg_thunk, Some(call_span), ctx).await?;
+                let (result, diags) = materialize(arg_thunk, Some(call_span), ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Try each typed bucket in declaration order — first match wins.
                 for (bucket_idx, bucket_ty) in bucket_types.iter().enumerate() {
@@ -854,7 +937,7 @@ pub(crate) async fn bind_args_thunks(
                 } else {
                     // No rest bucket and no typed bucket matched: arg cannot be accepted.
                     let expected = ArityBound::Exact(max_positional);
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         "eval",
                         format!(
                             "arity mismatch: expected {}, got {}",
@@ -862,8 +945,7 @@ pub(crate) async fn bind_args_thunks(
                             positional.len()
                         ),
                         call_span.clone(),
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
             }
         }
@@ -942,7 +1024,7 @@ pub(crate) async fn bind_args_thunks(
         st.set_evidence(ev);
     }
     for p in params {
-        st.insert(p.name.clone(), p.slot, None);
+        st.insert(p.name.clone(), p.slot, call_span.clone());
     }
     let frame = Arc::new(st);
     for (i, thunk) in params_vec.into_iter().enumerate() {
@@ -950,7 +1032,7 @@ pub(crate) async fn bind_args_thunks(
     }
     let mut callee_chain = definition_scope;
     callee_chain.push(frame);
-    Ok(callee_chain)
+    crate::error::DiagnosticResult::ok(callee_chain).with_diagnostics(_dr_diags)
 }
 
 /// Extract the default value node from a param's annotation, if present.

@@ -98,8 +98,8 @@ macro_rules! builtin {
 }
 pub(crate) use builtin;
 
-pub(crate) fn ok_val(v: Value, span: Span) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    Ok(Arc::new(Thunk::value(v, span)))
+pub(crate) fn ok_val(v: Value, span: Span) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(v, span)))
 }
 
 /// Convert a `Value::Bytes` slice into a lazy collection of `Value::Int` (one per byte).
@@ -112,9 +112,9 @@ pub(crate) fn expect_one_arg(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> Result<Value, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Value> {
     if args.len() != 1 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -122,18 +122,20 @@ pub(crate) fn expect_one_arg(
                 args.len()
             ),
             call_span,
-        )
-        .into());
+        ));
     }
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{} does not accept named arguments", name),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok(args[0].require_value()?.clone())
+    let (result, diags) = args[0].require_value().into_parts();
+    match result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v.clone()).with_diagnostics(diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(diags),
+    }
 }
 
 /// Helper: check that an f64 value is within the representable range of i64
@@ -142,21 +144,20 @@ pub(crate) fn checked_f64_to_i64(
     name: &str,
     f: f64,
     call_span: Span,
-) -> Result<i64, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<i64> {
     if !f.is_finite() {
-        return Err(
-            Diagnostic::error(KIND, format!("{}: {} is not finite", name, f), call_span).into(),
+        return crate::error::DiagnosticResult::err(
+            Diagnostic::error(KIND, format!("{}: {} is not finite", name, f), call_span),
         );
     }
     if f < (i64::MIN as f64) || f >= (i64::MAX as f64) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{}: {} out of range for Int", name, f),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok(f as i64)
+    crate::error::DiagnosticResult::ok(f as i64)
 }
 
 /// Helper: check that an f64 arithmetic result is finite.
@@ -167,9 +168,11 @@ pub(crate) fn check_float_result(
     val: f64,
     op: &str,
     span: Span,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     if !val.is_finite() {
-        Err(Diagnostic::error(KIND, format!("{}: {} is not finite", op, val), span).into())
+        crate::error::DiagnosticResult::err(
+            Diagnostic::error(KIND, format!("{}: {} is not finite", op, val), span),
+        )
     } else {
         ok_val(
             Value::Float {
@@ -192,32 +195,35 @@ pub(crate) async fn require_dict(
     def_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> Result<IndexMap<HashableValue, Arc<crate::value::Thunk>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<IndexMap<HashableValue, Arc<crate::value::Thunk>>> {
     match value {
-        Value::Dict { entries: map, .. } => Ok(map),
+        Value::Dict { entries: map, .. } => crate::error::DiagnosticResult::ok(map),
         Value::Variant { payload, .. } => {
             // Auto-unpack variant payload — consistent with DotAccess behavior
             match payload {
                 Some(payload_thunk) => {
-                    let payload_val = materialize(&payload_thunk, Some(&call_span), ctx).await?;
+                    let (result, diags) = materialize(&payload_thunk, Some(&call_span), ctx).await.into_parts();
+                    let payload_val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(diags),
+                    };
                     // Recursively try to extract dict from payload
                     Box::pin(require_dict(name, payload_val, def_span, ctx, call_span)).await
                 }
                 None => {
-                    let err = Diagnostic::error(
+                    crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "{}: expected {}, got {}",
                             name, "Dict", "unit variant (no payload)"
                         ),
                         def_span,
-                    );
-                    Err(err.into())
+                    ))
                 }
             }
         }
         other => {
-            let err = Diagnostic::error(
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -226,8 +232,7 @@ pub(crate) async fn require_dict(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 def_span,
-            );
-            Err(err.into())
+            ))
         }
     }
 }
@@ -239,16 +244,18 @@ pub(crate) fn require_string(
     value: Value,
     def_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<String, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<String> {
     match value {
         Value::String {
             ref source,
             start,
             end,
             ..
-        } => Ok(source[start..end].to_string()),
+        } => crate::error::DiagnosticResult::ok(source[start..end].to_string()),
         other => {
-            let err = Diagnostic::error(
+            // Secondary span would be redundant here since def_span is already the argument's span.
+            // The caller passes args[N].span as def_span, which is where the value was produced.
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -257,10 +264,7 @@ pub(crate) fn require_string(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 def_span,
-            );
-            // Secondary span would be redundant here since def_span is already the argument's span.
-            // The caller passes args[N].span as def_span, which is where the value was produced.
-            Err(err.into())
+            ))
         }
     }
 }
@@ -271,13 +275,11 @@ pub(crate) fn require_type_context(
     value: Value,
     def_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<
-    std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>,
-    Box<crate::error::Diagnostic>,
-> {
+) -> crate::error::DiagnosticResult<std::sync::Arc<std::sync::Mutex<crate::eval::TypeContextData>>>
+{
     match value {
-        Value::TypeContext { ctx: tc, .. } => Ok(tc),
-        other => Err(Diagnostic::error(
+        Value::TypeContext { ctx: tc, .. } => crate::error::DiagnosticResult::ok(tc),
+        other => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "{}: expected {}, got {}",
@@ -286,8 +288,7 @@ pub(crate) fn require_type_context(
                 ctx.type_display_name(other.type_decl_id_of())
             ),
             def_span,
-        )
-        .into()),
+        )),
     }
 }
 
@@ -296,16 +297,15 @@ pub(crate) fn reject_named(
     name: &str,
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-) -> Result<(), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<()> {
     if named.map(|n| !n.is_empty()).unwrap_or(false) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{} does not accept named arguments", name),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok(())
+    crate::error::DiagnosticResult::ok(())
 }
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
@@ -321,10 +321,18 @@ fn float_to_int_builtin(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut accumulated_diags = Vec::new();
+    let val = {
+        let (result, diags) = expect_one_arg(name, args, named, ctx, call_span.clone()).into_parts();
+        accumulated_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+        }
+    };
     let arg0_span = args[0].span.clone();
-    match val {
+    let result = match val {
         Value::Int { n, .. } => ok_val(
             Value::Int {
                 n,
@@ -336,16 +344,24 @@ fn float_to_int_builtin(
         ),
         Value::Float { n: f, .. } => {
             if !f.is_finite() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("{}: {} is not finite", name, f),
                     arg0_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(accumulated_diags);
             }
+            let converted = {
+                let (result, diags) = checked_f64_to_i64(name, op(f), call_span.clone()).into_parts();
+                accumulated_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+                }
+            };
             ok_val(
                 Value::Int {
-                    n: checked_f64_to_i64(name, op(f), call_span.clone())?,
+                    n: converted,
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
                         crate::value::TYPE_ID_INT,
                     )),
@@ -353,7 +369,7 @@ fn float_to_int_builtin(
                 call_span,
             )
         }
-        other => Err(Diagnostic::error(
+        other => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "{}: expected {}, got {}",
@@ -362,9 +378,9 @@ fn float_to_int_builtin(
                 ctx.type_display_name(other.type_decl_id_of())
             ),
             arg0_span,
-        )
-        .into()),
-    }
+        )),
+    };
+    result.with_diagnostics(accumulated_diags)
 }
 
 /// `floor`: Takes 1 numeric arg (Int or Float). Returns Int.
@@ -377,7 +393,7 @@ fn float_to_int_builtin(
 /// Inherently materializing: must inspect numeric value to convert/round.
 pub(crate) fn builtin_floor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -400,7 +416,7 @@ pub(crate) fn builtin_floor(
 /// Inherently materializing: must inspect numeric value to convert/round.
 pub(crate) fn builtin_round(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -420,7 +436,7 @@ pub(crate) fn builtin_round(
 /// Inherently materializing: must inspect string content to parse integer value.
 pub(crate) fn builtin_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -430,7 +446,7 @@ pub(crate) fn builtin_to_int(
     } = ctx_arg;
     if args.is_empty() {
         return Box::pin(async move {
-            Err(Diagnostic::error(
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -438,15 +454,29 @@ pub(crate) fn builtin_to_int(
                     0
                 ),
                 call_span,
-            )
-            .into())
+            ))
         });
     }
     Box::pin(async move {
-        let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut accumulated_diags = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            accumulated_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+            }
+        };
         let arg0_span = args[0].span.clone();
-        let s = require_string("to-int", val, arg0_span, &ctx)?;
-        match s.parse::<i64>() {
+        let s = {
+            let (result, diags) = require_string("to-int", val, arg0_span, &ctx).into_parts();
+            accumulated_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+            }
+        };
+        let result = match s.parse::<i64>() {
             Ok(n) => ok_val(
                 Value::Int {
                     n,
@@ -456,13 +486,13 @@ pub(crate) fn builtin_to_int(
                 },
                 call_span,
             ),
-            Err(_) => Err(Diagnostic::error(
+            Err(_) => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("{}: cannot parse {:?} as {}", "to-int", s, "Int"),
                 call_span,
-            )
-            .into()),
-        }
+            )),
+        };
+        result.with_diagnostics(accumulated_diags)
     })
 }
 
@@ -473,7 +503,7 @@ pub(crate) fn builtin_to_int(
 /// Inherently materializing: must inspect string content to parse float value.
 pub(crate) fn builtin_to_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -483,7 +513,7 @@ pub(crate) fn builtin_to_float(
     } = ctx_arg;
     if args.is_empty() {
         return Box::pin(async move {
-            Err(Diagnostic::error(
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -491,15 +521,29 @@ pub(crate) fn builtin_to_float(
                     0
                 ),
                 call_span,
-            )
-            .into())
+            ))
         });
     }
     Box::pin(async move {
-        let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut accumulated_diags = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            accumulated_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+            }
+        };
         let arg0_span = args[0].span.clone();
-        let s = require_string("to-float", val, arg0_span, &ctx)?;
-        match s.parse::<f64>() {
+        let s = {
+            let (result, diags) = require_string("to-float", val, arg0_span, &ctx).into_parts();
+            accumulated_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+            }
+        };
+        let result = match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(
                 Value::Float {
                     n: f,
@@ -509,25 +553,24 @@ pub(crate) fn builtin_to_float(
                 },
                 call_span,
             ),
-            Ok(f) => Err(Diagnostic::error(
+            Ok(f) => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("{}: {} is not finite", "to-float", f),
                 call_span,
-            )
-            .into()),
-            Err(_) => Err(Diagnostic::error(
+            )),
+            Err(_) => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("{}: cannot parse {:?} as {}", "to-float", s, "Float"),
                 call_span,
-            )
-            .into()),
-        }
+            )),
+        };
+        result.with_diagnostics(accumulated_diags)
     })
 }
 
 pub(crate) fn builtin_proxy(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -536,9 +579,17 @@ pub(crate) fn builtin_proxy(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("proxy", named.as_ref(), call_span.clone())?;
+        let mut accumulated_diags = Vec::new();
+        {
+            let (result, diags) = reject_named("proxy", named.as_ref(), call_span.clone()).into_parts();
+            accumulated_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(accumulated_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -546,10 +597,10 @@ pub(crate) fn builtin_proxy(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(accumulated_diags);
         }
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Proxy {
                 handler: Arc::clone(&args[0]),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -558,6 +609,7 @@ pub(crate) fn builtin_proxy(
             },
             call_span,
         )))
+        .with_diagnostics(accumulated_diags)
     })
 }
 
@@ -651,10 +703,12 @@ mod tests {
     }
 
     /// Drive an async builtin to completion in tests.
+    /// Extracts the Result from DiagnosticResult, discarding diagnostics for test simplicity.
     async fn run(
-        f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-        f.await
+        f: impl std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>,
+    ) -> Result<Arc<Thunk>, crate::error::Diagnostic> {
+        let (result, _diags) = f.await.into_parts();
+        result
     }
 
     /// Async materialize wrapper for test code.
@@ -662,21 +716,27 @@ mod tests {
         t: &Arc<Thunk>,
         s: Option<&crate::ast::Span>,
         c: &Arc<crate::eval::EvalContext>,
-    ) -> Result<Value, Box<crate::error::Diagnostic>> {
-        materialize(t, s, c).await
+    ) -> crate::error::DiagnosticResult<Value> {
+        let (result, diags) = materialize(t, s, c).await.into_parts();
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(diags),
+        }
     }
 
     async fn mat(
-        f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
+        f: impl std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>,
     ) -> Value {
-        materialize_sync(&run(f).await.unwrap(), None, &test_ctx())
+        let (result, _diags) = materialize_sync(&run(f).await.unwrap(), None, &test_ctx())
             .await
-            .unwrap()
+            .into_parts();
+        result.unwrap()
     }
 
-    /// Materialize an already-resolved thunk (for `result: Result<Arc<Thunk>, Box<Diagnostic>>` cases).
+    /// Materialize an already-resolved thunk (for `result: DiagnosticResult<Arc<Thunk>>` cases).
     async fn mat_val(t: Arc<Thunk>) -> Value {
-        materialize_sync(&t, None, &test_ctx()).await.unwrap()
+        let (result, _diags) = materialize_sync(&t, None, &test_ctx()).await.into_parts();
+        result.unwrap()
     }
 
     /// Parse and evaluate an LLT snippet, returning the result value.
@@ -693,7 +753,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
 
         {
             let mut infer_state = crate::type_infer::InferState::new();
@@ -709,17 +769,21 @@ mod tests {
             }
         }
 
-        let thunk = crate::eval::eval_surface_file(&program, ctx)
-            .await
-            .unwrap_or_else(|e| {
+        let thunk = {
+            let (result, _diags) = crate::eval::eval_surface_file(&program, ctx)
+                .await
+                .into_parts();
+            result.unwrap_or_else(|e| {
                 panic!(
                     "parse_eval: eval_surface_file failed for {:?}: {}",
                     llt_src, e
                 )
-            });
-        materialize_sync(&thunk, None, ctx)
+            })
+        };
+        let (result, _diags) = materialize_sync(&thunk, None, ctx)
             .await
-            .unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
+            .into_parts();
+        result.unwrap_or_else(|e| panic!("parse_eval: materialize failed for {:?}: {}", llt_src, e))
     }
 
     /// Create an unevaluated thunk that always fails when forced.
@@ -762,7 +826,8 @@ mod tests {
 
     /// Helper: materialize an `Arc<Thunk>` — used by tests inspecting dict entry values after T-1772.
     async fn mat_id(thunk: Arc<Thunk>, ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        materialize_sync(&thunk, None, ctx).await.unwrap()
+        let (result, _diags) = materialize_sync(&thunk, None, ctx).await.into_parts();
+        result.unwrap()
     }
 
     #[tokio::test]
@@ -2780,7 +2845,7 @@ mod tests {
             _ctx: BuiltinArgs,
         ) -> Pin<
             Box<
-                dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+                dyn std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>
                     + Send,
             >,
         > {
@@ -2844,13 +2909,13 @@ mod tests {
             ctx: BuiltinArgs,
         ) -> Pin<
             Box<
-                dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+                dyn std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>
                     + Send,
             >,
         > {
             Box::pin(async move {
                 let call_span = ctx.call_span;
-                Err(Diagnostic::error(KIND, "builtin error".to_string(), call_span).into())
+                crate::error::DiagnosticResult::err(Diagnostic::error(KIND, "builtin error".to_string(), call_span))
             })
         }
         let ctx = test_ctx();
@@ -2899,18 +2964,17 @@ mod tests {
             ctx: BuiltinArgs,
         ) -> Pin<
             Box<
-                dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+                dyn std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>
                     + Send,
             >,
         > {
             Box::pin(async move {
                 let call_span = ctx.call_span;
-                Err(Diagnostic::error(
+                crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "test: exceeded resource limit (1000000)".to_string(),
                     call_span,
-                )
-                .into())
+                ))
             })
         }
         let ctx = test_ctx();
@@ -3114,7 +3178,7 @@ mod tests {
             _ctx: BuiltinArgs,
         ) -> Pin<
             Box<
-                dyn std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>
+                dyn std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>
                     + Send,
             >,
         > {

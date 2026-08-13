@@ -9,37 +9,6 @@
 #   %cwd       — DirCap for working directory
 #   %libdir    — DirCap for stdlib
 
---- stage: "type"
-# Type-stage definitions for primitive types available in this init program.
-[
-  TypeNode: [type
-    Int
-    String
-    Float
-    Bytes
-    Never
-    Top
-    Unknown
-    Proxy
-    Callable
-    Dict: [fields: Dict  open: Integer  key-type: TypeNode  value-type: TypeNode]
-    TypeConstructor: [name: String]
-    TypeApplication: [ctor: TypeNode  args: TypeNode]
-    IntLiteral:    [n: Integer]
-    StringLiteral: [s: String]]
-
-  Integer: TypeNode.Int
-  String:  TypeNode.String
-  Float:   TypeNode.Float
-  Bytes:   TypeNode.Bytes
-  Never:   TypeNode.Never
-  Any:     TypeNode.Top
-  Unknown: TypeNode.Unknown
-  Proxy:   TypeNode.Proxy
-  Dict:    [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
-  Callable: TypeNode.Callable
-]
-
 ---
 #   %stdout    — protocol dict for output (write, flush, close methods)
 #
@@ -454,7 +423,7 @@
                             0: [builtin-symbol-table-extend env-base [$name: exports]]
                             1: env-base]]
                    [env: .env  tc: acc.tc  last-result: exports
-                    stderr: err  diagnostics: [append-diags acc.diagnostics eval-result.diagnostics]]]]]]]]]]]
+                    stderr: err  diagnostics: [append-diags acc.diagnostics eval-result.diagnostics]]]]]]]]]]]]
     # Split documents by stage: check hdr.stage string.
     # Stage headers (--- stage: "type") are string literals — no env needed.
     # Using env here creates a circular dependency: docs forces env from the same
@@ -487,7 +456,7 @@
       [env:         rt.env
        last-result: rt.last-result
        stderr:      rt.stderr
-       diagnostics: [append-diags state.diagnostics rt.diagnostics]]]]
+       diagnostics: [append-diags state.diagnostics rt.diagnostics]]]]]
 
   # ── Stage: export ─────────────────────────────────────────────────────────────
   # Records the exported bindings from the last document's result into state.
@@ -510,8 +479,7 @@
   # builtin-typecheck-doc for each doc in step, so tc is already enriched.
   # A second typecheck pass over the prelude is redundant and extremely expensive.
   set-tc-ready: [fn [let tc state@Dict]
-    [merge state [tc-ready: tc  tc-diagnostics: []]]]]
-
+    [merge state [tc-ready: tc  tc-diagnostics: []]]]
 
 # ============================================================================
 # Dict 2 — Test runner functions
@@ -653,7 +621,7 @@
         doc-index:  0
         diagnostics: []
         doc-results: []]]
-      state.parsed.documents]]]
+      state.parsed.documents]]
     [merge state
       [env:         test-state.env
        last-result:  test-state.last-result

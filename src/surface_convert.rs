@@ -11,16 +11,16 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{
-    class_decl_name, Annotation, DotKey, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
-    SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
+    Annotation, DotKey, Span, Spanned, SurfaceDocument,
+    SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode, SurfaceParam,
     SurfaceProgram,
 };
 use crate::rust_span;
 use crate::type_tags::{
-    EXPR_CALL, EXPR_CLASS_DECL, EXPR_DICT, EXPR_DOT_ACCESS, EXPR_ENTRY, EXPR_ERROR, EXPR_FN,
-    EXPR_INSTANCE_DECL, EXPR_LET_DECL, EXPR_LITERAL, EXPR_MATCH, EXPR_NAMED_ARG, EXPR_PARAMETER,
-    EXPR_PATTERN_DECL, EXPR_PLACEHOLDER, EXPR_QUOTE, EXPR_REST, EXPR_SEQUENTIAL, EXPR_SPLICE,
-    EXPR_SYNTAX_CLASS, EXPR_TYPE_ALIAS, EXPR_TYPE_ASSERT, EXPR_UNQUOTE, EXPR_UNQUOTE_SPLICE,
+    EXPR_CALL, EXPR_DICT, EXPR_DOT_ACCESS, EXPR_ENTRY, EXPR_ERROR, EXPR_FN,
+    EXPR_LET_DECL, EXPR_LITERAL, EXPR_MATCH, EXPR_NAMED_ARG, EXPR_PARAMETER,
+    EXPR_PATTERN_DECL, EXPR_PLACEHOLDER, EXPR_QUOTE, EXPR_REST, EXPR_SEQUENTIAL,
+    EXPR_TYPE_ASSERT, EXPR_UNQUOTE, EXPR_UNQUOTE_SPLICE,
     EXPR_VARREF,
 };
 use crate::value::{
@@ -846,7 +846,7 @@ fn dict_to_annotation(
             entries_path.push("entries".to_string());
             let path_refs: Vec<&str> = entries_path.iter().map(|s| s.as_str()).collect();
             let entries_list = extract_list(&entries_val, &path_refs, ctx)?;
-            let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+            let fallback_span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
             let mut entries = Vec::new();
             for (i, entry_val) in entries_list.into_iter().enumerate() {
                 let mut entry_path = entries_path.clone();
@@ -869,7 +869,7 @@ fn dict_to_annotation(
         }
     };
 
-    let span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
 
     Ok(Spanned::new(ann, span))
 }
@@ -1632,7 +1632,7 @@ pub(crate) fn get_child_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
-    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let fallback_span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     dict_to_surface_node(&val, &fallback_span, ctx).map_err(|mut e| {
         e.field_path.insert(0, key.to_string());
@@ -1648,7 +1648,7 @@ pub(crate) fn get_child_opt_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Arc<SurfaceNode>>, AstError> {
-    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let fallback_span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
     match get_field_with_aliases(dict, key, aliases, ctx) {
         Ok(val) if !is_empty_dict(&val) => dict_to_surface_node(&val, &fallback_span, ctx)
             .map(Some)
@@ -1667,7 +1667,7 @@ pub(crate) fn get_child_list_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Arc<SurfaceNode>>, AstError> {
-    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let fallback_span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     let list = extract_list(&val, &[key], ctx)?;
     list.into_iter()
@@ -1681,7 +1681,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Spanned<SurfaceEntry>>, AstError> {
-    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let fallback_span = extract_span(dict, ctx).expect("AST dict missing 'span' field");
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     let list = extract_list(&val, &[key], ctx)?;
     let mut entries = Vec::with_capacity(list.len());
@@ -1796,7 +1796,7 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
             "Expr.NamedArg value",
             vec![key.to_string(), i_str.clone(), "value".to_string()],
         )?;
-        let fallback_span = extract_span(&payload_dict, ctx).unwrap_or_else(|| rust_span!());
+        let fallback_span = extract_span(&payload_dict, ctx).expect("AST dict missing 'span' field");
         let value_node =
             dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
                 e.field_path.insert(0, "value".to_string());
@@ -1884,7 +1884,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
                 })
             }
         };
-        let arm_fallback_span = extract_span(&arm_dict, ctx).unwrap_or_else(|| rust_span!());
+        let arm_fallback_span = extract_span(&arm_dict, ctx).expect("AST dict missing 'span' field");
         let pattern_val = get_dict_field(&arm_dict, "pattern", &[key, &i_str], ctx)?;
         // T-1750: pattern is now Arc<SurfaceNode>, deserialize like guard/body
         let pattern = dict_to_surface_node(&pattern_val, &arm_fallback_span, ctx)?;
@@ -1990,7 +1990,7 @@ pub(crate) fn get_span_from_dict(
     dict: &IndexMap<HashableValue, Arc<Thunk>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Span {
-    extract_span(dict, ctx).unwrap_or_else(|| rust_span!())
+    extract_span(dict, ctx).expect("AST dict missing 'span' field")
 }
 
 // ============================================================================
@@ -2034,12 +2034,13 @@ pub fn surface_program_to_dict(
     program: &SurfaceProgram,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let span = program
         .documents
         .first()
         .map(|d| d.span.clone())
-        .unwrap_or_else(|| rust_span!());
+        .expect("AST dict missing 'span' field");
     let mut root: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     root.insert(
@@ -2059,30 +2060,44 @@ pub fn surface_program_to_dict(
     );
 
     // documents: list of document dicts
-    let doc_arcs: Vec<Arc<Thunk>> = program
-        .documents
-        .iter()
-        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx))
-        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
+    let mut doc_arcs: Vec<Arc<Thunk>> = Vec::new();
+    for doc in &program.documents {
+        let (result, diags) = surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => doc_arcs.push(v),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
+    }
 
-    root.insert(
-        HashableValue::Str("documents".into()),
-        list_to_thunk_id(doc_arcs.into_iter(), span.clone(), ctx)?,
-    );
+    {
+        let (result, diags) = list_to_thunk_id(doc_arcs.into_iter(), span.clone(), ctx).into_parts();
+        _dr_diags.extend(diags);
+        let docs_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
+        root.insert(
+            HashableValue::Str("documents".into()),
+            docs_thunk,
+        );
+    }
 
-    root.insert(
-        HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
-    );
+    {
+        let (result, diags) = span_to_thunk_id(span.clone(), ctx).into_parts();
+        _dr_diags.extend(diags);
+        let span_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
+        root.insert(
+            HashableValue::Str("span".into()),
+            span_thunk,
+        );
+    }
 
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: root,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Return the character at 1-based (line, col) in the given source text, if in bounds.
@@ -2099,7 +2114,8 @@ fn get_char_at(source: &str, line: u32, col: u32) -> Option<char> {
 fn span_to_thunk_id(
     span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     // start position
@@ -2171,14 +2187,14 @@ fn span_to_thunk_id(
         )),
     );
 
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Convert an iterator of Arc<Thunk> to a dict-based list (auto-indexed dict with integer keys).
@@ -2186,33 +2202,34 @@ pub(crate) fn list_to_thunk_id(
     items: impl ExactSizeIterator<Item = Arc<Thunk>>,
     span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
         dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Convert a `SurfaceDocument` to an `Arc<Thunk>` containing its dict representation.
 ///
-/// Phase 3 native path: iterates `doc.items` directly (instead of `doc.expressions`),
-/// dispatching on `SurfaceItem::Expr` → `surface_node_to_thunk_id` and
-/// `SurfaceItem::Decl` → `surface_decl_to_thunk_id`. The emitted schema is identical
+/// Phase 3 native path: converts `doc.body` directly,
+/// converting the document body to a thunk. The emitted schema is identical
 /// to the old `document_to_dict` function — all fields and their types are unchanged.
 fn surface_document_to_thunk_id(
     doc: &SurfaceDocument,
     span: Span,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
 
     dict.insert(
@@ -2220,34 +2237,23 @@ fn surface_document_to_thunk_id(
         Arc::new(Thunk::value(string_val("document"), span.clone())),
     );
 
-    // expressions: list of expression/declaration dicts (all SurfaceItems, both Expr and Decl)
-    let item_arcs: Vec<Arc<Thunk>> = doc
-        .items
-        .iter()
-        .map(|item| match item {
-            SurfaceItem::Expr(node) => surface_node_to_thunk_id(node, opts, ctx),
-            SurfaceItem::Decl(decl) => {
-                surface_decl_to_thunk_id(&decl.node, decl.span.clone(), opts, ctx)
-            }
-        })
-        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
+    let (result, diags) = surface_node_to_thunk_id(&doc.body, opts, ctx).into_parts();
+    _dr_diags.extend(diags);
+    let body_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
 
     dict.insert(
-        HashableValue::Str("expressions".into()),
-        list_to_thunk_id(item_arcs.into_iter(), span.clone(), ctx)?,
+        HashableValue::Str("body".into()),
+        body_thunk,
     );
 
     // header: dict of header entries (as SurfaceNode values)
-    let header_thunks: IndexMap<HashableValue, Arc<Thunk>> = doc
-        .header
-        .iter()
-        .map(|(k, v)| {
-            Ok((
-                HashableValue::Str(k.clone().into()),
-                surface_node_to_thunk_id(v, opts, ctx)?,
-            ))
-        })
-        .collect::<Result<_, Box<crate::error::Diagnostic>>>()?;
+    let mut header_thunks: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+    for (k, v) in &doc.header {
+        let (result, diags) = surface_node_to_thunk_id(v, opts, ctx).into_parts();
+        _dr_diags.extend(diags);
+        let thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
+        header_thunks.insert(HashableValue::Str(k.clone().into()), thunk);
+    }
     dict.insert(
         HashableValue::Str("header".into()),
         Arc::new(Thunk::value(
@@ -2271,392 +2277,35 @@ fn surface_document_to_thunk_id(
                     .iter()
                     .map(|c| Arc::new(Thunk::value(string_val(c), span.clone())))
                     .collect();
+                let (result, diags) = list_to_thunk_id(comment_arcs.into_iter(), span.clone(), ctx).into_parts();
+                _dr_diags.extend(diags);
+                let comments_list = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
                 dict.insert(
                     HashableValue::Str("leading-comments".into()),
-                    list_to_thunk_id(comment_arcs.into_iter(), span.clone(), ctx)?,
+                    comments_list,
                 );
             }
         }
     }
 
-    dict.insert(
-        HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
-    );
+    {
+        let (result, diags) = span_to_thunk_id(span.clone(), ctx).into_parts();
+        _dr_diags.extend(diags);
+        let span_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
+        dict.insert(
+            HashableValue::Str("span".into()),
+            span_thunk,
+        );
+    }
 
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         span,
-    )))
-}
-
-/// Convert a `SurfaceDeclaration` to an `Arc<Thunk>` containing its dict representation.
-///
-/// This is the surface-native handler for Group B variants (compile-time-only declaration
-/// forms that moved from `SurfaceExpression` to `SurfaceDeclaration`). Schema (Variant tags,
-/// key names) is identical to the old Expr-based emitter — existing tinct metaprogramming
-/// code sees no change.
-fn surface_decl_to_thunk_id(
-    decl: &SurfaceDeclaration,
-    span: Span,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    let mut dict = IndexMap::new();
-    let variant_idx: u32;
-
-    match decl {
-        SurfaceDeclaration::TypeAlias { params, body } => {
-            variant_idx = EXPR_TYPE_ALIAS;
-            if !params.is_empty() {
-                let params_arcs: Vec<Arc<Thunk>> = params
-                    .iter()
-                    .map(|(name, _ann)| Arc::new(Thunk::value(string_val(name), span.clone())))
-                    .collect();
-                dict.insert(
-                    HashableValue::Str("params".into()),
-                    list_to_thunk_id(params_arcs.into_iter(), span.clone(), ctx)?,
-                );
-            }
-            dict.insert(
-                HashableValue::Str("expr".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
-            );
-        }
-
-        SurfaceDeclaration::ClassDecl {
-            name,
-            params,
-            superclasses,
-            methods,
-            determines,
-            resolver,
-            resolver_injective,
-            structural: _,
-            pre_assigned_class_decl_id: _,
-        } => {
-            variant_idx = EXPR_CLASS_DECL;
-            dict.insert(
-                HashableValue::Str("name".into()),
-                Arc::new(Thunk::value(string_val(name), span.clone())),
-            );
-            // params: integer-keyed list of param name strings
-            let params_dict: IndexMap<HashableValue, Arc<Thunk>> = params
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    (
-                        HashableValue::Int(i as i64),
-                        Arc::new(Thunk::value(string_val(p), span.clone())),
-                    )
-                })
-                .collect();
-            dict.insert(
-                HashableValue::Str("params".into()),
-                Arc::new(Thunk::value(
-                    Value::Dict {
-                        entries: params_dict,
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-                    },
-                    span.clone(),
-                )),
-            );
-            // superclasses: Seq of [class-name, param1, param2, ...] seqs
-            // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
-            if !superclasses.is_empty() {
-                let pair_arcs: Vec<Arc<Thunk>> = superclasses
-                    .iter()
-                    .map(|(class_name, var_names)| {
-                        let mut entries: Vec<(HashableValue, Arc<Thunk>)> = vec![(
-                            HashableValue::Int(0),
-                            Arc::new(Thunk::value(string_val(class_name), span.clone())),
-                        )];
-                        for (i, var_name) in var_names.iter().enumerate() {
-                            entries.push((
-                                HashableValue::Int((i + 1) as i64),
-                                Arc::new(Thunk::value(string_val(var_name), span.clone())),
-                            ));
-                        }
-                        let inner: IndexMap<HashableValue, Arc<Thunk>> =
-                            entries.into_iter().collect();
-                        Arc::new(Thunk::value(
-                            Value::Dict {
-                                entries: inner,
-                                type_decl_id: TYPE_ID_DICT,
-                                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                    TYPE_ID_DICT,
-                                )),
-                            },
-                            span.clone(),
-                        ))
-                    })
-                    .collect();
-                dict.insert(
-                    HashableValue::Str("superclasses".into()),
-                    list_to_thunk_id(pair_arcs.into_iter(), span.clone(), ctx)?,
-                );
-            }
-            // methods: string-keyed dict of method expression dicts
-            // Keys are SurfaceExpression::StringLiteral bare words; values are the full entry value nodes.
-            let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
-                .iter()
-                .map(
-                    |method| -> Result<
-                        Option<(HashableValue, Arc<Thunk>)>,
-                        Box<crate::error::Diagnostic>,
-                    > {
-                        if let Some(key) = method.node.key.as_ref() {
-                            if let SurfaceExpression::StringLiteral {
-                                content: key_str, ..
-                            } = &key.expr
-                            {
-                                let thunk =
-                                    surface_node_to_thunk_id(&method.node.value, opts, ctx)?;
-                                return Ok(Some((
-                                    HashableValue::Str(Arc::from(key_str.as_str())),
-                                    thunk,
-                                )));
-                            }
-                        }
-                        Ok(None)
-                    },
-                )
-                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-            dict.insert(
-                HashableValue::Str("methods".into()),
-                Arc::new(Thunk::value(
-                    Value::Dict {
-                        entries: methods_dict,
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-                    },
-                    span.clone(),
-                )),
-            );
-            // determines: optional integer-keyed list of expression dicts
-            if !determines.is_empty() {
-                let determines_dict: IndexMap<HashableValue, Arc<Thunk>> =
-                    determines
-                        .iter()
-                        .enumerate()
-                        .map(
-                            |(i, fd_node)| -> Result<
-                                (HashableValue, Arc<Thunk>),
-                                Box<crate::error::Diagnostic>,
-                            > {
-                                Ok((
-                                    HashableValue::Int(i as i64),
-                                    surface_node_to_thunk_id(fd_node, opts, ctx)?,
-                                ))
-                            },
-                        )
-                        .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
-                        .into_iter()
-                        .collect();
-                dict.insert(
-                    HashableValue::Str("determines".into()),
-                    Arc::new(Thunk::value(
-                        Value::Dict {
-                            entries: determines_dict,
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-                        },
-                        span.clone(),
-                    )),
-                );
-            }
-            // resolver: optional expression dict
-            if let Some(resolver_node) = resolver {
-                dict.insert(
-                    HashableValue::Str("resolver".into()),
-                    surface_node_to_thunk_id(resolver_node, opts, ctx)?,
-                );
-            }
-            // injective: optional bool (only emitted when true)
-            if *resolver_injective {
-                dict.insert(
-                    HashableValue::Str("injective".into()),
-                    Arc::new(Thunk::value(
-                        Value::Int {
-                            n: 1,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_INT)),
-                        },
-                        span.clone(),
-                    )),
-                );
-            }
-        }
-
-        SurfaceDeclaration::InstanceDecl {
-            class_name, arms, ..
-        } => {
-            variant_idx = EXPR_INSTANCE_DECL;
-            dict.insert(
-                HashableValue::Str("class".into()),
-                Arc::new(Thunk::value(
-                    string_val(&class_decl_name(class_name)),
-                    span.clone(),
-                )),
-            );
-            // arms: integer-keyed list of {pattern, methods} dicts
-            let arms_dict: IndexMap<HashableValue, Arc<Thunk>> = arms
-                .iter()
-                .enumerate()
-                .map(
-                    |(i, (pattern_node, methods))| -> Result<(HashableValue, Arc<Thunk>), Box<crate::error::Diagnostic>> {
-                        let mut arm_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                        arm_dict.insert(
-                            HashableValue::Str("pattern".into()),
-                            surface_node_to_thunk_id(pattern_node, opts, ctx)?,
-                        );
-                        // methods: string-keyed dict matching ClassDecl.methods format
-                        let methods_dict: IndexMap<HashableValue, Arc<Thunk>> = methods
-                            .iter()
-                            .map(
-                                |method| -> Result<Option<(HashableValue, Arc<Thunk>)>, Box<crate::error::Diagnostic>> {
-                                    if let Some(key) = method.node.key.as_ref() {
-                                        if let SurfaceExpression::StringLiteral {
-                                            content: key_str,
-                                            ..
-                                        } = &key.expr
-                                        {
-                                            let thunk = surface_node_to_thunk_id(
-                                                &method.node.value,
-                                                opts,
-                                                ctx,
-                                            )?;
-                                            return Ok(Some((
-                                                HashableValue::Str(Arc::from(key_str.as_str())),
-                                                thunk,
-                                            )));
-                                        }
-                                    }
-                                    Ok(None)
-                                },
-                            )
-                            .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
-                            .into_iter()
-                            .flatten()
-                            .collect();
-                        arm_dict.insert(
-                            HashableValue::Str("methods".into()),
-                            Arc::new(Thunk::value(
-                                Value::Dict {
-                                    entries: methods_dict,
-                                    type_decl_id: TYPE_ID_DICT,
-                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                        TYPE_ID_DICT,
-                                    )),
-                                },
-                                span.clone(),
-                            )),
-                        );
-                        Ok((
-                            HashableValue::Int(i as i64),
-                            Arc::new(Thunk::value(
-                                Value::Dict {
-                                    entries: arm_dict,
-                                    type_decl_id: TYPE_ID_DICT,
-                                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                        TYPE_ID_DICT,
-                                    )),
-                                },
-                                span.clone(),
-                            )),
-                        ))
-                    },
-                )
-                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?
-                .into_iter()
-                .collect();
-            dict.insert(
-                HashableValue::Str("arms".into()),
-                Arc::new(Thunk::value(
-                    Value::Dict {
-                        entries: arms_dict,
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-                    },
-                    span.clone(),
-                )),
-            );
-        }
-
-        SurfaceDeclaration::SyntaxClass {
-            name,
-            pattern,
-            message,
-        } => {
-            variant_idx = EXPR_SYNTAX_CLASS;
-            dict.insert(
-                HashableValue::Str("name".into()),
-                Arc::new(Thunk::value(string_val(name), span.clone())),
-            );
-            dict.insert(
-                HashableValue::Str("pattern".into()),
-                surface_node_to_thunk_id(pattern, opts, ctx)?,
-            );
-            if let Some(msg) = message {
-                dict.insert(
-                    HashableValue::Str("message".into()),
-                    Arc::new(Thunk::value(string_val(msg), span.clone())),
-                );
-            }
-        }
-
-        SurfaceDeclaration::Splice(forms) => {
-            variant_idx = EXPR_SPLICE;
-            let form_arcs: Vec<Arc<Thunk>> = forms
-                .iter()
-                .map(|form| surface_node_to_thunk_id(form, opts, ctx))
-                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
-            dict.insert(
-                HashableValue::Str("forms".into()),
-                Arc::new(Thunk::value(
-                    Value::Dict {
-                        entries: form_arcs
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, v)| (HashableValue::Int(i as i64), v))
-                            .collect(),
-                        type_decl_id: TYPE_ID_DICT,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-                    },
-                    span.clone(),
-                )),
-            );
-        }
-    }
-
-    dict.insert(
-        HashableValue::Str("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
-    );
-    let payload = Arc::new(Thunk::value(
-        Value::Dict {
-            entries: dict,
-            type_decl_id: TYPE_ID_DICT,
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
-        },
-        span.clone(),
-    ));
-    Ok(Arc::new(Thunk::value(
-        Value::Variant {
-            type_decl_id: TYPE_ID_EXPR,
-            ctor_index: variant_idx,
-            payload: Some(payload),
-            type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_EXPR)),
-        },
-        span,
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Override the `bare` field in an `Expr.Literal` (kind: "str") variant's payload.
@@ -2725,7 +2374,8 @@ fn alloc_entry_list_with_opts(
     entries: &[Spanned<SurfaceEntry>],
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
         // key: Some(node) → Expr.* variant with corrected bare flag, None → null
@@ -2780,8 +2430,9 @@ fn alloc_entry_list_with_opts(
                         .iter()
                         .map(|c| Arc::new(Thunk::value(string_val(c), entry.span.clone())))
                         .collect();
-                    let comments_thunk =
-                        list_to_thunk_id(comment_arcs.into_iter(), entry.span.clone(), ctx)?;
+                    let (result, diags) = list_to_thunk_id(comment_arcs.into_iter(), entry.span.clone(), ctx).into_parts();
+                    _dr_diags.extend(diags);
+                    let comments_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
                     payload.insert(
                         HashableValue::Str("leading-comments".into()),
                         comments_thunk,
@@ -2831,14 +2482,14 @@ fn alloc_entry_list_with_opts(
         let entry_thunk = Arc::new(Thunk::value(entry_variant, entry.span.clone()));
         dict.insert(HashableValue::Int(i as i64), entry_thunk);
     }
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict,
             type_decl_id: TYPE_ID_DICT,
             type_val: Some(crate::type_infer::make_typevalue_nominal(TYPE_ID_DICT)),
         },
         rust_span!(),
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Convert a SurfaceNode to an `Arc<Thunk>` containing its `Expr.*` variant representation.
@@ -2850,11 +2501,14 @@ fn surface_node_to_thunk_id(
     node: &Arc<SurfaceNode>,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
     // so that bare flags and comment fields are correctly populated.
     let val = if let SurfaceExpression::Dict { entries, scope: _ } = &node.expr {
-        let entries_thunk = alloc_entry_list_with_opts(entries, opts, ctx)?;
+        let (result, diags) = alloc_entry_list_with_opts(entries, opts, ctx).into_parts();
+        _dr_diags.extend(diags);
+        let entries_thunk = match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
         let mut payload: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         payload.insert(HashableValue::Str("entries".into()), entries_thunk);
         let payload_thunk = Arc::new(Thunk::value(
@@ -2878,7 +2532,7 @@ fn surface_node_to_thunk_id(
     } else {
         surface_node_to_expr_variant(node, ctx)
     };
-    Ok(Arc::new(Thunk::value(val, node.span.clone())))
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(val, node.span.clone()))).with_diagnostics(_dr_diags)
 }
 
 #[cfg(test)]

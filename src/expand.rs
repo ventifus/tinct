@@ -30,10 +30,13 @@
 
 use crate::ast::{
     Annotation, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceParam, SurfaceProgram,
+    SurfaceExpression, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+const TYPE_META_REPR: &str = "repr";
+const TYPE_META_IS: &str = "is";
 
 // ---------------------------------------------------------------------------
 // Type declaration ID counter
@@ -76,25 +79,12 @@ pub fn expand_program(program: &SurfaceProgram) -> SurfaceProgram {
     SurfaceProgram { documents }
 }
 
-/// Expand declarations in a single `SurfaceDocument`.
 fn expand_document(doc: &SurfaceDocument) -> SurfaceDocument {
-    let items = doc
-        .items
-        .iter()
-        .map(|item| match item {
-            SurfaceItem::Expr(node_arc) => {
-                let mut new_node = Arc::clone(node_arc);
-                expand_node(&mut new_node);
-                SurfaceItem::Expr(new_node)
-            }
-            // SurfaceItem::Decl — top-level declarations are not expanded here.
-            // Only Decl(TypeAlias) embedded inside dict entry values are expanded.
-            other => other.clone(),
-        })
-        .collect();
+    let mut body = Arc::clone(&doc.body);
+    expand_node(&mut body);
     SurfaceDocument {
         header: doc.header.clone(),
-        items,
+        body,
     }
 }
 
@@ -134,9 +124,10 @@ fn expand_node(node: &mut Arc<SurfaceNode>) {
                         DeclAction::InstanceFanOut(arms.clone(), node_mut.span.clone()),
                     ),
                     SurfaceDeclaration::ClassDecl { .. } => Some(DeclAction::EmptyDict),
-                    _ => None,
+                    SurfaceDeclaration::SyntaxClass { .. } => Some(DeclAction::EmptyDict),
+                    SurfaceDeclaration::Splice(_) => None,
                 },
-                _ => None,
+                _ => unreachable!("outer match already matched Decl"),
             };
             match action {
                 Some(DeclAction::EmptyDict) => {
@@ -175,10 +166,25 @@ fn expand_node(node: &mut Arc<SurfaceNode>) {
             expand_node(rhs);
         }
 
-        // Sequential: recurse into all expressions.
+        // Sequential: recurse into all expressions, splicing Decl(Splice) children inline.
         SurfaceExpression::Sequential(exprs) => {
-            for expr in exprs {
+            for expr in exprs.iter_mut() {
                 expand_node(expr);
+            }
+            let needs_splice = exprs.iter().any(|e| matches!(&e.expr,
+                SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::Splice(_))));
+            if needs_splice {
+                let mut flattened = Vec::with_capacity(exprs.len());
+                for e in exprs.drain(..) {
+                    if let SurfaceExpression::Decl(d) = &e.expr {
+                        if let SurfaceDeclaration::Splice(forms) = d.as_ref() {
+                            flattened.extend(forms.iter().cloned());
+                            continue;
+                        }
+                    }
+                    flattened.push(e);
+                }
+                *exprs = flattened;
             }
         }
 
@@ -412,14 +418,11 @@ fn expand_type_alias(
     let mut surface_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
 
     for (ctor_idx, ctor) in ctors.iter().enumerate() {
-        // Create the key for this constructor entry.
         let key = Some(Arc::new(SurfaceNode::new(
-            SurfaceExpression::VarRef {
-                name: ctor.name.clone(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                annotation: None,
-                do_infer_placeholder: false,
+            SurfaceExpression::StringLiteral {
+                prefix: String::new(),
+                delimiter: "\"".to_string(),
+                content: ctor.name.clone(),
             },
             span.clone(),
         )));
@@ -446,14 +449,13 @@ fn expand_type_alias(
             // and constructs a MakeVariant with the payload dict.
             let fields = &ctor.fields;
 
-            // Build one SurfaceParam per field.
             let fn_params: Vec<Spanned<SurfaceParam>> = fields
                 .iter()
                 .map(|field_name| {
                     Spanned::new(
                         SurfaceParam {
                             name: field_name.clone(),
-                            annotation: None,
+                            annotation: ctor.field_param_annotations.get(field_name).cloned(),
                             variadic: false,
                             resolved_annotation_type: crate::ast::TypeAnnotation::new(),
                             resolved_dispatch_slot: crate::ast::ResolvedDispatchSlot::new(),
@@ -464,7 +466,7 @@ fn expand_type_alias(
                 .collect();
 
             // Build the payload dict: [field0: .field0  field1: .field1  ...]
-            // Keys are VarRef (normal dict keys — create letrec bindings).
+            // Keys are StringLiteral (dict entry names).
             // Values are leading-dot Field (skip the dict's letrec scope, resolve
             // from the parent scope = the fn's parameter scope).
             // This is exactly what a tinct programmer would write:
@@ -473,12 +475,10 @@ fn expand_type_alias(
                 .iter()
                 .map(|field_name| {
                     let entry_key = Some(Arc::new(SurfaceNode::new(
-                        SurfaceExpression::VarRef {
-                            name: field_name.clone(),
-                            escaped: false,
-                            resolution: crate::ast::Resolution::new(),
-                            annotation: None,
-                            do_infer_placeholder: false,
+                        SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: field_name.clone(),
                         },
                         span.clone(),
                     )));
@@ -734,12 +734,12 @@ fn extract_repr_and_is_from_entries(
             _ => continue,
         };
         match key_name {
-            "repr" => {
+            TYPE_META_REPR => {
                 if let SurfaceExpression::Int(n) = &entry.node.value.expr {
                     repr_opt = Some(*n as u64);
                 }
             }
-            "is" => {
+            TYPE_META_IS => {
                 is_pred_opt = Some(Arc::clone(&entry.node.value));
             }
             _ => {}
@@ -759,7 +759,7 @@ fn has_structural_alias_metadata(ann: &Annotation) -> bool {
             };
             matches!(
                 &key_node.expr,
-                SurfaceExpression::VarRef { name, .. } if name == "is" || name == "repr"
+                SurfaceExpression::VarRef { name, .. } if name == TYPE_META_IS || name == TYPE_META_REPR
             )
         })
     };
@@ -797,6 +797,9 @@ struct ConstructorInfo {
     /// Per-field child role annotations from `@Child` on field keys.
     /// Maps field name -> role string ("One" or "MapValues").
     field_annotations: indexmap::IndexMap<String, String>,
+    /// Per-field annotations from the field key VarRef (e.g., `@[default: 0]`).
+    /// Passed through to the generated constructor param so eval_call handles defaults.
+    field_param_annotations: indexmap::IndexMap<String, Spanned<Annotation>>,
 }
 
 /// Extract constructor information from a TypeAlias body.
@@ -837,6 +840,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     annotation: ann_entries,
                     fields: vec![],
                     field_annotations: indexmap::IndexMap::new(),
+                    field_param_annotations: indexmap::IndexMap::new(),
                 });
             }
             // Call with uppercase func → unit constructor.
@@ -849,6 +853,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             annotation: None,
                             fields: vec![],
                             field_annotations: indexmap::IndexMap::new(),
+                            field_param_annotations: indexmap::IndexMap::new(),
                         });
                     }
                 }
@@ -859,99 +864,76 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 
     match body {
         SurfaceExpression::Dict { entries, scope: _ } => {
-            let has_named_uppercase_key = entries.iter().any(|e| {
-                if let Some(k) = &e.node.key {
-                    matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if is_ctor(name))
-                } else {
-                    false
-                }
-            });
-
-            if has_named_uppercase_key {
-                for entry in entries {
-                    if let Some(key_node) = &entry.node.key {
-                        if let SurfaceExpression::VarRef {
-                            name, annotation, ..
-                        } = &key_node.expr
-                        {
-                            if !is_ctor(name) {
-                                continue;
-                            }
-                            let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
-                                Annotation::PropertyDict(ann_entries)
-                                    if !ann_entries.is_empty() =>
-                                {
-                                    Some(ann_entries.clone())
-                                }
-                                _ => None,
-                            });
-                            let mut fields: Vec<String> = Vec::new();
-                            let mut field_anns = indexmap::IndexMap::new();
-                            if let SurfaceExpression::Dict {
-                                entries: field_entries,
-                                ..
-                            } = &entry.node.value.expr
+            for entry in entries {
+                if let Some(key_node) = &entry.node.key {
+                    if let SurfaceExpression::VarRef {
+                        name, annotation, ..
+                    } = &key_node.expr
+                    {
+                        if !is_ctor(name) {
+                            continue;
+                        }
+                        let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
+                            Annotation::PropertyDict(ann_entries)
+                                if !ann_entries.is_empty() =>
                             {
-                                for fe in field_entries {
-                                    if let Some(k) = &fe.node.key {
-                                        let (field_name, child_ann) = match &k.expr {
-                                            SurfaceExpression::VarRef {
-                                                name: fn_,
-                                                annotation,
-                                                ..
-                                            } => {
-                                                let child_ann =
-                                                    annotation.as_ref().and_then(|ann| {
-                                                        let is_child = match &ann.node {
-                                                            Annotation::Simple(s) => s == "Child",
-                                                            Annotation::Annotated(outer, _) => {
-                                                                matches!(outer.as_ref(), Annotation::Simple(s) if s == "Child")
-                                                            }
-                                                            _ => false,
-                                                        };
-                                                        if is_child {
-                                                            Some(&ann.node)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    });
-                                                (Some(fn_.clone()), child_ann)
-                                            }
-                                            SurfaceExpression::StringLiteral {
-                                                content, ..
-                                            } => (Some(content.clone()), None),
-                                            _ => (None, None),
-                                        };
-                                        if let Some(fn_) = field_name {
-                                            if let Some(ann) = child_ann {
-                                                let role = child_role_from_annotation(ann);
+                                Some(ann_entries.clone())
+                            }
+                            _ => None,
+                        });
+                        let mut fields: Vec<String> = Vec::new();
+                        let mut field_anns = indexmap::IndexMap::new();
+                        let mut field_param_anns: indexmap::IndexMap<String, Spanned<Annotation>> = indexmap::IndexMap::new();
+                        if let SurfaceExpression::Dict {
+                            entries: field_entries,
+                            ..
+                        } = &entry.node.value.expr
+                        {
+                            for fe in field_entries {
+                                if let Some(k) = &fe.node.key {
+                                    let (field_name, annotation) = match &k.expr {
+                                        SurfaceExpression::VarRef {
+                                            name: fn_,
+                                            annotation,
+                                            ..
+                                        } => (Some(fn_.clone()), annotation.as_ref()),
+                                        SurfaceExpression::StringLiteral {
+                                            content, ..
+                                        } => (Some(content.clone()), None),
+                                        _ => (None, None),
+                                    };
+                                    if let Some(fn_) = field_name {
+                                        if let Some(ann) = annotation {
+                                            let is_child = match &ann.node {
+                                                Annotation::Simple(s) => s == crate::ast::ANNOTATION_KEY_CHILD,
+                                                Annotation::Annotated(outer, _) => {
+                                                    matches!(outer.as_ref(), Annotation::Simple(s) if s == crate::ast::ANNOTATION_KEY_CHILD)
+                                                }
+                                                _ => false,
+                                            };
+                                            if is_child {
+                                                let role = child_role_from_annotation(&ann.node);
                                                 field_anns.insert(fn_.clone(), role.to_string());
                                             }
-                                            fields.push(fn_);
+                                            field_param_anns.insert(fn_.clone(), ann.clone());
                                         }
+                                        fields.push(fn_);
                                     }
                                 }
                             }
-                            let is_unit = fields.is_empty();
-                            ctors.push(ConstructorInfo {
-                                name: name.clone(),
-                                is_unit,
-                                annotation: ann_entries,
-                                fields,
-                                field_annotations: field_anns,
-                            });
                         }
-                    } else {
-                        // Positional entry: bare uppercase VarRef → unit constructor.
-                        try_extract_one(&entry.node.value.expr, &mut ctors);
+                        let is_unit = fields.is_empty();
+                        ctors.push(ConstructorInfo {
+                            name: name.clone(),
+                            is_unit,
+                            annotation: ann_entries,
+                            fields,
+                            field_annotations: field_anns,
+                            field_param_annotations: field_param_anns,
+                        });
                     }
-                }
-            } else {
-                // Old body form: union of positional unit constructors.
-                for entry in entries {
-                    if entry.node.key.is_none() {
-                        try_extract_one(&entry.node.value.expr, &mut ctors);
-                    }
+                } else {
+                    try_extract_one(&entry.node.value.expr, &mut ctors);
                 }
             }
         }
@@ -978,12 +960,10 @@ fn build_field_annotations_surface_entry(
         .map(|(field_name, role)| {
             // Inner dict: {role: "One"} or {role: "MapValues"}
             let role_key = Some(Arc::new(SurfaceNode::new(
-                SurfaceExpression::VarRef {
-                    name: crate::ast::ANNOTATION_KEY_CHILD_ROLE.to_string(),
-                    escaped: false,
-                    resolution: crate::ast::Resolution::new(),
-                    annotation: None,
-                    do_infer_placeholder: false,
+                SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: crate::ast::ANNOTATION_KEY_CHILD_ROLE.to_string(),
                 },
                 span.clone(),
             )));
@@ -1012,12 +992,10 @@ fn build_field_annotations_surface_entry(
             ));
             // Outer entry: field_name: {role: "One"|"MapValues"}
             let key = Some(Arc::new(SurfaceNode::new(
-                SurfaceExpression::VarRef {
-                    name: field_name.clone(),
-                    escaped: false,
-                    resolution: crate::ast::Resolution::new(),
-                    annotation: None,
-                    do_infer_placeholder: false,
+                SurfaceExpression::StringLiteral {
+                    prefix: String::new(),
+                    delimiter: "\"".to_string(),
+                    content: field_name.clone(),
                 },
                 span.clone(),
             )));
@@ -1042,12 +1020,10 @@ fn build_field_annotations_surface_entry(
 
     // Wrap as "field-annotations": {field_name: {role: "..."}, ...}
     let key = Some(Arc::new(SurfaceNode::new(
-        SurfaceExpression::VarRef {
-            name: "field-annotations".to_string(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
-            annotation: None,
-            do_infer_placeholder: false,
+        SurfaceExpression::StringLiteral {
+            prefix: String::new(),
+            delimiter: "\"".to_string(),
+            content: "field-annotations".to_string(),
         },
         span.clone(),
     )));
@@ -1385,15 +1361,12 @@ mod tests {
     /// Extract the first expression item from the first document of a program.
     fn first_expr(program: &SurfaceProgram) -> &SurfaceExpression {
         let doc = &program.documents[0].node;
-        match &doc.items[0] {
-            SurfaceItem::Expr(node) => &node.expr,
-            SurfaceItem::Decl(_) => panic!("expected Expr item, got Decl"),
+        match &doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => &exprs[0].expr,
+            other => other,
         }
     }
 
-    /// Given a Dict expression, find the entry with the given key name and return
-    /// a reference to its value expression. Matches both StringLiteral keys
-    /// (parser-produced dict keys) and VarRef keys (expand-produced constructor keys).
     fn dict_entry_value<'a>(expr: &'a SurfaceExpression, key_name: &str) -> &'a SurfaceExpression {
         let entries = match expr {
             SurfaceExpression::Dict { entries, scope: _ } => entries,
@@ -1403,7 +1376,6 @@ mod tests {
             if let Some(key_node) = &entry.node.key {
                 let matches = match &key_node.expr {
                     SurfaceExpression::StringLiteral { content, .. } => content == key_name,
-                    SurfaceExpression::VarRef { name, .. } => name == key_name,
                     _ => false,
                 };
                 if matches {
@@ -1456,11 +1428,11 @@ mod tests {
                 .as_ref()
                 .expect("constructor entry should have a key");
             match &key_node.expr {
-                SurfaceExpression::VarRef { name, .. } => {
-                    assert_eq!(name, expected_name);
+                SurfaceExpression::StringLiteral { content, .. } => {
+                    assert_eq!(content, expected_name);
                 }
                 other => panic!(
-                    "expected VarRef key, got {:?}",
+                    "expected StringLiteral key, got {:?}",
                     std::mem::discriminant(other)
                 ),
             }
@@ -1506,9 +1478,9 @@ mod tests {
 
         let circle_key = ctor_entries[0].node.key.as_ref().expect("should have key");
         match &circle_key.expr {
-            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "Circle"),
+            SurfaceExpression::StringLiteral { content, .. } => assert_eq!(content, "Circle"),
             other => panic!(
-                "expected VarRef key, got {:?}",
+                "expected StringLiteral key, got {:?}",
                 std::mem::discriminant(other)
             ),
         }
@@ -1597,8 +1569,8 @@ mod tests {
     #[test]
     fn test_expand_standalone_type_alias() {
         // A standalone [type Red Green] not inside a dict entry becomes Dict(vec![]).
-        // At the top level, the parser produces SurfaceItem::Decl, which expand_document
-        // passes through. To test the expand_node Decl arm (TypeAlias → empty dict),
+        // At the top level, standalone declarations are SurfaceExpression::Decl inside the
+        // document's Sequential body. To test the expand_node Decl arm (TypeAlias → empty dict),
         // we put the type decl inside a Call as an argument: [identity [type Red Green]].
         // The expand_node Call arm recurses into args, hitting the Decl arm on the arg.
         let program = parse_and_expand("[identity [type Red Green]]");

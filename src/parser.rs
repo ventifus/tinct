@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::ast::*;
 use crate::ast::{
-    SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
+    SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression,
     SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use crate::error::Diagnostic;
@@ -917,7 +917,7 @@ fn recover_from_bracket_error(
     tokens: &[Spanned<Token>],
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
-    current_document_items: &mut Vec<SurfaceItem>,
+    current_document_items: &mut Vec<Arc<SurfaceNode>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> usize {
     let mut diag = error;
@@ -1103,7 +1103,7 @@ fn recover_from_bracket_error(
 
     // Push the partial expression to the parent context.
     if stack.is_empty() {
-        current_document_items.push(SurfaceItem::Expr(partial_expr));
+        current_document_items.push(partial_expr);
     } else {
         // push_value can itself error (e.g. duplicate key during recovery).
         // Record secondary errors in diagnostics rather than discarding them.
@@ -1143,7 +1143,7 @@ fn recover_from_failed_open(
     tokens: &[Spanned<Token>],
     skip_from_idx: usize,
     stack: &mut Vec<StackFrame>,
-    current_document_items: &mut Vec<SurfaceItem>,
+    current_document_items: &mut Vec<Arc<SurfaceNode>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> usize {
     let mut diag = error;
@@ -1159,7 +1159,7 @@ fn recover_from_failed_open(
     );
 
     if stack.is_empty() {
-        current_document_items.push(SurfaceItem::Expr(error_expr));
+        current_document_items.push(error_expr);
     } else {
         // push_value can itself error (e.g. duplicate key during recovery).
         // Record secondary errors in diagnostics rather than discarding them.
@@ -1205,7 +1205,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
     let mut stack: Vec<StackFrame> = Vec::new();
 
     // Current document being built (one or more items: expressions and declarations)
-    let mut current_document_items: Vec<SurfaceItem> = Vec::new();
+    let mut current_document_items: Vec<Arc<SurfaceNode>> = Vec::new();
 
     // All documents in the file
     let mut documents: Vec<Spanned<Arc<SurfaceDocument>>> = Vec::new();
@@ -1841,7 +1841,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         );
                         // Push to parent context (stack has already had the frame popped).
                         if stack.is_empty() {
-                            current_document_items.push(SurfaceItem::Expr(error_expr.clone()));
+                            current_document_items.push(error_expr.clone());
                         } else {
                             // push_value can itself error (e.g. duplicate key during recovery).
                             // Record secondary errors in diagnostics rather than discarding them.
@@ -2163,16 +2163,10 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             });
                         }
 
-                        // For single-expression bodies, use the expression directly.
-                        // For multi-expression bodies, wrap in Sequential.
-                        let body_expr = if body.len() == 1 {
-                            body.into_iter().next().unwrap()
-                        } else {
-                            mk(
-                                SurfaceExpression::Sequential(body),
-                                dict_span(span_start.clone()),
-                            )
-                        };
+                        let body_expr = mk(
+                            SurfaceExpression::Sequential(body),
+                            dict_span(span_start.clone()),
+                        );
 
                         let spanned_fn = mk(
                             SurfaceExpression::Fn {
@@ -2248,7 +2242,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         let decl = SurfaceDeclaration::TypeAlias { params, body };
                         let spanned_decl = Spanned::new(decl, dict_span(span_start));
                         if stack.is_empty() {
-                            current_document_items.push(SurfaceItem::Decl(spanned_decl));
+                            let decl_node = Arc::new(SurfaceNode::new(
+                                SurfaceExpression::Decl(Box::new(spanned_decl.node.clone())),
+                                spanned_decl.span.clone(),
+                            ));
+                            current_document_items.push(decl_node);
                         } else {
                             // Declaration appears inside an expression (e.g., dict value).
                             // Preserve the full declaration via SurfaceExpression::Decl so
@@ -2359,7 +2357,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
                             if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
+                                let decl_node = Arc::new(SurfaceNode::new(
+                                    SurfaceExpression::Decl(Box::new(spanned_decl.node.clone())),
+                                    spanned_decl.span.clone(),
+                                ));
+                                current_document_items.push(decl_node);
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
@@ -2618,7 +2620,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
                             if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
+                                let decl_node = Arc::new(SurfaceNode::new(
+                                    SurfaceExpression::Decl(Box::new(spanned_decl.node.clone())),
+                                    spanned_decl.span.clone(),
+                                ));
+                                current_document_items.push(decl_node);
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
@@ -2703,7 +2709,11 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             };
                             let spanned_decl = Spanned::new(decl, dict_span(span_start));
                             if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
+                                let decl_node = Arc::new(SurfaceNode::new(
+                                    SurfaceExpression::Decl(Box::new(spanned_decl.node.clone())),
+                                    spanned_decl.span.clone(),
+                                ));
+                                current_document_items.push(decl_node);
                             } else {
                                 // Declaration appears inside an expression (e.g., dict value).
                                 // Preserve the full declaration via SurfaceExpression::Decl so
@@ -2812,11 +2822,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                 match parent_frame {
                                     Ok(StackFrame::Match { arms, .. }) => {
                                         let body_span = dict_span(span_start.clone());
-                                        let wrapped_body = if body.len() == 1 {
-                                            body
-                                        } else {
-                                            vec![mk(SurfaceExpression::Sequential(body), body_span)]
-                                        };
+                                        let wrapped_body = vec![mk(SurfaceExpression::Sequential(body), body_span)];
                                         arms.push(SurfaceMatchArm {
                                             pattern: pattern_val,
                                             let_bindings: let_bindings_val,
@@ -3797,8 +3803,8 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // Header-only document: use separator position as span.
                         span.clone()
                     } else {
-                        let first_span = items.first().unwrap().span();
-                        let last_span = items.last().unwrap().span();
+                        let first_span = items.first().unwrap().span.clone();
+                        let last_span = items.last().unwrap().span.clone();
                         Span::new(
                             first_span.start_line,
                             first_span.start_col,
@@ -3807,8 +3813,12 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             Arc::clone(&first_span.file),
                         )
                     };
+                    let body = Arc::new(SurfaceNode::new(
+                        SurfaceExpression::Sequential(items),
+                        doc_span.clone(),
+                    ));
                     documents.push(Spanned::new(
-                        Arc::new(SurfaceDocument { header, items }),
+                        Arc::new(SurfaceDocument { header, body }),
                         doc_span,
                     ));
                 }
@@ -3954,7 +3964,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             // We need to parse one complete expression and collect it
                             let value_start_i = i;
                             let mut temp_stack: Vec<StackFrame> = Vec::new();
-                            let mut temp_items: Vec<SurfaceItem> = Vec::new();
+                            let mut temp_items: Vec<Arc<SurfaceNode>> = Vec::new();
                             let value_node: Arc<SurfaceNode>;
 
                             // Simple approach: parse until we have exactly one item in temp_items
@@ -4017,7 +4027,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                                 dict_span,
                                             ));
                                             if temp_stack.is_empty() {
-                                                temp_items.push(SurfaceItem::Expr(dict_node));
+                                                temp_items.push(dict_node);
                                                 i += 1;
                                                 break;
                                             } else {
@@ -4063,7 +4073,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             lit_span.clone(),
                                         ));
                                         if temp_stack.is_empty() {
-                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            temp_items.push(lit_node);
                                             i += 1;
                                             break;
                                         } else {
@@ -4097,7 +4107,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             id_span.clone(),
                                         ));
                                         if temp_stack.is_empty() {
-                                            temp_items.push(SurfaceItem::Expr(id_node));
+                                            temp_items.push(id_node);
                                             i += 1;
                                             break;
                                         } else {
@@ -4146,7 +4156,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             lit_span.clone(),
                                         ));
                                         if temp_stack.is_empty() {
-                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            temp_items.push(lit_node);
                                             i += 1;
                                             break;
                                         } else {
@@ -4174,7 +4184,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                             lit_span.clone(),
                                         ));
                                         if temp_stack.is_empty() {
-                                            temp_items.push(SurfaceItem::Expr(lit_node));
+                                            temp_items.push(lit_node);
                                             i += 1;
                                             break;
                                         } else {
@@ -4231,7 +4241,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                         ));
                                         i = new_i;
                                         if temp_stack.is_empty() {
-                                            temp_items.push(SurfaceItem::Expr(assert_node));
+                                            temp_items.push(assert_node);
                                             break;
                                         } else {
                                             if let Some(StackFrame::Dict {
@@ -4271,16 +4281,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                                     token_vec[value_start_i].span.clone(),
                                 ));
                             }
-                            if let SurfaceItem::Expr(node) = temp_items.into_iter().next().unwrap()
-                            {
-                                value_node = node;
-                            } else {
-                                return Err(Diagnostic::error(
-                                    KIND,
-                                    format!("header value for '{}' must be an expression", key),
-                                    token_vec[value_start_i].span.clone(),
-                                ));
-                            }
+                            value_node = temp_items.into_iter().next().unwrap();
 
                             // Store in header
                             next_doc_header.insert(key, value_node);
@@ -4318,17 +4319,16 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                         // Leading-dot at document level — no target
                         None
                     } else {
-                        if let Some(SurfaceItem::Decl(_)) = current_document_items.last() {
-                            return Err(Diagnostic::error(
-                                KIND,
-                                "dot access requires a value expression, not a declaration",
-                                span,
-                            ));
+                        if let Some(last) = current_document_items.last() {
+                            if matches!(&last.expr, SurfaceExpression::Decl(_)) {
+                                return Err(Diagnostic::error(
+                                    KIND,
+                                    "dot access requires a value expression, not a declaration",
+                                    span,
+                                ));
+                            }
                         }
-                        match current_document_items.pop().unwrap() {
-                            SurfaceItem::Expr(node) => Some(node),
-                            SurfaceItem::Decl(_) => unreachable!(),
-                        }
+                        Some(current_document_items.pop().unwrap())
                     }
                 } else {
                     // Inside a frame — try to pop the last value; Ok(None) means the frame
@@ -4537,15 +4537,16 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                             span,
                         ));
                     }
-                    match current_document_items.pop().unwrap() {
-                        SurfaceItem::Expr(node) => node,
-                        SurfaceItem::Decl(_) => {
+                    {
+                        let node = current_document_items.pop().unwrap();
+                        if matches!(&node.expr, SurfaceExpression::Decl(_)) {
                             return Err(Diagnostic::error(
                                 KIND,
                                 "pipe operator requires a value expression, not a declaration",
                                 span,
                             ));
                         }
+                        node
                     }
                 } else {
                     // Inside a frame — pop the last value from the current frame.
@@ -4605,7 +4606,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
                     let popped =
                         pop_last_value_from_frame(&mut stack, span.clone())?.or_else(|| {
                             // Stack empty: preceding expression may be in current_document_items
-                            if let Some(SurfaceItem::Expr(node)) = current_document_items.last() {
+                            if let Some(node) = current_document_items.last() {
                                 if stack.is_empty() {
                                     let node = Arc::clone(node);
                                     current_document_items.pop();
@@ -4948,15 +4949,7 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
         }
     }
 
-    // Source file from the token stream — used for all synthetic end-of-file spans.
-    // tokenize() now receives the file from parse(), so all tokens carry the correct file.
-    // For empty input (no tokens, no significant spans), fall back to this Rust source
-    // location — honest attribution of where the fallback was constructed.
-    let eof_file: Arc<str> = token_vec
-        .first()
-        .map(|t| Arc::clone(&t.span.file))
-        .or_else(|| last_significant_span.as_ref().map(|s| Arc::clone(&s.file)))
-        .unwrap_or_else(|| Arc::clone(&crate::rust_span!().file));
+    let eof_file: Arc<str> = Arc::clone(&file);
 
     // Check for unclosed brackets
     if !stack.is_empty() {
@@ -5028,19 +5021,27 @@ pub fn parse(source: &str, file: Arc<str>) -> Result<ParseOutput, Diagnostic> {
     // Build the final file
     // If no expressions, create one empty document
     if current_document_items.is_empty() && documents.is_empty() {
+        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
+        let body = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Sequential(vec![]),
+            doc_span.clone(),
+        ));
         let doc = SurfaceDocument {
             header: next_doc_header,
-            items: vec![],
+            body,
         };
-        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
         // Finalize current document
+        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
+        let body = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Sequential(current_document_items),
+            doc_span.clone(),
+        ));
         let doc = SurfaceDocument {
             header: next_doc_header,
-            items: current_document_items,
+            body,
         };
-        let doc_span = Span::new(1, 1, 1, 1, Arc::clone(&eof_file));
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
 
@@ -5338,11 +5339,11 @@ fn pop_last_value_from_frame(
 
 fn push_expr_to_parent(
     stack: &mut Vec<StackFrame>,
-    current_document_items: &mut Vec<SurfaceItem>,
+    current_document_items: &mut Vec<Arc<SurfaceNode>>,
     node: Arc<SurfaceNode>,
 ) -> Result<(), Diagnostic> {
     if stack.is_empty() {
-        current_document_items.push(SurfaceItem::Expr(node));
+        current_document_items.push(node);
         Ok(())
     } else {
         match stack.last_mut() {
@@ -6391,7 +6392,7 @@ fn set_floating_annotation(
 /// Otherwise, close it: convert value to Annotation, wrap target, push to parent.
 fn drain_annotation_frames(
     stack: &mut Vec<StackFrame>,
-    current_document_items: &mut Vec<SurfaceItem>,
+    current_document_items: &mut Vec<Arc<SurfaceNode>>,
     token_vec: &[Spanned<Token>],
     i: usize,
 ) -> Result<(), Diagnostic> {
@@ -6450,11 +6451,11 @@ fn drain_annotation_frames(
 /// Helper: push a value expression, handling keyed entries in dict/call contexts.
 fn push_value(
     stack: &mut Vec<StackFrame>,
-    current_document_items: &mut Vec<SurfaceItem>,
+    current_document_items: &mut Vec<Arc<SurfaceNode>>,
     node: Arc<SurfaceNode>,
 ) -> Result<(), Diagnostic> {
     if stack.is_empty() {
-        current_document_items.push(SurfaceItem::Expr(node));
+        current_document_items.push(node);
         return Ok(());
     }
 
@@ -6663,10 +6664,8 @@ fn push_value(
 ///
 /// Callers receive the native Surface AST; Display is handled by `SurfaceNode`/`SurfaceExpression`.
 ///
-/// Returns the first item of the first document as an `Arc<SurfaceNode>`. For top-level
-/// declaration items (`SurfaceItem::Decl`), wraps them in `SurfaceExpression::Decl` so
-/// top-level declarations can be displayed uniformly. For callers needing the raw
-/// `SurfaceProgram`, use `parse()` directly.
+/// Returns the first expression of the first document's Sequential body as an `Arc<SurfaceNode>`.
+/// For callers needing the raw `SurfaceProgram`, use `parse()` directly.
 pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, Diagnostic> {
     let file: Arc<str> = Arc::from("<expression>");
     let output = parse(input, Arc::clone(&file))?;
@@ -6681,20 +6680,18 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, Diagnos
     }
 
     let first_doc = &surface.documents[0];
-    match first_doc.node.items.first() {
-        Some(SurfaceItem::Expr(node)) => Ok(Arc::clone(node)),
-        Some(SurfaceItem::Decl(decl)) => {
-            // Top-level declarations are wrapped in SurfaceExpression::Decl so they
-            // can be displayed uniformly. The Display impl for SurfaceDeclaration
-            // produces the canonical rendering matching Expr Display for the same forms.
-            Ok(mk(
-                SurfaceExpression::Decl(Box::new(decl.node.clone())),
-                decl.span.clone(),
-            ))
-        }
-        None => Err(Diagnostic::error(
+    match &first_doc.node.body.expr {
+        SurfaceExpression::Sequential(exprs) => match exprs.first() {
+            Some(node) => Ok(Arc::clone(node)),
+            None => Err(Diagnostic::error(
+                KIND,
+                "no items in first document",
+                first_doc.span.clone(),
+            )),
+        },
+        _ => Err(Diagnostic::error(
             KIND,
-            "no items in first document",
+            "document body is not Sequential",
             first_doc.span.clone(),
         )),
     }
@@ -6746,23 +6743,32 @@ mod tests {
     fn parse_surf_node(input: &str) -> Arc<SurfaceNode> {
         let output = parse(input, test_file(input)).expect("parse failed");
         let first_doc = &output.program.documents[0].node;
-        match first_doc.items.first() {
-            Some(SurfaceItem::Expr(node)) => Arc::clone(node),
-            _ => panic!("first item is not an expression"),
+        match &first_doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => match exprs.first() {
+                Some(node) => Arc::clone(node),
+                None => panic!("first document has no expressions"),
+            },
+            _ => panic!("document body is not Sequential"),
         }
     }
 
-    /// Helper: extract all expression nodes from a SurfaceDocument.
-    /// Returns `Vec<Arc<SurfaceNode>>` — no ast_convert bridge needed.
+    fn doc_body_len(doc: &SurfaceDocument) -> usize {
+        get_seq_items(doc).len()
+    }
+
     fn surf_items(surf_doc: &SurfaceDocument) -> Vec<Arc<SurfaceNode>> {
-        surf_doc
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                SurfaceItem::Expr(node) => Some(Arc::clone(node)),
-                SurfaceItem::Decl(_) => None,
-            })
-            .collect()
+        match &surf_doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => exprs.clone(),
+            _ => panic!("document body is not Sequential"),
+        }
+    }
+
+    /// Helper: get Sequential items from a document's body for test assertions.
+    fn get_seq_items(doc: &SurfaceDocument) -> &[Arc<SurfaceNode>] {
+        match &doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => exprs,
+            _ => panic!("document body is not Sequential"),
+        }
     }
 
     #[test]
@@ -6910,18 +6916,23 @@ mod tests {
     fn test_type_alias() {
         let src = "[type 42]";
         let output = parse(src, test_file(src)).expect("parse failed");
-        // [type ...] is a declaration — access via SurfaceItem::Decl, not expressions
-        let items = &output.program.documents[0].node.items;
-        assert_eq!(items.len(), 1, "expected one item");
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
-                SurfaceDeclaration::TypeAlias { params, body } => {
-                    assert!(params.is_empty());
-                    assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
+        // [type ...] is a declaration wrapped in Decl expression inside Sequential
+        let doc = &output.program.documents[0].node;
+        match &doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => {
+                assert_eq!(exprs.len(), 1, "expected one expression");
+                match &exprs[0].expr {
+                    SurfaceExpression::Decl(decl) => match &**decl {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert!(params.is_empty());
+                            assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
+                        }
+                        other => panic!("expected TypeAlias declaration, got {other:?}"),
+                    },
+                    other => panic!("expected Decl expression, got {other:?}"),
                 }
-                other => panic!("expected TypeAlias declaration, got {other:?}"),
-            },
-            other => panic!("expected Decl item, got {other:?}"),
+            }
+            other => panic!("expected Sequential, got {other:?}"),
         }
     }
 
@@ -7250,18 +7261,22 @@ mod tests {
             output.diagnostics.is_empty(),
             "empty type body should parse without error (phantom type)"
         );
-        match &output.program.documents[0].node.items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
-                SurfaceDeclaration::TypeAlias { params, body } => {
-                    assert!(params.is_empty(), "phantom type should have no params");
-                    assert!(
-                        matches!(&body.expr, SurfaceExpression::Dict { entries, .. } if entries.is_empty()),
-                        "phantom type body should be empty dict"
-                    );
-                }
-                other => panic!("expected TypeAlias declaration, got {other:?}"),
+        let doc = &output.program.documents[0].node;
+        match &doc.body.expr {
+            SurfaceExpression::Sequential(exprs) => match &exprs[0].expr {
+                SurfaceExpression::Decl(decl) => match &**decl {
+                    SurfaceDeclaration::TypeAlias { params, body } => {
+                        assert!(params.is_empty(), "phantom type should have no params");
+                        assert!(
+                            matches!(&body.expr, SurfaceExpression::Dict { entries, .. } if entries.is_empty()),
+                            "phantom type body should be empty dict"
+                        );
+                    }
+                    other => panic!("expected TypeAlias declaration, got {other:?}"),
+                },
+                other => panic!("expected Decl expression, got {other:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Sequential, got {other:?}"),
         }
     }
 
@@ -7398,11 +7413,12 @@ mod tests {
             "multi-entry [type T1 T2 ...] should parse without errors, got: {:?}",
             output.diagnostics
         );
-        // [type ...] is a declaration — access via SurfaceItem::Decl
-        let items = &output.program.documents[0].node.items;
+        // [type ...] is a declaration wrapped in Decl expression
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
         assert_eq!(items.len(), 1, "expected one item");
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
+        match &items[0].expr {
+            SurfaceExpression::Decl(decl) => match &**decl {
                 SurfaceDeclaration::TypeAlias { params, body } => {
                     assert!(params.is_empty());
                     // Multi-entry body is wrapped in a synthetic Dict with positional entries
@@ -7425,7 +7441,7 @@ mod tests {
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Decl expression, got {other:?}"),
         }
     }
 
@@ -7471,10 +7487,11 @@ mod tests {
             "[type [let a b] Body] should parse without errors, got: {:?}",
             output.diagnostics
         );
-        let items = &output.program.documents[0].node.items;
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
         assert_eq!(items.len(), 1, "expected one item");
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
+        match &items[0].expr {
+            SurfaceExpression::Decl(decl) => match &**decl {
                 SurfaceDeclaration::TypeAlias { params, .. } => {
                     assert_eq!(params.len(), 2, "expected 2 params");
                     assert_eq!(params[0], ("a".to_string(), None));
@@ -7482,7 +7499,7 @@ mod tests {
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Decl expression, got {other:?}"),
         }
     }
 
@@ -7496,15 +7513,16 @@ mod tests {
             "[type [let] Body] should parse without errors, got: {:?}",
             output.diagnostics
         );
-        let items = &output.program.documents[0].node.items;
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
+        match &items[0].expr {
+            SurfaceExpression::Decl(decl) => match &**decl {
                 SurfaceDeclaration::TypeAlias { params, .. } => {
                     assert!(params.is_empty(), "expected 0 params, got {:?}", params);
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Decl expression, got {other:?}"),
         }
     }
 
@@ -7518,9 +7536,10 @@ mod tests {
             "[type [or Int Null]] should parse without errors, got: {:?}",
             output.diagnostics
         );
-        let items = &output.program.documents[0].node.items;
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
+        match &items[0].expr {
+            SurfaceExpression::Decl(decl) => match &**decl {
                 SurfaceDeclaration::TypeAlias { params, .. } => {
                     assert!(
                         params.is_empty(),
@@ -7530,7 +7549,7 @@ mod tests {
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Decl expression, got {other:?}"),
         }
     }
 
@@ -7547,68 +7566,66 @@ mod tests {
             "type body with lowercase keys should parse without error, got: {:?}",
             output.diagnostics
         );
-        let items = &output.program.documents[0].node.items;
-        match &items[0] {
-            SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict { entries, scope: _ } => {
-                    assert_eq!(entries.len(), 1, "expected 1 dict entry");
-                    let first_entry = &entries[0].node;
-                    assert!(first_entry.key.is_some(), "entry should have a key");
-                    match &first_entry.value.expr {
-                        SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
-                            SurfaceDeclaration::TypeAlias { params, body } => {
-                                assert!(params.is_empty(), "type should have no params");
-                                // Body should be a Dict with one entry: repr: "Value::Int"
-                                match &body.expr {
-                                    SurfaceExpression::Dict {
-                                        entries: body_entries,
-                                        ..
-                                    } => {
-                                        assert_eq!(
-                                            body_entries.len(),
-                                            1,
-                                            "expected 1 entry in type body"
-                                        );
-                                        let repr_entry = &body_entries[0].node;
-                                        assert!(
-                                            repr_entry.key.is_some(),
-                                            "repr entry should have key"
-                                        );
-                                        match &repr_entry.key.as_ref().unwrap().expr {
-                                            SurfaceExpression::StringLiteral {
-                                                content, ..
-                                            } => {
-                                                assert_eq!(content, "repr", "key should be 'repr'");
-                                            }
-                                            other => {
-                                                panic!("expected StringLiteral key, got {other:?}")
-                                            }
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
+        match &items[0].expr {
+            SurfaceExpression::Dict { entries, scope: _ } => {
+                assert_eq!(entries.len(), 1, "expected 1 dict entry");
+                let first_entry = &entries[0].node;
+                assert!(first_entry.key.is_some(), "entry should have a key");
+                match &first_entry.value.expr {
+                    SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert!(params.is_empty(), "type should have no params");
+                            // Body should be a Dict with one entry: repr: "Value::Int"
+                            match &body.expr {
+                                SurfaceExpression::Dict {
+                                    entries: body_entries,
+                                    ..
+                                } => {
+                                    assert_eq!(
+                                        body_entries.len(),
+                                        1,
+                                        "expected 1 entry in type body"
+                                    );
+                                    let repr_entry = &body_entries[0].node;
+                                    assert!(
+                                        repr_entry.key.is_some(),
+                                        "repr entry should have key"
+                                    );
+                                    match &repr_entry.key.as_ref().unwrap().expr {
+                                        SurfaceExpression::StringLiteral {
+                                            content, ..
+                                        } => {
+                                            assert_eq!(content, "repr", "key should be 'repr'");
                                         }
-                                        match &repr_entry.value.expr {
-                                            SurfaceExpression::StringLiteral {
-                                                content, ..
-                                            } => {
-                                                assert_eq!(
-                                                    content, "Value::Int",
-                                                    "value should be 'Value::Int'"
-                                                );
-                                            }
-                                            other => panic!(
-                                                "expected StringLiteral value, got {other:?}"
-                                            ),
+                                        other => {
+                                            panic!("expected StringLiteral key, got {other:?}")
                                         }
                                     }
-                                    other => panic!("expected Dict body, got {other:?}"),
+                                    match &repr_entry.value.expr {
+                                        SurfaceExpression::StringLiteral {
+                                            content, ..
+                                        } => {
+                                            assert_eq!(
+                                                content, "Value::Int",
+                                                "value should be 'Value::Int'"
+                                            );
+                                        }
+                                        other => panic!(
+                                            "expected StringLiteral value, got {other:?}"
+                                        ),
+                                    }
                                 }
+                                other => panic!("expected Dict body, got {other:?}"),
                             }
-                            other => panic!("expected TypeAlias, got {other:?}"),
-                        },
-                        other => panic!("expected Decl, got {other:?}"),
-                    }
+                        }
+                        other => panic!("expected TypeAlias, got {other:?}"),
+                    },
+                    other => panic!("expected Decl, got {other:?}"),
                 }
-                other => panic!("expected Dict, got {other:?}"),
-            },
-            other => panic!("expected Expr item, got {other:?}"),
+            }
+            other => panic!("expected Dict, got {other:?}"),
         }
     }
 
@@ -7622,38 +7639,36 @@ mod tests {
             "phantom type should parse without error, got: {:?}",
             output.diagnostics
         );
-        let items = &output.program.documents[0].node.items;
-        match &items[0] {
-            SurfaceItem::Expr(node) => match &node.expr {
-                SurfaceExpression::Dict { entries, scope: _ } => {
-                    assert_eq!(entries.len(), 1, "expected 1 dict entry");
-                    let first_entry = &entries[0].node;
-                    assert!(first_entry.key.is_some(), "entry should have a key");
-                    match &first_entry.value.expr {
-                        SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
-                            SurfaceDeclaration::TypeAlias { params, body } => {
-                                assert!(params.is_empty(), "phantom type should have no params");
-                                match &body.expr {
-                                    SurfaceExpression::Dict {
-                                        entries: body_entries,
-                                        ..
-                                    } => {
-                                        assert!(
-                                            body_entries.is_empty(),
-                                            "phantom type body should be empty dict"
-                                        );
-                                    }
-                                    other => panic!("expected empty Dict body, got {other:?}"),
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
+        match &items[0].expr {
+            SurfaceExpression::Dict { entries, scope: _ } => {
+                assert_eq!(entries.len(), 1, "expected 1 dict entry");
+                let first_entry = &entries[0].node;
+                assert!(first_entry.key.is_some(), "entry should have a key");
+                match &first_entry.value.expr {
+                    SurfaceExpression::Decl(decl_box) => match decl_box.as_ref() {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert!(params.is_empty(), "phantom type should have no params");
+                            match &body.expr {
+                                SurfaceExpression::Dict {
+                                    entries: body_entries,
+                                    ..
+                                } => {
+                                    assert!(
+                                        body_entries.is_empty(),
+                                        "phantom type body should be empty dict"
+                                    );
                                 }
+                                other => panic!("expected empty Dict body, got {other:?}"),
                             }
-                            other => panic!("expected TypeAlias, got {other:?}"),
-                        },
-                        other => panic!("expected Decl, got {other:?}"),
-                    }
+                        }
+                        other => panic!("expected TypeAlias, got {other:?}"),
+                    },
+                    other => panic!("expected Decl, got {other:?}"),
                 }
-                other => panic!("expected Dict, got {other:?}"),
-            },
-            other => panic!("expected Expr item, got {other:?}"),
+            }
+            other => panic!("expected Dict, got {other:?}"),
         }
     }
 
@@ -7664,26 +7679,22 @@ mod tests {
         // Dict is returned as-is (floating annotation not applied to individual entries).
         let output =
             parse("[@Number 1 2]", test_file("[@Number 1 2]")).expect("parse should succeed");
-        let items = &output.program.documents[0].node.items;
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
         assert_eq!(items.len(), 1, "expected one item");
-        match &items[0] {
-            SurfaceItem::Expr(node) => {
-                match &node.expr {
-                    SurfaceExpression::Dict { entries, scope: _ } => {
-                        assert_eq!(
-                            entries.len(),
-                            2,
-                            "expected 2 entries, got {}",
-                            entries.len()
-                        );
-                    }
-                    SurfaceExpression::TypeAssert { .. } => {
-                        // Acceptable if TypeAssert wraps the whole expression
-                    }
-                    other => panic!("expected Dict or TypeAssert, got {other:?}"),
-                }
+        match &items[0].expr {
+            SurfaceExpression::Dict { entries, scope: _ } => {
+                assert_eq!(
+                    entries.len(),
+                    2,
+                    "expected 2 entries, got {}",
+                    entries.len()
+                );
             }
-            other => panic!("expected Expr item, got {other:?}"),
+            SurfaceExpression::TypeAssert { .. } => {
+                // Acceptable if TypeAssert wraps the whole expression
+            }
+            other => panic!("expected Dict or TypeAssert, got {other:?}"),
         }
     }
 
@@ -8683,28 +8694,24 @@ mod tests {
         // The separator still applies its header annotation to the NEXT document.
         let output = parse("---\n[a: 1]", test_file("---\n[a: 1]")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 1);
-        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
+        assert_eq!(doc_body_len(&output.program.documents[0].node), 1);
     }
 
     #[test]
     fn test_empty_document_before_header_separator() {
-        // When --- has no content before it but DOES set a header for the next doc,
-        // the empty document is still dropped. Only the following document (with header)
-        // is produced.
         let output = parse("--- stage: \"type\"\n[a: 1]", test_file("sep")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 1);
         let header = &output.program.documents[0].node.header;
         assert!(header.contains_key("stage"), "header should have 'stage'");
-        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
+        assert_eq!(doc_body_len(&output.program.documents[0].node), 1);
     }
 
     #[test]
     fn test_two_documents_with_separator() {
-        // When content appears BEFORE the ---, two documents are produced.
         let output = parse("[a: 1]\n---\n[b: 2]", test_file("sep")).expect("parse failed");
         assert_eq!(output.program.documents.len(), 2);
-        assert_eq!(output.program.documents[0].node.expressions().count(), 1);
-        assert_eq!(output.program.documents[1].node.expressions().count(), 1);
+        assert_eq!(doc_body_len(&output.program.documents[0].node), 1);
+        assert_eq!(doc_body_len(&output.program.documents[1].node), 1);
     }
 
     #[test]
@@ -8816,19 +8823,20 @@ mod tests {
             other => panic!("expected Fn, got {other:?}"),
         }
 
-        // TypeAlias form on line 3 — [type ...] is a declaration, access via SurfaceItem::Decl
+        // TypeAlias form on line 3 — [type ...] is a declaration wrapped in Decl expression
         let input_type = "# Line 1\n# Line 2\n[type Int]";
         let output = parse(input_type, test_file(input_type)).expect("parse failed");
-        let items = &output.program.documents[0].node.items;
+        let doc = &output.program.documents[0].node;
+        let items = get_seq_items(doc);
         assert_eq!(items.len(), 1, "expected one item");
-        match &items[0] {
-            SurfaceItem::Decl(decl) => match &decl.node {
+        match &items[0].expr {
+            SurfaceExpression::Decl(decl) => match &**decl {
                 SurfaceDeclaration::TypeAlias { .. } => {
-                    assert_eq!(decl.span.start_line, 3, "TypeAlias should start on line 3");
+                    assert_eq!(items[0].span.start_line, 3, "TypeAlias should start on line 3");
                 }
-                other => panic!("expected TypeAlias declaration, got {other:?}"),
+                _ => panic!("expected TypeAlias declaration, got {decl:?}"),
             },
-            other => panic!("expected Decl item, got {other:?}"),
+            other => panic!("expected Decl expression, got {other:?}"),
         }
 
         // TypeAssert form on line 3
@@ -9614,20 +9622,16 @@ mod tests {
         // Should have one document
         assert_eq!(surface.documents.len(), 1);
 
-        // Document should have one item (the dict)
+        // Document body should have one expression (the dict)
         let doc = &surface.documents[0].node;
-        assert_eq!(doc.items.len(), 1);
+        let items = get_seq_items(doc);
+        assert_eq!(items.len(), 1);
 
         // Item should be a Dict expression
-        match &doc.items[0] {
-            crate::ast::SurfaceItem::Expr(node) => {
-                assert!(matches!(
-                    &node.expr,
-                    crate::ast::SurfaceExpression::Dict { entries, .. } if entries.len() == 2
-                ));
-            }
-            _ => panic!("expected Expr item"),
-        }
+        assert!(matches!(
+            &items[0].expr,
+            crate::ast::SurfaceExpression::Dict { entries, .. } if entries.len() == 2
+        ), "expected Dict expression with 2 entries");
     }
 
     /// Regression test: `[let [let x y]]` — nested `[let ...]` inside a `[let ...]` context.

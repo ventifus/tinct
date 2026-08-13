@@ -31,7 +31,7 @@
     Arrow:        [params: TypeNode  result: TypeNode]
     Recursive:    [var: String  body: TypeNode]
     RecursiveRef: [name: String]
-    Dict: [fields: Dict  open: Integer  key-type: TypeNode  value-type: TypeNode]
+    Dict: [fields: Dict  open: Integer  key-type: TypeNode  value-type: TypeNode  repr@[default: 0]: Integer]
     TypeConstructor: [name: String]
     TypeApplication: [ctor: TypeNode  args: TypeNode]
     # Kind-annotated type variable sentinel: resolves to a fresh TypeVar of the given kind.
@@ -69,7 +69,7 @@
   # Consumed by typenode_typevar_kind in type_normalize.rs → TypeStageEntry::TypeVar.
   Operator:     [TypeNode.TypeVar kind: "Operator"]
   Label:        [TypeNode.TypeVar kind: "Label"]
-  Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top]
+  Dict:         [TypeNode.Dict fields: []  open: 1  key-type: TypeNode.Top  value-type: TypeNode.Top  repr: 5]
   # ── Structural protocol types ────────────────────────────────────────────
   # These depend on the primitive aliases above (via key-type/value-type fields
   # that are forced during classify_type_stage_entry → typenode_value_to_type).
@@ -200,6 +200,7 @@
   builtin-dict-has-kv-nth?:  [fn@[or 0 1] [let d@Dict n@Integer] ...]
   builtin-dict-kv-nth:       [fn@Any     [let d@Dict n@Integer] ...]
   builtin-build-dict:        [fn@Dict    [let entries@Dict] ...]
+  builtin-dict-merge:        [fn@Dict    [let a@Dict b@Dict] ...]
 
   # ── Builder ops ───────────────────────────────────────────────────────────
   builtin-make-builder:      [fn@BuilderHandle [] ...]
@@ -275,7 +276,7 @@
   # Checks that keys produced by each stage are consumed by the next.
   # Required named arg pipeline-input: String — the variable name to track (e.g. "%").
   # Returns Dict of diagnostic dicts (empty when no warnings).
-  builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict pipeline-input: p] ...]
+  builtin-lint-pipeline-docs: [fn@Dict [let docs@Dict pipeline-input@String] ...]
   # program-docs: return auto-indexed dict of documents in a Program.
   builtin-program-docs:      [fn@Documents [let prog@Program] ...]
   # doc-meta: evaluate a document's --- header, returning the result dict.
@@ -362,16 +363,10 @@
   # CoreExpr::ReprDecl mechanism — these are nominal types that match specific
   # Value enum variants by their numeric TYPE_ID constant.
 
-  NativeInt:         [type repr: 1]
-  NativeUInt:        [type repr: 2]
-  Float64:           [type repr: 3]
-  String:            [type repr: 4]
-  Bytes:             [type repr: 16]
   Decimal:           [type repr: 14]
   BigInt:            [type repr: 15]
   Fn:                [type repr: 7]
   Builtin:           [type repr: 8]
-  Dict:              [type repr: 5]
   DirCap:            [type repr: 10]
   RevocableDirCap:   [type repr: 13]
   NetCap:            [type repr: 11]

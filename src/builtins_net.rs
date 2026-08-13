@@ -55,13 +55,14 @@ pub(crate) fn check_net_cap_allowlist(
     host: &str,
     port: Option<u16>,
     span: Span,
-) -> Result<Option<std::net::IpAddr>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<std::net::IpAddr>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     use crate::value::NetCapEntry;
     use std::net::IpAddr;
 
     // Quick check: Any entry allows everything
     if entries.iter().any(|e| matches!(e, NetCapEntry::Any)) {
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
 
     // Try to parse host as IP address — a parse failure means host is a hostname, not an IP literal.
@@ -75,17 +76,17 @@ pub(crate) fn check_net_cap_allowlist(
         for entry in entries {
             if let NetCapEntry::Cidr(net) = entry {
                 if net.contains(&ip) {
-                    return Ok(None); // Direct IP match, no DNS needed
+                    return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags); // Direct IP match, no DNS needed
                 }
             }
         }
         // IP literal not in any CIDR — deny
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("connect: IP address {} not in any allowed CIDR range", host),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Host is a hostname — check hostname-based entries first
@@ -124,20 +125,34 @@ pub(crate) fn check_net_cap_allowlist(
 
     if hostname_match && !has_cidr {
         // Hostname match, no CIDR restrictions — allow without DNS resolution
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
 
     if hostname_match && has_cidr {
         // Hostname match, but CIDR entries exist — must resolve and validate IP
         // This prevents hostname-only match from bypassing IP-based restrictions
-        let resolved_ip = resolve_hostname_for_cidr(host, entries, span)?;
-        return Ok(Some(resolved_ip));
+        let resolved_ip = {
+            let (result, diags) = resolve_hostname_for_cidr(host, entries, span).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        return crate::error::DiagnosticResult::ok(Some(resolved_ip)).with_diagnostics(_dr_diags);
     }
 
     if !hostname_match && has_cidr {
         // No hostname match, but CIDR entries exist — try DNS resolution
-        let resolved_ip = resolve_hostname_for_cidr(host, entries, span)?;
-        return Ok(Some(resolved_ip));
+        let resolved_ip = {
+            let (result, diags) = resolve_hostname_for_cidr(host, entries, span).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        return crate::error::DiagnosticResult::ok(Some(resolved_ip)).with_diagnostics(_dr_diags);
     }
 
     // No match at all — deny
@@ -146,15 +161,15 @@ pub(crate) fn check_net_cap_allowlist(
     } else {
         host.to_string()
     };
-    Err(Diagnostic::error(
+    crate::error::DiagnosticResult::err(Diagnostic::error(
         KIND,
         format!(
             "connect: connection to {} denied by NetCap allowlist",
             target
         ),
         span,
-    )
-    .into())
+    ))
+    .with_diagnostics(_dr_diags)
 }
 
 /// Resolve hostname to IP and validate against CIDR entries.
@@ -163,7 +178,8 @@ fn resolve_hostname_for_cidr(
     host: &str,
     entries: &[crate::value::NetCapEntry],
     span: Span,
-) -> Result<std::net::IpAddr, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<std::net::IpAddr> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     use crate::value::NetCapEntry;
     use std::net::ToSocketAddrs;
 
@@ -172,22 +188,22 @@ fn resolve_hostname_for_cidr(
     let addrs: Vec<std::net::IpAddr> = match (host, dummy_port).to_socket_addrs() {
         Ok(iter) => iter.map(|sa| sa.ip()).collect(),
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("connect: failed to resolve hostname '{}': {}", host, e),
                 span,
-            )
-            .into())
+            ))
+            .with_diagnostics(_dr_diags)
         }
     };
 
     if addrs.is_empty() {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("connect: no IP addresses found for hostname '{}'", host),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Check each resolved IP against CIDR entries
@@ -195,22 +211,22 @@ fn resolve_hostname_for_cidr(
         for entry in entries {
             if let NetCapEntry::Cidr(net) = entry {
                 if net.contains(ip) {
-                    return Ok(*ip); // Found a match
+                    return crate::error::DiagnosticResult::ok(*ip).with_diagnostics(_dr_diags); // Found a match
                 }
             }
         }
     }
 
     // No resolved IP matched any CIDR
-    Err(Diagnostic::error(
+    crate::error::DiagnosticResult::err(Diagnostic::error(
         KIND,
         format!(
             "connect: resolved IPs for '{}' ({:?}) not in any allowed CIDR range",
             host, addrs
         ),
         span,
-    )
-    .into())
+    ))
+    .with_diagnostics(_dr_diags)
 }
 
 // ============================================================================
@@ -222,7 +238,8 @@ pub(crate) async fn build_tls_config(
     opts_val: &Value,
     opts_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<rustls::ClientConfig, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<rustls::ClientConfig> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     use rustls::RootCertStore;
 
     // Install the ring crypto provider exactly once per process lifetime.
@@ -238,7 +255,7 @@ pub(crate) async fn build_tls_config(
     let opts_dict = match opts_val {
         Value::Dict { entries: d, .. } => d,
         other => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -247,8 +264,8 @@ pub(crate) async fn build_tls_config(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 opts_span,
-            )
-            .into())
+            ))
+            .with_diagnostics(_dr_diags)
         }
     };
 
@@ -258,7 +275,14 @@ pub(crate) async fn build_tls_config(
     let no_system_roots = if let Some(thunk) =
         opts_dict.get(&crate::value::HashableValue::Str("no-system-roots".into()))
     {
-        let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
+        let val = {
+            let (result, diags) = crate::eval::materialize(thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         matches!(val, crate::value::Value::Int { n, .. } if n != 0)
     } else {
         false
@@ -273,25 +297,26 @@ pub(crate) async fn build_tls_config(
             // Collect error messages
             let error_msgs: Vec<String> =
                 cert_result.errors.iter().map(|e| e.to_string()).collect();
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "tls-connect: failed to load system CA roots: {}",
                     error_msgs.join("; ")
                 ),
                 opts_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         for cert in cert_result.certs {
-            root_store.add(cert).map_err(|e| {
-                Diagnostic::error(
+            match root_store.add(cert) {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("tls-connect: failed to add system CA cert: {}", e),
                     opts_span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            }
         }
     }
 
@@ -299,7 +324,14 @@ pub(crate) async fn build_tls_config(
     let mozilla_roots = if let Some(thunk) =
         opts_dict.get(&crate::value::HashableValue::Str("mozilla-roots".into()))
     {
-        let val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
+        let val = {
+            let (result, diags) = crate::eval::materialize(thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         matches!(val, crate::value::Value::Int { n, .. } if n != 0)
     } else {
         false
@@ -311,28 +343,44 @@ pub(crate) async fn build_tls_config(
 
     // Load ca-bundle if provided
     if let Some(thunk) = opts_dict.get(&crate::value::HashableValue::Str("ca-bundle".into())) {
-        let handle_val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
-        let pem_bytes = slurp_handle_bytes(&handle_val, opts_span.clone())?;
+        let handle_val = {
+            let (result, diags) = crate::eval::materialize(thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let pem_bytes = {
+            let (result, diags) = slurp_handle_bytes(&handle_val, opts_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let mut cursor = std::io::Cursor::new(pem_bytes);
-        let certs = rustls_pemfile::certs(&mut cursor)
+        let certs = match rustls_pemfile::certs(&mut cursor)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("tls-connect: failed to parse CA bundle PEM: {}", e),
-                    opts_span.clone(),
-                )
-            })?;
+        {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("tls-connect: failed to parse CA bundle PEM: {}", e),
+                opts_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        };
 
         for cert in certs {
-            root_store.add(cert).map_err(|e| {
-                Diagnostic::error(
+            match root_store.add(cert) {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("tls-connect: failed to add CA bundle cert: {}", e),
                     opts_span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            }
         }
     }
 
@@ -344,66 +392,94 @@ pub(crate) async fn build_tls_config(
 
     let mut config = if has_client_cert || has_client_key {
         if !has_client_cert || !has_client_key {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "tls-connect: both client-cert and client-key must be provided for mTLS"
                     .to_string(),
                 opts_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let cert_thunk = opts_dict
             .get(&crate::value::HashableValue::Str("client-cert".into()))
             .unwrap();
-        let cert_handle = crate::eval::materialize(cert_thunk, Some(&opts_span), ctx).await?;
+        let cert_handle = {
+            let (result, diags) = crate::eval::materialize(cert_thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let key_thunk = opts_dict
             .get(&crate::value::HashableValue::Str("client-key".into()))
             .unwrap();
-        let key_handle = crate::eval::materialize(key_thunk, Some(&opts_span), ctx).await?;
+        let key_handle = {
+            let (result, diags) = crate::eval::materialize(key_thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let cert_pem = slurp_handle_bytes(&cert_handle, opts_span.clone())?;
-        let key_pem = slurp_handle_bytes(&key_handle, opts_span.clone())?;
+        let cert_pem = {
+            let (result, diags) = slurp_handle_bytes(&cert_handle, opts_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let key_pem = {
+            let (result, diags) = slurp_handle_bytes(&key_handle, opts_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let mut cert_cursor = std::io::Cursor::new(cert_pem);
-        let certs = rustls_pemfile::certs(&mut cert_cursor)
+        let certs = match rustls_pemfile::certs(&mut cert_cursor)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("tls-connect: failed to parse client cert PEM: {}", e),
-                    opts_span.clone(),
-                )
-            })?;
+        {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("tls-connect: failed to parse client cert PEM: {}", e),
+                opts_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        };
 
         let mut key_cursor = std::io::Cursor::new(key_pem);
-        let key = rustls_pemfile::private_key(&mut key_cursor)
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("tls-connect: failed to parse client key PEM: {}", e),
-                    opts_span.clone(),
-                )
-            })?
-            .ok_or_else(|| {
-                Diagnostic::error(
-                    KIND,
-                    "tls-connect: no private key found in client-key PEM".to_string(),
-                    opts_span.clone(),
-                )
-            })?;
+        let key = match rustls_pemfile::private_key(&mut key_cursor) {
+            Ok(Some(k)) => k,
+            Ok(None) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                "tls-connect: no private key found in client-key PEM".to_string(),
+                opts_span.clone(),
+            )).with_diagnostics(_dr_diags),
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("tls-connect: failed to parse client key PEM: {}", e),
+                opts_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        };
 
-        rustls::ClientConfig::builder()
+        match rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_client_auth_cert(certs, key)
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("tls-connect: failed to configure client certificate: {}", e),
-                    opts_span.clone(),
-                )
-            })?
+        {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("tls-connect: failed to configure client certificate: {}", e),
+                opts_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        }
     } else {
         rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
@@ -412,15 +488,29 @@ pub(crate) async fn build_tls_config(
 
     // Set ALPN protocols
     if let Some(thunk) = opts_dict.get(&crate::value::HashableValue::Str("alpn".into())) {
-        let alpn_val = crate::eval::materialize(thunk, Some(&opts_span), ctx).await?;
-        let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx).await?;
+        let alpn_val = {
+            let (result, diags) = crate::eval::materialize(thunk, Some(&opts_span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let alpn_protocols = {
+            let (result, diags) = extract_alpn_protocols(&alpn_val, opts_span, ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         config.alpn_protocols = alpn_protocols;
     } else {
         // Default ALPN: http/1.1
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
     }
 
-    Ok(config)
+    crate::error::DiagnosticResult::ok(config).with_diagnostics(_dr_diags)
 }
 
 /// Extract ALPN protocol list from a Dict of Strings (integer-keyed).
@@ -428,11 +518,12 @@ async fn extract_alpn_protocols(
     val: &Value,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Vec<Vec<u8>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Vec<Vec<u8>>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let map = match val {
         Value::Dict { entries: d, .. } => d,
         other => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -441,19 +532,26 @@ async fn extract_alpn_protocols(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 span,
-            )
-            .into())
+            ))
+            .with_diagnostics(_dr_diags)
         }
     };
     let mut protocols = Vec::new();
     for (_idx, thunk) in map {
-        let v = crate::eval::materialize(thunk, Some(&span), ctx).await?;
+        let v = {
+            let (result, diags) = crate::eval::materialize(thunk, Some(&span), ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let protocol_str = match v {
             Value::String {
                 source, start, end, ..
             } => source[start..end].to_string(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -462,39 +560,37 @@ async fn extract_alpn_protocols(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
         protocols.push(protocol_str.into_bytes());
     }
-    Ok(protocols)
+    crate::error::DiagnosticResult::ok(protocols).with_diagnostics(_dr_diags)
 }
 
 /// Slurp a Handle into bytes (for reading PEM files)
-fn slurp_handle_bytes(_val: &Value, span: Span) -> Result<Vec<u8>, Box<crate::error::Diagnostic>> {
+fn slurp_handle_bytes(_val: &Value, span: Span) -> crate::error::DiagnosticResult<Vec<u8>> {
     // Handle removed — this function can no longer read PEM data from a Handle.
     // When the network layer is redesigned, this will accept a File or Bytes value instead.
-    Err(Diagnostic::error(KIND, 
+    crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
         "tls-connect: ca-bundle/client-cert/client-key via Handle not available — tcp redesign in progress".to_string(),
         span,
-    )
-    .into())
+    ))
 }
 
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
 /// Stubbed: Handle/WriteHandle removed. Will be reimplemented with new stream type.
 pub(crate) fn builtin_tls_layer(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        Err(Diagnostic::error(
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "tls-layer: network not yet available — tcp redesign in progress".to_string(),
             call_span,
-        )
-        .into())
+        ))
     })
 }
 
@@ -513,15 +609,14 @@ pub(crate) fn builtin_tls_layer(
 /// `tls-peer-cert`: Extract TLS certificate metadata. Stubbed: Handle removed.
 pub(crate) fn builtin_tls_peer_cert(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        Err(Diagnostic::error(
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "tls-peer-cert: network not yet available — tcp redesign in progress".to_string(),
             call_span,
-        )
-        .into())
+        ))
     })
 }
 
@@ -541,10 +636,11 @@ pub(crate) fn builtin_tls_peer_cert(
 /// Returns a `QuicSession` on success.
 pub(crate) fn builtin_quic_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use std::net::{SocketAddr, ToSocketAddrs};
         use std::sync::Arc;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         let BuiltinArgs {
             args,
@@ -554,31 +650,70 @@ pub(crate) fn builtin_quic_session(
             ..
         } = ctx_arg;
 
-        reject_named("quic-session", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("quic-session", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 4 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "quic-session: expected 4 arguments (cap host port opts), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // All args pre-materialized by force_count
-        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
-        let host_val = Arc::clone(&args[1]).require_value()?.clone();
-        let port_val = Arc::clone(&args[2]).require_value()?.clone();
-        let opts_val = Arc::clone(&args[3]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let cap_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk1 = Arc::clone(&args[1]);
+        let host_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk2 = Arc::clone(&args[2]);
+        let port_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk3 = Arc::clone(&args[3]);
+        let opts_val = {
+            let (result, diags) = thunk3.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract NetCap
         let entries = match cap_val {
             Value::NetCap { entries: e, .. } => e,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -587,25 +722,32 @@ pub(crate) fn builtin_quic_session(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let host_str = require_string("quic-session", host_val, call_span.clone(), &ctx)?;
+        let host_str = {
+            let (result, diags) = require_string("quic-session", host_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let port = match port_val {
             Value::Int { n, .. } if (1..=65535).contains(&n) => n as u16,
             Value::Int { .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "quic-session: port must be 1–65535".to_string(),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -614,42 +756,55 @@ pub(crate) fn builtin_quic_session(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Validate against NetCap allowlist (DNS-rebinding mitigation)
-        let resolved_ip =
-            check_net_cap_allowlist(&entries, &host_str, Some(port), call_span.clone())?;
+        let resolved_ip = {
+            let (result, diags) = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Determine server address for connection
         let server_addr: SocketAddr = if let Some(ip) = resolved_ip {
             SocketAddr::new(ip, port)
         } else {
             // Resolve hostname
-            format!("{}:{}", host_str, port)
+            match format!("{}:{}", host_str, port)
                 .to_socket_addrs()
-                .map_err(|e| {
-                    Diagnostic::error(
-                        KIND,
-                        format!("quic-session: failed to resolve '{}': {}", host_str, e),
-                        call_span.clone(),
-                    )
-                })?
-                .next()
-                .ok_or_else(|| {
-                    Diagnostic::error(
+            {
+                Ok(mut iter) => match iter.next() {
+                    Some(addr) => addr,
+                    None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("quic-session: no addresses for '{}'", host_str),
                         call_span.clone(),
-                    )
-                })?
+                    )).with_diagnostics(_dr_diags),
+                },
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                    KIND,
+                    format!("quic-session: failed to resolve '{}': {}", host_str, e),
+                    call_span.clone(),
+                )).with_diagnostics(_dr_diags),
+            }
         };
 
         // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
         // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
-        let mut tls_config = build_tls_config(&opts_val, call_span.clone(), &ctx).await?;
+        let mut tls_config = {
+            let (result, diags) = build_tls_config(&opts_val, call_span.clone(), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Override ALPN to h3 unless caller specified explicit alpn in opts.
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
@@ -662,37 +817,41 @@ pub(crate) fn builtin_quic_session(
 
         // Adapt rustls config for QUIC
         let quic_tls =
-            quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(|e| {
-                Diagnostic::error(
+            match quinn::crypto::rustls::QuicClientConfig::try_from(tls_config) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("quic-session: TLS config not suitable for QUIC: {}", e),
                     call_span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            };
 
         let client_config = quinn::ClientConfig::new(Arc::new(quic_tls));
 
         // Create a client endpoint bound to an ephemeral local UDP port
         let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("valid bind addr");
-        let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(|e| {
-            Diagnostic::error(
+        let mut endpoint = match quinn::Endpoint::client(bind_addr) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("quic-session: failed to create QUIC endpoint: {}", e),
                 call_span.clone(),
-            )
-        })?;
+            )).with_diagnostics(_dr_diags),
+        };
         endpoint.set_default_client_config(client_config);
 
         // Connect (async → sync via block_on on the thread-local tokio runtime)
-        let connection = crate::async_rt::block_on(async {
+        let connection = match crate::async_rt::block_on(async {
             let connecting = endpoint
                 .connect(server_addr, &host_str)
                 .map_err(|e| format!("quic-session: connect error: {}", e))?;
             connecting
                 .await
                 .map_err(|e| format!("quic-session: handshake failed: {}", e))
-        })
-        .map_err(|msg| Diagnostic::error(KIND, msg, call_span.clone()))?;
+        }) {
+            Ok(v) => v,
+            Err(msg) => return crate::error::DiagnosticResult::err(Diagnostic::error(KIND, msg, call_span.clone())).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::QuicSession {
@@ -702,7 +861,7 @@ pub(crate) fn builtin_quic_session(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -714,17 +873,16 @@ pub(crate) fn builtin_quic_session(
 /// Both halves bridge async quinn I/O to synchronous BufRead/Write via block_on.
 pub(crate) fn builtin_quic_open_stream(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     // Stubbed: returned Value::Handle which no longer exists.
     // Will be reimplemented with a new stream type in the network redesign sprint.
     let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        Err(Diagnostic::error(
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "quic-open-stream: network not yet available — stream redesign in progress".to_string(),
             call_span,
-        )
-        .into())
+        ))
     })
 }
 
@@ -738,8 +896,9 @@ pub(crate) fn builtin_quic_open_stream(
 /// Quinn connection. For reliable streaming, use `quic-open-stream` instead.
 pub(crate) fn builtin_quic_open_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -748,25 +907,40 @@ pub(crate) fn builtin_quic_open_datagram(
             ..
         } = ctx_arg;
 
-        reject_named("quic-open-datagram", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("quic-open-datagram", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "quic-open-datagram: expected 1 argument (quic_session), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let session_val = Arc::clone(&args[0]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let session_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let conn = match session_val {
             Value::QuicSession { conn: c, .. } => c,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -775,8 +949,8 @@ pub(crate) fn builtin_quic_open_datagram(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -788,7 +962,7 @@ pub(crate) fn builtin_quic_open_datagram(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -803,8 +977,9 @@ pub(crate) fn builtin_quic_open_datagram(
 /// underlying connection pool across multiple `http-request` calls.
 pub(crate) fn builtin_http2_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -813,29 +988,52 @@ pub(crate) fn builtin_http2_session(
             ..
         } = ctx_arg;
 
-        reject_named("http2-session", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("http2-session", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "http2-session: expected 2 arguments (cap base_url), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // All args pre-materialized by force_count
-        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
-        let url_val = Arc::clone(&args[1]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let cap_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk1 = Arc::clone(&args[1]);
+        let url_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Validate cap
         let entries = match cap_val {
             Value::NetCap { entries: e, .. } => e,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -844,18 +1042,39 @@ pub(crate) fn builtin_http2_session(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let base_url = require_string("http2-session", url_val, call_span.clone(), &ctx)?;
+        let base_url = {
+            let (result, diags) = require_string("http2-session", url_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Parse the base_url to extract host and port for cap validation.
         // We need a host for the allowlist check. Parse scheme://host[:port].
-        let (host, port) = parse_origin_host_port(&base_url, call_span.clone())?;
+        let (host, port) = {
+            let (result, diags) = parse_origin_host_port(&base_url, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        check_net_cap_allowlist(&entries, &host, port, call_span.clone())?;
+        {
+            let (result, diags) = check_net_cap_allowlist(&entries, &host, port, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(_) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         // Build the async reqwest client. Use rustls TLS (already the default via
         // the "rustls" feature flag in Cargo.toml with default-features = false).
@@ -872,19 +1091,20 @@ pub(crate) fn builtin_http2_session(
         // (rustls-platform-verifier on Linux loads from the system cert store).
         // The ring crypto provider is installed as the process default in main() to
         // resolve the ring/aws-lc-rs ambiguity.
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .use_rustls_tls()
             .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("http2-session: failed to build HTTP client: {}", e),
-                    call_span.clone(),
-                )
-            })?;
+        {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("http2-session: failed to build HTTP client: {}", e),
+                call_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Http2Session {
@@ -895,7 +1115,7 @@ pub(crate) fn builtin_http2_session(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -909,22 +1129,23 @@ pub(crate) fn builtin_http2_session(
 fn parse_origin_host_port(
     origin: &str,
     span: Span,
-) -> Result<(String, Option<u16>), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(String, Option<u16>)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Strip scheme and record default port
     let (after_scheme, default_port) = if let Some(rest) = origin.strip_prefix("https://") {
         (rest, 443u16)
     } else if let Some(rest) = origin.strip_prefix("http://") {
         (rest, 80u16)
     } else {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "http2-session: base_url must start with http:// or https://, got: {}",
                 origin
             ),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     };
 
     // Strip any trailing path
@@ -936,18 +1157,19 @@ fn parse_origin_host_port(
         // Only treat it as a port if it's all digits (avoids splitting IPv6 addresses).
         if candidate_port.chars().all(|c| c.is_ascii_digit()) {
             let host = host_part[..colon].to_string();
-            let port = candidate_port.parse::<u16>().map_err(|_| {
-                Diagnostic::error(
+            let port = match candidate_port.parse::<u16>() {
+                Ok(v) => v,
+                Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("http2-session: invalid port in base_url: {}", origin),
                     span,
-                )
-            })?;
-            return Ok((host, Some(port)));
+                )).with_diagnostics(_dr_diags),
+            };
+            return crate::error::DiagnosticResult::ok((host, Some(port))).with_diagnostics(_dr_diags);
         }
     }
     // No explicit port — use scheme default for allowlist checking.
-    Ok((host_part.to_string(), Some(default_port)))
+    crate::error::DiagnosticResult::ok((host_part.to_string(), Some(default_port))).with_diagnostics(_dr_diags)
 }
 
 /// `http3-session`: Establish an HTTP/3 session over a QUIC connection.
@@ -961,8 +1183,9 @@ fn parse_origin_host_port(
 /// the Http3Session value.
 pub(crate) fn builtin_http3_session(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -971,26 +1194,41 @@ pub(crate) fn builtin_http3_session(
             ..
         } = ctx_arg;
 
-        reject_named("http3-session", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("http3-session", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "http3-session: expected 1 argument (quic_session), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let session_val = Arc::clone(&args[0]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let session_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let conn = match session_val {
             Value::QuicSession { conn: c, .. } => c,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -999,8 +1237,8 @@ pub(crate) fn builtin_http3_session(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1015,13 +1253,14 @@ pub(crate) fn builtin_http3_session(
         // The driver must be polled concurrently with request streams to process incoming
         // QUIC frames (SETTINGS, GOAWAY, server push, etc.).
         let (mut driver, send_request) =
-            crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
-                Diagnostic::error(
+            match crate::async_rt::block_on(h3::client::builder().build(h3_conn)) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("http3-session: HTTP/3 handshake failed: {}", e),
                     call_span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            };
 
         // Spawn the driver as a local task so it is polled on every subsequent
         // `async_rt::block_on` call (cooperative multitasking on the current-thread runtime).
@@ -1053,7 +1292,7 @@ pub(crate) fn builtin_http3_session(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1070,8 +1309,9 @@ pub(crate) fn builtin_http3_session(
 /// - Other: type error (hard error)
 pub(crate) fn builtin_http_request(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1080,30 +1320,98 @@ pub(crate) fn builtin_http_request(
             ..
         } = ctx_arg;
 
-        reject_named("http-request", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("http-request", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 5 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "http-request: expected 5 arguments (session method path headers body), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // All args pre-materialized by force_count
-        let session_val = Arc::clone(&args[0]).require_value()?.clone();
-        let method_val = Arc::clone(&args[1]).require_value()?.clone();
-        let path_val = Arc::clone(&args[2]).require_value()?.clone();
-        let headers_val = Arc::clone(&args[3]).require_value()?.clone();
-        let body_val = Arc::clone(&args[4]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let session_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk1 = Arc::clone(&args[1]);
+        let method_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk2 = Arc::clone(&args[2]);
+        let path_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk3 = Arc::clone(&args[3]);
+        let headers_val = {
+            let (result, diags) = thunk3.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk4 = Arc::clone(&args[4]);
+        let body_val = {
+            let (result, diags) = thunk4.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let method_str = require_string("http-request", method_val, call_span.clone(), &ctx)?;
-        let path_str = require_string("http-request", path_val, call_span.clone(), &ctx)?;
-        let body_str = require_string("http-request", body_val, call_span.clone(), &ctx)?;
+        let method_str = {
+            let (result, diags) = require_string("http-request", method_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let path_str = {
+            let (result, diags) = require_string("http-request", path_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let body_str = {
+            let (result, diags) = require_string("http-request", body_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Collect request headers from the Dict argument.
         // Each value is an Arc<Thunk> — materialize to extract the string.
@@ -1114,20 +1422,33 @@ pub(crate) fn builtin_http_request(
                 let mut out = Vec::with_capacity(map.len());
                 for (key, thunk) in map.iter() {
                     let key_str = key.to_string();
-                    let val_materialized =
-                        crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
-                    let val_str = require_string(
-                        "http-request header value",
-                        val_materialized,
-                        call_span.clone(),
-                        &ctx,
-                    )?;
+                    let val_materialized = {
+                        let (result, diags) = crate::eval::materialize(thunk, Some(&call_span), &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
+                    let val_str = {
+                        let (result, diags) = require_string(
+                            "http-request header value",
+                            val_materialized,
+                            call_span.clone(),
+                            &ctx,
+                        ).into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
                     out.push((key_str, val_str));
                 }
                 out
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1136,8 +1457,8 @@ pub(crate) fn builtin_http_request(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1145,19 +1466,26 @@ pub(crate) fn builtin_http_request(
             Value::Http3Session {
                 session: session_rc,
                 ..
-            } => http_request_h3(
-                session_rc,
-                method_str,
-                path_str,
-                req_headers,
-                body_str,
-                call_span,
-                &ctx,
-            ),
+            } => {
+                let (result, diags) = http_request_h3(
+                    session_rc,
+                    method_str,
+                    path_str,
+                    req_headers,
+                    body_str,
+                    call_span,
+                    &ctx,
+                ).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            }
             Value::Http2Session {
                 client, base_url, ..
             } => {
-                http_request_h2(&Http2RequestConfig {
+                let (result, diags) = http_request_h2(&Http2RequestConfig {
                     client: &client,
                     base_url: &base_url,
                     method_str: &method_str,
@@ -1167,8 +1495,14 @@ pub(crate) fn builtin_http_request(
                     span: call_span,
                 })
                 .await
+                .into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1177,8 +1511,8 @@ pub(crate) fn builtin_http_request(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1205,7 +1539,8 @@ struct Http2RequestConfig<'a> {
 /// from any async context without panic.
 async fn http_request_h2(
     config: &Http2RequestConfig<'_>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let client = config.client;
     let base_url = config.base_url;
     let method_str = config.method_str;
@@ -1232,12 +1567,12 @@ async fn http_request_h2(
     let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: invalid HTTP method '{}': {}", method_str, e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1252,12 +1587,12 @@ async fn http_request_h2(
     let response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: request failed: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1271,19 +1606,26 @@ async fn http_request_h2(
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
         };
-        headers_map.insert(k, ok_val(string_val(&v), span.clone())?);
+        headers_map.insert(k, {
+            let (result, diags) = ok_val(string_val(&v), span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        });
     }
 
     // Collect body as a String (UTF-8, lossy).
     let body_bytes = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: failed to read response body: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
     let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
@@ -1292,32 +1634,53 @@ async fn http_request_h2(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ok_val(
-            Value::Int {
-                n: status,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                )),
-            },
-            span.clone(),
-        )?,
+        {
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: status,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ok_val(
-            Value::Dict {
-                entries: headers_map,
-                type_decl_id: TYPE_ID_DICT,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_DICT,
-                )),
-            },
-            span.clone(),
-        )?,
+        {
+            let (result, diags) = ok_val(
+                Value::Dict {
+                    entries: headers_map,
+                    type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
+                },
+                span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ok_val(string_val(&body_string), span.clone())?,
+        {
+            let (result, diags) = ok_val(string_val(&body_string), span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -1331,7 +1694,7 @@ async fn http_request_h2(
             )),
         },
         span,
-    )
+    ).with_diagnostics(_dr_diags)
 }
 
 /// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.
@@ -1346,7 +1709,8 @@ fn http_request_h3(
     body_str: String,
     span: crate::ast::Span,
     _ctx: &crate::eval::EvalContext,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     use bytes::Bytes;
 
     // Build the http::Request — body is sent separately as DATA frames.
@@ -1359,12 +1723,12 @@ fn http_request_h3(
     let request = match builder.body(()) {
         Ok(r) => r,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: invalid request: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1380,12 +1744,12 @@ fn http_request_h3(
     ) {
         Ok(s) => s,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: send_request failed: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1394,32 +1758,32 @@ fn http_request_h3(
         if let Err(e) =
             crate::async_rt::block_on(stream.send_data(Bytes::from(body_str.into_bytes())))
         {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: send_data failed: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     }
 
     // Signal end of request stream (no trailers).
     if let Err(e) = crate::async_rt::block_on(stream.finish()) {
-        return Err(
-            Diagnostic::error(KIND, format!("http-request: finish failed: {}", e), span).into(),
-        );
+        return crate::error::DiagnosticResult::err(
+            Diagnostic::error(KIND, format!("http-request: finish failed: {}", e), span),
+        ).with_diagnostics(_dr_diags);
     }
 
     // Receive response headers.
     let response = match crate::async_rt::block_on(stream.recv_response()) {
         Ok(r) => r,
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("http-request: recv_response failed: {}", e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1436,7 +1800,14 @@ fn http_request_h3(
                 String::from_utf8_lossy(value.as_bytes()).into_owned()
             }
         };
-        headers_map.insert(k, ok_val(string_val(&v), span.clone())?);
+        headers_map.insert(k, {
+            let (result, diags) = ok_val(string_val(&v), span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        });
     }
 
     // Collect response body DATA frames.
@@ -1455,12 +1826,12 @@ fn http_request_h3(
             }
             Ok(None) => break,
             Err(e) => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("http-request: recv_data failed: {}", e),
                     span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
     }
@@ -1471,32 +1842,53 @@ fn http_request_h3(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
-        ok_val(
-            Value::Int {
-                n: status,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                )),
-            },
-            span.clone(),
-        )?,
+        {
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: status,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
     inner.insert(
         crate::value::HashableValue::Str("headers".into()),
-        ok_val(
-            Value::Dict {
-                entries: headers_map,
-                type_decl_id: TYPE_ID_DICT,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_DICT,
-                )),
-            },
-            span.clone(),
-        )?,
+        {
+            let (result, diags) = ok_val(
+                Value::Dict {
+                    entries: headers_map,
+                    type_decl_id: TYPE_ID_DICT,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_DICT,
+                    )),
+                },
+                span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
     inner.insert(
         crate::value::HashableValue::Str("body".into()),
-        ok_val(string_val(&body_string), span.clone())?,
+        {
+            let (result, diags) = ok_val(string_val(&body_string), span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
 
     // Return {status: Int, headers: Dict, body: String} directly.
@@ -1510,7 +1902,7 @@ fn http_request_h3(
             )),
         },
         span,
-    )
+    ).with_diagnostics(_dr_diags)
 }
 
 /// `icmp-ping`: Send an ICMP echo request to a host.
@@ -1520,8 +1912,9 @@ fn http_request_h3(
 /// Users who want Result-based error handling wrap the call in `[try [fn [] [icmp-ping ...]]]`.
 pub(crate) fn builtin_icmp_ping(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1530,29 +1923,60 @@ pub(crate) fn builtin_icmp_ping(
             ..
         } = ctx_arg;
 
-        reject_named("icmp-ping", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("icmp-ping", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "icmp-ping: expected 3 arguments (cap host timeout-ms), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let cap_val = Arc::clone(&args[0]).require_value()?.clone();
-        let host_val = Arc::clone(&args[1]).require_value()?.clone();
-        let timeout_val = Arc::clone(&args[2]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let cap_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk1 = Arc::clone(&args[1]);
+        let host_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk2 = Arc::clone(&args[2]);
+        let timeout_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract NetCap entries
         let entries = match cap_val {
             Value::NetCap { entries: e, .. } => e,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1561,25 +1985,32 @@ pub(crate) fn builtin_icmp_ping(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let host = require_string("icmp-ping", host_val, call_span.clone(), &ctx)?;
+        let host = {
+            let (result, diags) = require_string("icmp-ping", host_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let timeout_ms = match timeout_val {
             Value::Int { n, .. } if n >= 0 => n,
             Value::Int { .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1588,17 +2019,29 @@ pub(crate) fn builtin_icmp_ping(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Validate host against NetCap allowlist (ICMP has no port, pass None)
         // This fires before any socket operations.
-        check_net_cap_allowlist(&entries, &host, None, call_span.clone())?;
+        {
+            let (result, diags) = check_net_cap_allowlist(&entries, &host, None, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(_) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         // Perform platform-specific ping and return result dict
-        icmp_ping_impl(&host, timeout_ms, call_span, &ctx)
+        let (result, diags) = icmp_ping_impl(&host, timeout_ms, call_span, &ctx).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     })
 }
 
@@ -1608,7 +2051,8 @@ fn icmp_ping_impl(
     timeout_ms: i64,
     span: Span,
     _ctx: &crate::eval::EvalContext,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     use std::net::ToSocketAddrs;
 
     // Resolve hostname to IPv4 address
@@ -1618,22 +2062,22 @@ fn icmp_ping_impl(
             match iter.find(|a| a.is_ipv4()) {
                 Some(a) => a,
                 None => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("icmp-ping: no IPv4 address found for '{}'", host),
                         span,
-                    )
-                    .into());
+                    ))
+                    .with_diagnostics(_dr_diags);
                 }
             }
         }
         Err(e) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("icmp-ping: failed to resolve '{}': {}", host, e),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
 
@@ -1641,7 +2085,7 @@ fn icmp_ping_impl(
     let sock_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
     if sock_fd < 0 {
         let os_err = std::io::Error::last_os_error();
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "icmp-ping: failed to create ICMP socket ({}): \
@@ -1649,8 +2093,8 @@ fn icmp_ping_impl(
                 os_err
             ),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // RAII guard to close the socket on any exit path
@@ -1670,15 +2114,15 @@ fn icmp_ping_impl(
 
     // Bounds check for platforms where time_t is 32-bit (prevents silent truncation)
     if !(libc::time_t::MIN..=libc::time_t::MAX).contains(&timeout_secs) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "icmp-ping: timeout-ms too large for platform (max {} seconds)",
                 libc::time_t::MAX
             ),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     let tv = libc::timeval {
@@ -1696,12 +2140,12 @@ fn icmp_ping_impl(
     };
     if ret < 0 {
         let os_err = std::io::Error::last_os_error();
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("icmp-ping: setsockopt SO_RCVTIMEO failed ({})", os_err),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Build ICMP Echo Request packet
@@ -1729,12 +2173,12 @@ fn icmp_ping_impl(
     let ip_octets = match addr.ip() {
         std::net::IpAddr::V4(v4) => v4.octets(),
         std::net::IpAddr::V6(_) => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "icmp-ping: IPv6 is not yet supported".to_string(),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
     };
     let dest = libc::sockaddr_in {
@@ -1755,12 +2199,12 @@ fn icmp_ping_impl(
 
     // Send ICMP Echo Request
     if packet.len() > u32::MAX as usize {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "icmp-ping: packet too large for platform".to_string(),
             span.clone(),
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
     let sent = unsafe {
         libc::sendto(
@@ -1774,12 +2218,12 @@ fn icmp_ping_impl(
     };
     if sent < 0 {
         let os_err = std::io::Error::last_os_error();
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("icmp-ping: sendto failed ({})", os_err),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Receive ICMP Echo Reply
@@ -1802,39 +2246,39 @@ fn icmp_ping_impl(
         // EAGAIN / EWOULDBLOCK = timeout
         let raw_errno = os_err.raw_os_error().unwrap_or(0);
         if raw_errno == libc::EAGAIN || raw_errno == libc::EWOULDBLOCK {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("icmp-ping: timeout after {}ms", timeout_ms),
                 span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("icmp-ping: recv failed ({})", os_err),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Validate reply: must be at least 8 bytes, type=0 (Echo Reply)
     let recvd = recvd as usize;
     if recvd < 8 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "icmp-ping: received truncated ICMP reply".to_string(),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
     if recv_buf[0] != 0 {
         // Not an Echo Reply (type 0); could be a Destination Unreachable etc.
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("icmp-ping: unexpected ICMP reply type {}", recv_buf[0]),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
     // Return {latency-ms: Int} directly.
@@ -1843,15 +2287,22 @@ fn icmp_ping_impl(
     let mut result = IndexMap::new();
     result.insert(
         HashableValue::Str("latency-ms".into()),
-        ok_val(
-            Value::Int {
-                n: latency_ms,
-                type_val: Some(crate::type_infer::make_typevalue_nominal(
-                    crate::value::TYPE_ID_INT,
-                )),
-            },
-            span.clone(),
-        )?,
+        {
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: latency_ms,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        },
     );
     ok_val(
         Value::Dict {
@@ -1862,7 +2313,7 @@ fn icmp_ping_impl(
             )),
         },
         span,
-    )
+    ).with_diagnostics(_dr_diags)
 }
 
 /// Compute ICMP checksum per RFC 792: one's complement sum of 16-bit words.
@@ -1892,13 +2343,12 @@ fn icmp_ping_impl(
     _timeout_ms: i64,
     span: Span,
     _ctx: &crate::eval::EvalContext,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-    Err(Diagnostic::error(
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    crate::error::DiagnosticResult::err(Diagnostic::error(
         KIND,
         "icmp-ping: ICMP ping is not supported on this platform".to_string(),
         span,
-    )
-    .into())
+    ))
 }
 
 /// `send-datagram`: Send a message over a DatagramHandle.
@@ -1906,8 +2356,9 @@ fn icmp_ping_impl(
 /// `data` must be a String or Bytes.
 pub(crate) fn builtin_send_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1917,7 +2368,7 @@ pub(crate) fn builtin_send_datagram(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1925,13 +2376,36 @@ pub(crate) fn builtin_send_datagram(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("send-datagram", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("send-datagram", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
-        let data_val = Arc::clone(&args[0]).require_value()?.clone();
-        let handle_val = Arc::clone(&args[1]).require_value()?.clone();
+        let thunk0 = Arc::clone(&args[0]);
+        let data_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let thunk1 = Arc::clone(&args[1]);
+        let handle_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract bytes to send (String or Bytes) — common to all handle variants.
         let data_bytes: Vec<u8> = match data_val {
@@ -1942,7 +2416,7 @@ pub(crate) fn builtin_send_datagram(
                 source, start, end, ..
             } => source[start..end].to_vec(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1951,8 +2425,8 @@ pub(crate) fn builtin_send_datagram(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1964,13 +2438,14 @@ pub(crate) fn builtin_send_datagram(
             // datagram support in its transport parameters.
             Value::QuicDatagramHandle { conn, .. } => {
                 let payload = bytes::Bytes::from(data_bytes);
-                crate::async_rt::block_on(conn.send_datagram_wait(payload)).map_err(|e| {
-                    Diagnostic::error(
+                match crate::async_rt::block_on(conn.send_datagram_wait(payload)) {
+                    Ok(()) => {}
+                    Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("send-datagram: QUIC datagram send failed: {}", e),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                }
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
@@ -1980,10 +2455,10 @@ pub(crate) fn builtin_send_datagram(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
 
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1992,8 +2467,8 @@ pub(crate) fn builtin_send_datagram(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2005,8 +2480,9 @@ pub(crate) fn builtin_send_datagram(
 /// a datagram arrives.
 pub(crate) fn builtin_recv_datagram(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2015,18 +2491,26 @@ pub(crate) fn builtin_recv_datagram(
             ..
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg(
-            "recv-datagram",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "recv-datagram",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         use crate::value::HashableValue;
 
         // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
-        let make_data_dict = |buf: Vec<u8>| -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+        let make_data_dict = |buf: Vec<u8>| -> crate::error::DiagnosticResult<Arc<Thunk>> {
+            let mut _cl_diags: Vec<crate::error::Diagnostic> = Vec::new();
             let data_len = buf.len();
             let data_bytes = Value::Bytes {
                 source: Arc::from(buf.as_slice()),
@@ -2039,7 +2523,14 @@ pub(crate) fn builtin_recv_datagram(
             let mut dict = IndexMap::new();
             dict.insert(
                 HashableValue::Str("data".into()),
-                ok_val(data_bytes, call_span.clone())?,
+                {
+                    let (result, diags) = ok_val(data_bytes, call_span.clone()).into_parts();
+                    _cl_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_cl_diags),
+                    }
+                },
             );
             ok_val(
                 Value::Dict {
@@ -2050,7 +2541,7 @@ pub(crate) fn builtin_recv_datagram(
                     )),
                 },
                 call_span.clone(),
-            )
+            ).with_diagnostics(_cl_diags)
         };
 
         match val {
@@ -2058,17 +2549,23 @@ pub(crate) fn builtin_recv_datagram(
             // `conn.read_datagram()` returns the next datagram payload as a `bytes::Bytes`.
             // Blocks until a datagram arrives or the connection closes.
             Value::QuicDatagramHandle { conn, .. } => {
-                let payload = crate::async_rt::block_on(conn.read_datagram()).map_err(|e| {
-                    Diagnostic::error(
+                let payload = match crate::async_rt::block_on(conn.read_datagram()) {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("recv-datagram: QUIC datagram recv failed: {}", e),
                         call_span.clone(),
-                    )
-                })?;
-                make_data_dict(payload.to_vec())
+                    )).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = make_data_dict(payload.to_vec()).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
             }
 
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2077,8 +2574,8 @@ pub(crate) fn builtin_recv_datagram(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2092,8 +2589,9 @@ pub(crate) fn builtin_recv_datagram(
 /// username/password extracted by splitting userinfo on ":" (RFC 3986 convention).
 pub(crate) fn builtin_uri(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2102,7 +2600,14 @@ pub(crate) fn builtin_uri(
             ..
         } = ctx_arg;
 
-        let val = expect_one_arg("uri", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let val = {
+            let (result, diags) = expect_one_arg("uri", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let s = match val {
             Value::String {
                 ref source,
@@ -2111,7 +2616,7 @@ pub(crate) fn builtin_uri(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2119,8 +2624,8 @@ pub(crate) fn builtin_uri(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2131,7 +2636,7 @@ pub(crate) fn builtin_uri(
             // scheme (lowercase)
             dict.insert(
                 HashableValue::Str("scheme".into()),
-                ok_val(string_val(parsed.scheme()), call_span.clone())?,
+                { let (r, d) = ok_val(string_val(parsed.scheme()), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // username (split from userinfo)
@@ -2148,7 +2653,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("username".into()),
-                ok_val(username, call_span.clone())?,
+                { let (r, d) = ok_val(username, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // password (split from userinfo)
@@ -2164,7 +2669,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("password".into()),
-                ok_val(password, call_span.clone())?,
+                { let (r, d) = ok_val(password, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // host (null for non-hierarchical; strip IPv6 brackets)
@@ -2180,7 +2685,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("host".into()),
-                ok_val(host, call_span.clone())?,
+                { let (r, d) = ok_val(host, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // port (null if not specified)
@@ -2201,13 +2706,13 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("port".into()),
-                ok_val(port, call_span.clone())?,
+                { let (r, d) = ok_val(port, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // path (always present per RFC 3986)
             dict.insert(
                 HashableValue::Str("path".into()),
-                ok_val(string_val(parsed.path()), call_span.clone())?,
+                { let (r, d) = ok_val(string_val(parsed.path()), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // query (null if absent)
@@ -2223,7 +2728,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("query".into()),
-                ok_val(query, call_span.clone())?,
+                { let (r, d) = ok_val(query, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             // fragment (null if absent)
@@ -2239,7 +2744,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 HashableValue::Str("fragment".into()),
-                ok_val(fragment, call_span.clone())?,
+                { let (r, d) = ok_val(fragment, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
 
             return ok_val(
@@ -2251,7 +2756,7 @@ pub(crate) fn builtin_uri(
                     )),
                 },
                 call_span,
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         // Fallback: manual parsing for non-hierarchical URIs (mailto:, tel:, urn:, news:)
@@ -2259,12 +2764,12 @@ pub(crate) fn builtin_uri(
         let (scheme, rest) = match s.split_once(':') {
             Some((scheme, rest)) => (scheme, rest),
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("URI parse error: {}", format!("missing scheme: {}", s)),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2272,14 +2777,14 @@ pub(crate) fn builtin_uri(
 
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ok_val(string_val(&scheme.to_lowercase()), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(&scheme.to_lowercase()), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ok_val(
+                { let (r, d) = ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
@@ -2288,7 +2793,7 @@ pub(crate) fn builtin_uri(
                         )),
                     },
                     call_span.clone(),
-                )?,
+                ).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
         }
 
@@ -2297,14 +2802,14 @@ pub(crate) fn builtin_uri(
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
             HashableValue::Str("path".into()),
-            ok_val(string_val(rest), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(rest), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
                 HashableValue::Str(key.into()),
-                ok_val(
+                { let (r, d) = ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
@@ -2313,7 +2818,7 @@ pub(crate) fn builtin_uri(
                         )),
                     },
                     call_span.clone(),
-                )?,
+                ).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
             );
         }
 
@@ -2326,7 +2831,7 @@ pub(crate) fn builtin_uri(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2335,8 +2840,9 @@ pub(crate) fn builtin_uri(
 /// Errors if no authority (no host). Port defaults to scheme default if not specified.
 pub(crate) fn builtin_url(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2345,7 +2851,11 @@ pub(crate) fn builtin_url(
             ..
         } = ctx_arg;
 
-        let val = expect_one_arg("url", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let val = {
+            let (r, d) = expect_one_arg("url", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(d);
+            match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) }
+        };
         let s = match val {
             Value::String {
                 ref source,
@@ -2354,7 +2864,7 @@ pub(crate) fn builtin_url(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2362,30 +2872,31 @@ pub(crate) fn builtin_url(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
-        let parsed = url::Url::parse(s).map_err(|e| {
-            Diagnostic::error(
+        let parsed = match url::Url::parse(s) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("URI parse error: {}", format!("invalid URL: {}", e)),
                 call_span.clone(),
-            )
-        })?;
+            )).with_diagnostics(_dr_diags),
+        };
 
         // Reject non-hierarchical URIs (no authority)
         if parsed.host_str().is_none() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "URI parse error: {}",
                     format!("URL requires host (got non-hierarchical URI): {}", s)
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let mut dict = IndexMap::new();
@@ -2393,7 +2904,7 @@ pub(crate) fn builtin_url(
         // scheme (lowercase)
         dict.insert(
             HashableValue::Str("scheme".into()),
-            ok_val(string_val(parsed.scheme()), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(parsed.scheme()), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // username (split from userinfo)
@@ -2410,7 +2921,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("username".into()),
-            ok_val(username, call_span.clone())?,
+            { let (r, d) = ok_val(username, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // password (split from userinfo)
@@ -2426,13 +2937,13 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("password".into()),
-            ok_val(password, call_span.clone())?,
+            { let (r, d) = ok_val(password, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
             HashableValue::Str("host".into()),
-            ok_val(string_val(parsed.host_str().unwrap()), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(parsed.host_str().unwrap()), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // port (default to scheme default if not specified)
@@ -2443,7 +2954,7 @@ pub(crate) fn builtin_url(
         });
         dict.insert(
             HashableValue::Str("port".into()),
-            ok_val(
+            { let (r, d) = ok_val(
                 Value::Int {
                     n: i64::from(port),
                     type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -2451,7 +2962,7 @@ pub(crate) fn builtin_url(
                     )),
                 },
                 call_span.clone(),
-            )?,
+            ).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // path (always present per RFC 3986; default to "/" if empty)
@@ -2462,7 +2973,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("path".into()),
-            ok_val(string_val(path), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(path), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // query (null if absent)
@@ -2478,7 +2989,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("query".into()),
-            ok_val(query, call_span.clone())?,
+            { let (r, d) = ok_val(query, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // fragment (null if absent)
@@ -2494,7 +3005,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ok_val(fragment, call_span.clone())?,
+            { let (r, d) = ok_val(fragment, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         ok_val(
@@ -2506,7 +3017,7 @@ pub(crate) fn builtin_url(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2516,8 +3027,9 @@ pub(crate) fn builtin_url(
 /// Errors if scheme is not "urn".
 pub(crate) fn builtin_urn(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2526,7 +3038,11 @@ pub(crate) fn builtin_urn(
             ..
         } = ctx_arg;
 
-        let val = expect_one_arg("urn", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let val = {
+            let (r, d) = expect_one_arg("urn", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(d);
+            match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) }
+        };
         let s = match val {
             Value::String {
                 ref source,
@@ -2535,7 +3051,7 @@ pub(crate) fn builtin_urn(
                 ..
             } => &source[start..end],
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2543,8 +3059,8 @@ pub(crate) fn builtin_urn(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2552,25 +3068,25 @@ pub(crate) fn builtin_urn(
         let (scheme, rest) = match s.split_once(':') {
             Some((scheme, rest)) => (scheme, rest),
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("URI parse error: {}", format!("missing scheme: {}", s)),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         if scheme.to_lowercase() != "urn" {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "URI parse error: {}",
                     format!("expected URN scheme 'urn', got '{}'", scheme)
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Split off fragment first (#)
@@ -2595,15 +3111,15 @@ pub(crate) fn builtin_urn(
         let (nid, nss) = match nss_part.split_once(':') {
             Some((nid, nss)) => (nid, nss),
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "URI parse error: {}",
                         format!("URN missing NID:NSS separator: {}", s)
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2611,11 +3127,11 @@ pub(crate) fn builtin_urn(
 
         dict.insert(
             HashableValue::Str("nid".into()),
-            ok_val(string_val(nid), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(nid), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
         dict.insert(
             HashableValue::Str("nss".into()),
-            ok_val(string_val(nss), call_span.clone())?,
+            { let (r, d) = ok_val(string_val(nss), call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // r-component (null if absent)
@@ -2631,7 +3147,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("r-component".into()),
-            ok_val(r_val, call_span.clone())?,
+            { let (r, d) = ok_val(r_val, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // q-component (null if absent)
@@ -2647,7 +3163,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("q-component".into()),
-            ok_val(q_val, call_span.clone())?,
+            { let (r, d) = ok_val(q_val, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         // fragment (null if absent)
@@ -2663,7 +3179,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             HashableValue::Str("fragment".into()),
-            ok_val(frag_val, call_span.clone())?,
+            { let (r, d) = ok_val(frag_val, call_span.clone()).into_parts(); _dr_diags.extend(d); match r { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } },
         );
 
         ok_val(
@@ -2675,7 +3191,7 @@ pub(crate) fn builtin_urn(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 

@@ -69,6 +69,7 @@ pub const ANNOTATION_KEY_CONSTRUCTOR: &str = "_constructor";
 /// Used by the TypeNode traversal protocol to declare whether a field holds a single child
 /// ("One") or map-shaped children ("MapValues"). Declared by the type author; never inferred
 /// from the type expression's head name.
+pub const ANNOTATION_KEY_CHILD: &str = "Child";
 pub const ANNOTATION_KEY_CHILD_ROLE: &str = "role";
 pub const ANNOTATION_KEY_TRACE: &str = "trace";
 
@@ -1032,38 +1033,13 @@ pub enum SurfaceDeclaration {
     Splice(Vec<Arc<SurfaceNode>>),
 }
 
-/// An item in a SurfaceDocument — either an expression or a compile-time declaration.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SurfaceItem {
-    Expr(Arc<SurfaceNode>),
-    Decl(Spanned<SurfaceDeclaration>),
-}
-
-impl SurfaceItem {
-    /// Get the span of this item.
-    pub fn span(&self) -> Span {
-        match self {
-            SurfaceItem::Expr(node) => node.span.clone(),
-            SurfaceItem::Decl(decl) => decl.span.clone(),
-        }
-    }
-}
-
-/// A document in a SurfaceProgram — one or more items forming a scope chain.
+/// A document in a SurfaceProgram — a lambda whose parameters are ambient
+/// (capabilities, builtins, prior document scopes passed via the scope chain)
+/// and whose body is a Sequential of expressions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDocument {
     pub header: indexmap::IndexMap<String, Arc<SurfaceNode>>,
-    pub items: Vec<SurfaceItem>,
-}
-
-impl SurfaceDocument {
-    /// Iterate only the expression items (skipping declarations).
-    pub fn expressions(&self) -> impl Iterator<Item = &Arc<SurfaceNode>> {
-        self.items.iter().filter_map(|item| match item {
-            SurfaceItem::Expr(node) => Some(node),
-            SurfaceItem::Decl(_) => None,
-        })
-    }
+    pub body: Arc<SurfaceNode>,
 }
 
 /// A complete tinct program — one or more documents separated by ---.

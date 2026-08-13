@@ -42,25 +42,24 @@ const MAX_SAFE_INT: i64 = 9007199254740992;
 fn check_int_to_float_precision(
     n: i64,
     span: crate::ast::Span,
-) -> Result<(), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<()> {
     if n.abs() > MAX_SAFE_INT {
-        return Err(Diagnostic::error(KIND, 
+        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
             format!(
                 "implicit Int→Float promotion loses precision for {}; use [float {}] for intentional cast",
                 n, n
             ),
             span,
-        )
-        .into());
+        ));
     }
-    Ok(())
+    crate::error::DiagnosticResult::ok(())
 }
 
 /// `builtin-div`: Pure Int/Float division primitive. No typeclass dispatch.
 /// Always returns Float (even Int / Int). Division by zero is an error.
 pub(crate) fn builtin_div_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -69,9 +68,15 @@ pub(crate) fn builtin_div_float(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("/", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("/", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() < 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -79,39 +84,57 @@ pub(crate) fn builtin_div_float(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let thunk0 = args[0].clone();
         let thunk1 = args[1].clone();
-        let left = thunk0.require_value()?.clone();
-        let right = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let left = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let right = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => {
                 if *b == 0 {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("{}: division by zero", "/"),
                         call_span.clone(),
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
-                check_float_result(*a as f64 / *b as f64, "/", call_span)
+                check_float_result(*a as f64 / *b as f64, "/", call_span).with_diagnostics(_dr_diags)
             }
             (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => {
-                check_float_result(a / b, "/", call_span)
+                check_float_result(a / b, "/", call_span).with_diagnostics(_dr_diags)
             }
             (Value::Int { n: a, .. }, Value::Float { n: b, .. }) => {
-                check_int_to_float_precision(*a, thunk0.span.clone())?;
-                check_float_result((*a as f64) / b, "/", call_span)
+                let (result, diags) = check_int_to_float_precision(*a, thunk0.span.clone()).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(()) => {}
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+                check_float_result((*a as f64) / b, "/", call_span).with_diagnostics(_dr_diags)
             }
             (Value::Float { n: a, .. }, Value::Int { n: b, .. }) => {
-                check_int_to_float_precision(*b, thunk1.span.clone())?;
-                check_float_result(a / (*b as f64), "/", call_span)
+                let (result, diags) = check_int_to_float_precision(*b, thunk1.span.clone()).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(()) => {}
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+                check_float_result(a / (*b as f64), "/", call_span).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Int or Float, got {} and {}",
@@ -119,8 +142,7 @@ pub(crate) fn builtin_div_float(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -131,7 +153,7 @@ pub(crate) fn builtin_div_float(
 /// No cross-type comparison — both args must be Int.
 pub(crate) fn builtin_eq_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -140,9 +162,15 @@ pub(crate) fn builtin_eq_int(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-eq-int", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-eq-int", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -150,11 +178,20 @@ pub(crate) fn builtin_eq_int(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let left = args[0].require_value()?.clone();
-        let right = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let left = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let right = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
                 Value::Int {
@@ -164,8 +201,8 @@ pub(crate) fn builtin_eq_int(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Int, got {} and {}",
@@ -173,8 +210,7 @@ pub(crate) fn builtin_eq_int(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -185,7 +221,7 @@ pub(crate) fn builtin_eq_int(
 /// No cross-type comparison — both args must be Float.
 pub(crate) fn builtin_eq_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -194,9 +230,15 @@ pub(crate) fn builtin_eq_float(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-eq-float", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-eq-float", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -204,11 +246,20 @@ pub(crate) fn builtin_eq_float(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let left = args[0].require_value()?.clone();
-        let right = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let left = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let right = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&left, &right) {
             (Value::Float { n: a, .. }, Value::Float { n: b, .. }) => ok_val(
                 Value::Int {
@@ -218,8 +269,8 @@ pub(crate) fn builtin_eq_float(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -227,8 +278,7 @@ pub(crate) fn builtin_eq_float(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -239,7 +289,7 @@ pub(crate) fn builtin_eq_float(
 /// No cross-type comparison — both args must be String.
 pub(crate) fn builtin_eq_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -248,9 +298,15 @@ pub(crate) fn builtin_eq_string(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-eq-string", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-eq-string", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -258,11 +314,20 @@ pub(crate) fn builtin_eq_string(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let left = args[0].require_value()?.clone();
-        let right = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let left = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let right = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&left, &right) {
             (
                 Value::String {
@@ -287,9 +352,9 @@ pub(crate) fn builtin_eq_string(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected String, got {} and {}",
@@ -297,8 +362,7 @@ pub(crate) fn builtin_eq_string(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -313,7 +377,7 @@ pub(crate) fn builtin_eq_string(
 /// Cross-type comparisons belong in typeclass instances, not here.
 pub(crate) fn builtin_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -322,9 +386,15 @@ pub(crate) fn builtin_lt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-lt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-lt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -332,12 +402,21 @@ pub(crate) fn builtin_lt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
-        let left = args[0].require_value()?.clone();
-        let right = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let left = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let right = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match (&left, &right) {
             (Value::Int { n: a, .. }, Value::Int { n: b, .. }) => ok_val(
@@ -348,8 +427,8 @@ pub(crate) fn builtin_lt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -357,8 +436,7 @@ pub(crate) fn builtin_lt(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -366,7 +444,7 @@ pub(crate) fn builtin_lt(
 /// `builtin-float-lt`: Float less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_float_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -375,9 +453,15 @@ pub(crate) fn builtin_float_lt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-lt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-lt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -385,11 +469,20 @@ pub(crate) fn builtin_float_lt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -399,8 +492,8 @@ pub(crate) fn builtin_float_lt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -408,8 +501,7 @@ pub(crate) fn builtin_float_lt(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -417,7 +509,7 @@ pub(crate) fn builtin_float_lt(
 /// `builtin-str-lt`: String lexicographic less-than. Returns Int(1) if a < b, Int(0) otherwise.
 pub(crate) fn builtin_str_lt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -426,9 +518,15 @@ pub(crate) fn builtin_str_lt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-str-lt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-str-lt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -436,11 +534,20 @@ pub(crate) fn builtin_str_lt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (
                 Value::String {
@@ -463,8 +570,8 @@ pub(crate) fn builtin_str_lt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected String, got {} and {}",
@@ -472,8 +579,7 @@ pub(crate) fn builtin_str_lt(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -483,7 +589,7 @@ pub(crate) fn builtin_str_lt(
 /// Implemented as `!(b < a)` (negation of `>`).
 pub(crate) fn builtin_lte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -493,9 +599,15 @@ pub(crate) fn builtin_lte(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("<=", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("<=", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -503,23 +615,32 @@ pub(crate) fn builtin_lte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // a <= b ≡ !(b < a)
         let swapped_args = vec![args[1].clone(), args[0].clone()];
-        let gt_result = builtin_lt(BuiltinArgs {
+        let (result, diags) = builtin_lt(BuiltinArgs {
             args: swapped_args,
             named,
             call_span: call_span.clone(),
             scope,
             ctx,
         })
-        .await?;
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let gt_result = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Negate the result (builtin_lt always returns Value::Int(0/1))
-        let val = gt_result.require_value()?.clone();
+        let (result, diags) = gt_result.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: if matches!(val, Value::Int { n, .. } if n != 0) {
@@ -532,7 +653,7 @@ pub(crate) fn builtin_lte(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -543,9 +664,10 @@ fn extract_single_float(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> Result<f64, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<f64> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     if args.len() != 1 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -553,16 +675,25 @@ fn extract_single_float(
                 args.len()
             ),
             call_span,
-        )
-        .into());
+        ));
     }
-    reject_named(name, named, call_span)?;
+    let (result, diags) = reject_named(name, named, call_span.clone()).into_parts();
+    _dr_diags.extend(diags);
+    match result {
+        Ok(()) => {}
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
     let thunk0 = &args[0];
-    let val = thunk0.require_value()?.clone();
+    let (result, diags) = thunk0.require_value().into_parts();
+    _dr_diags.extend(diags);
+    let val = match result {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
     match val {
-        Value::Int { n, .. } => Ok(n as f64),
-        Value::Float { n: f, .. } => Ok(f),
-        _ => Err(Diagnostic::error(
+        Value::Int { n, .. } => crate::error::DiagnosticResult::ok(n as f64).with_diagnostics(_dr_diags),
+        Value::Float { n: f, .. } => crate::error::DiagnosticResult::ok(f).with_diagnostics(_dr_diags),
+        _ => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "{}: expected Int or Float, got {}",
@@ -570,8 +701,7 @@ fn extract_single_float(
                 ctx.type_display_name(val.type_decl_id_of())
             ),
             thunk0.span.clone(),
-        )
-        .into()),
+        )).with_diagnostics(_dr_diags),
     }
 }
 
@@ -582,9 +712,10 @@ fn extract_two_floats(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> Result<(f64, f64), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(f64, f64)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     if args.len() != 2 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -592,20 +723,34 @@ fn extract_two_floats(
                 args.len()
             ),
             call_span,
-        )
-        .into());
+        ));
     }
-    reject_named(name, named, call_span)?;
+    let (result, diags) = reject_named(name, named, call_span.clone()).into_parts();
+    _dr_diags.extend(diags);
+    match result {
+        Ok(()) => {}
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
     let thunk0 = &args[0];
     let thunk1 = &args[1];
-    let left = thunk0.require_value()?.clone();
-    let right = thunk1.require_value()?.clone();
+    let (result0, diags0) = thunk0.require_value().into_parts();
+    _dr_diags.extend(diags0);
+    let left = match result0 {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    let (result1, diags1) = thunk1.require_value().into_parts();
+    _dr_diags.extend(diags1);
+    let right = match result1 {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     let a = match left {
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected Int or Float, got {}",
@@ -613,8 +758,7 @@ fn extract_two_floats(
                     ctx.type_display_name(left.type_decl_id_of())
                 ),
                 thunk0.span.clone(),
-            )
-            .into())
+            )).with_diagnostics(_dr_diags)
         }
     };
 
@@ -622,7 +766,7 @@ fn extract_two_floats(
         Value::Int { n, .. } => n as f64,
         Value::Float { n: f, .. } => f,
         _ => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected Int or Float, got {}",
@@ -630,19 +774,18 @@ fn extract_two_floats(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 thunk1.span.clone(),
-            )
-            .into())
+            )).with_diagnostics(_dr_diags)
         }
     };
 
-    Ok((a, b))
+    crate::error::DiagnosticResult::ok((a, b)).with_diagnostics(_dr_diags)
 }
 
 /// `pow`: Power function. Takes 2 numeric args (base, exponent). Returns Float.
 /// Inherently materializing: must extract numeric values to compute power.
 pub(crate) fn builtin_pow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -651,9 +794,14 @@ pub(crate) fn builtin_pow(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (base, exp) =
-            extract_two_floats("pow", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(base.powf(exp), "pow", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_two_floats("pow", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (base, exp) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(base.powf(exp), "pow", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -662,7 +810,7 @@ pub(crate) fn builtin_pow(
 /// Inherently materializing: must extract numeric value to compute square root.
 pub(crate) fn builtin_sqrt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -671,7 +819,13 @@ pub(crate) fn builtin_sqrt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Float {
                 n: val.sqrt(),
@@ -680,7 +834,7 @@ pub(crate) fn builtin_sqrt(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -689,7 +843,7 @@ pub(crate) fn builtin_sqrt(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -698,7 +852,13 @@ pub(crate) fn builtin_log(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Float {
                 n: val.ln(),
@@ -707,7 +867,7 @@ pub(crate) fn builtin_log(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -715,7 +875,7 @@ pub(crate) fn builtin_log(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -724,8 +884,14 @@ pub(crate) fn builtin_log2(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log2", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.log2(), "log2", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("log2", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.log2(), "log2", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -733,7 +899,7 @@ pub(crate) fn builtin_log2(
 /// Inherently materializing: must extract numeric value to compute logarithm.
 pub(crate) fn builtin_log10(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -742,8 +908,14 @@ pub(crate) fn builtin_log10(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log10", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.log10(), "log10", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("log10", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.log10(), "log10", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -751,7 +923,7 @@ pub(crate) fn builtin_log10(
 /// Inherently materializing: must extract numeric value to compute exponential.
 pub(crate) fn builtin_exp(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -760,8 +932,14 @@ pub(crate) fn builtin_exp(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("exp", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.exp(), "exp", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("exp", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.exp(), "exp", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -769,7 +947,7 @@ pub(crate) fn builtin_exp(
 /// Inherently materializing: must extract numeric value to compute sine.
 pub(crate) fn builtin_sin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -778,8 +956,14 @@ pub(crate) fn builtin_sin(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("sin", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.sin(), "sin", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("sin", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.sin(), "sin", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -787,7 +971,7 @@ pub(crate) fn builtin_sin(
 /// Inherently materializing: must extract numeric value to compute cosine.
 pub(crate) fn builtin_cos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -796,8 +980,14 @@ pub(crate) fn builtin_cos(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("cos", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.cos(), "cos", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("cos", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.cos(), "cos", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -805,7 +995,7 @@ pub(crate) fn builtin_cos(
 /// Inherently materializing: must extract numeric value to compute tangent.
 pub(crate) fn builtin_tan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -814,8 +1004,14 @@ pub(crate) fn builtin_tan(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("tan", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.tan(), "tan", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("tan", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.tan(), "tan", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -823,7 +1019,7 @@ pub(crate) fn builtin_tan(
 /// Inherently materializing: must extract numeric value to compute arcsine.
 pub(crate) fn builtin_asin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -832,8 +1028,14 @@ pub(crate) fn builtin_asin(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("asin", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.asin(), "asin", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("asin", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.asin(), "asin", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -841,7 +1043,7 @@ pub(crate) fn builtin_asin(
 /// Inherently materializing: must extract numeric value to compute arccosine.
 pub(crate) fn builtin_acos(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -850,8 +1052,14 @@ pub(crate) fn builtin_acos(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("acos", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.acos(), "acos", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("acos", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.acos(), "acos", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -859,7 +1067,7 @@ pub(crate) fn builtin_acos(
 /// Inherently materializing: must extract numeric value to compute arctangent.
 pub(crate) fn builtin_atan(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -868,8 +1076,14 @@ pub(crate) fn builtin_atan(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("atan", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(val.atan(), "atan", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("atan", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(val.atan(), "atan", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -877,7 +1091,7 @@ pub(crate) fn builtin_atan(
 /// Inherently materializing: must extract numeric values to compute arctangent.
 pub(crate) fn builtin_atan2(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -886,8 +1100,14 @@ pub(crate) fn builtin_atan2(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (y, x) = extract_two_floats("atan2", &args, named.as_ref(), &ctx, call_span.clone())?;
-        check_float_result(y.atan2(x), "atan2", call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_two_floats("atan2", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (y, x) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        check_float_result(y.atan2(x), "atan2", call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -895,7 +1115,7 @@ pub(crate) fn builtin_atan2(
 /// Inherently materializing: must extract numeric value to check for NaN.
 pub(crate) fn builtin_nan_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -904,7 +1124,13 @@ pub(crate) fn builtin_nan_check(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: if val.is_nan() { 1 } else { 0 },
@@ -913,7 +1139,7 @@ pub(crate) fn builtin_nan_check(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -921,7 +1147,7 @@ pub(crate) fn builtin_nan_check(
 /// Inherently materializing: must extract numeric value to check for infinity.
 pub(crate) fn builtin_inf_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -930,7 +1156,13 @@ pub(crate) fn builtin_inf_check(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: if val.is_infinite() { 1 } else { 0 },
@@ -939,7 +1171,7 @@ pub(crate) fn builtin_inf_check(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -947,7 +1179,7 @@ pub(crate) fn builtin_inf_check(
 /// Inherently materializing: must extract numeric value to check for finiteness.
 pub(crate) fn builtin_finite_check(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -956,7 +1188,13 @@ pub(crate) fn builtin_finite_check(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: if val.is_finite() { 1 } else { 0 },
@@ -965,7 +1203,7 @@ pub(crate) fn builtin_finite_check(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -976,9 +1214,10 @@ fn extract_int_pair(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: crate::ast::Span,
-) -> Result<(i64, i64), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(i64, i64)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     if args.len() != 2 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -986,19 +1225,33 @@ fn extract_int_pair(
                 args.len()
             ),
             call_span,
-        )
-        .into());
+        ));
     }
-    reject_named(name, named, call_span)?;
+    let (result, diags) = reject_named(name, named, call_span.clone()).into_parts();
+    _dr_diags.extend(diags);
+    match result {
+        Ok(()) => {}
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
     let thunk0 = &args[0];
     let thunk1 = &args[1];
-    let left = thunk0.require_value()?.clone();
-    let right = thunk1.require_value()?.clone();
+    let (result0, diags0) = thunk0.require_value().into_parts();
+    _dr_diags.extend(diags0);
+    let left = match result0 {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    let (result1, diags1) = thunk1.require_value().into_parts();
+    _dr_diags.extend(diags1);
+    let right = match result1 {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     let a = match left {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected Int, got {}",
@@ -1006,15 +1259,14 @@ fn extract_int_pair(
                     ctx.type_display_name(left.type_decl_id_of())
                 ),
                 thunk0.span.clone(),
-            )
-            .into())
+            )).with_diagnostics(_dr_diags)
         }
     };
 
     let b = match right {
         Value::Int { n, .. } => n,
         _ => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected Int, got {}",
@@ -1022,19 +1274,18 @@ fn extract_int_pair(
                     ctx.type_display_name(right.type_decl_id_of())
                 ),
                 thunk1.span.clone(),
-            )
-            .into())
+            )).with_diagnostics(_dr_diags)
         }
     };
 
-    Ok((a, b))
+    crate::error::DiagnosticResult::ok((a, b)).with_diagnostics(_dr_diags)
 }
 
 /// `band`: Bitwise AND. Takes 2 Int args. Returns Int.
 /// Inherently materializing: must extract numeric values to compute bitwise AND.
 pub(crate) fn builtin_band(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1043,7 +1294,13 @@ pub(crate) fn builtin_band(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (a, b) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: a & b,
@@ -1052,7 +1309,7 @@ pub(crate) fn builtin_band(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1060,7 +1317,7 @@ pub(crate) fn builtin_band(
 /// Inherently materializing: must extract numeric values to compute bitwise OR.
 pub(crate) fn builtin_bor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1069,7 +1326,13 @@ pub(crate) fn builtin_bor(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (a, b) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: a | b,
@@ -1078,7 +1341,7 @@ pub(crate) fn builtin_bor(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1086,7 +1349,7 @@ pub(crate) fn builtin_bor(
 /// Inherently materializing: must extract numeric values to compute bitwise XOR.
 pub(crate) fn builtin_bxor(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1095,7 +1358,13 @@ pub(crate) fn builtin_bxor(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (a, b) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: a ^ b,
@@ -1104,7 +1373,7 @@ pub(crate) fn builtin_bxor(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1112,7 +1381,7 @@ pub(crate) fn builtin_bxor(
 /// Inherently materializing: must extract numeric values to compute left shift.
 pub(crate) fn builtin_shl(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1121,17 +1390,21 @@ pub(crate) fn builtin_shl(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (value, bits) =
-            extract_int_pair("shl", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_int_pair("shl", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (value, bits) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("shl: negative shift count {}", bits),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         if bits >= 64 {
@@ -1143,7 +1416,7 @@ pub(crate) fn builtin_shl(
                     )),
                 },
                 call_span,
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         ok_val(
@@ -1154,7 +1427,7 @@ pub(crate) fn builtin_shl(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1162,7 +1435,7 @@ pub(crate) fn builtin_shl(
 /// Inherently materializing: must extract numeric values to compute right shift.
 pub(crate) fn builtin_shr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1171,17 +1444,21 @@ pub(crate) fn builtin_shr(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (value, bits) =
-            extract_int_pair("shr", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = extract_int_pair("shr", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (value, bits) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("shr: negative shift count {}", bits),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         if bits >= 64 {
@@ -1193,7 +1470,7 @@ pub(crate) fn builtin_shr(
                     )),
                 },
                 call_span,
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         // Logical shift: cast to u64, shift, cast back to i64
@@ -1206,7 +1483,7 @@ pub(crate) fn builtin_shr(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1218,7 +1495,7 @@ pub(crate) fn builtin_shr(
 /// Inherently materializing: must inspect value to determine type and perform conversion.
 pub(crate) fn builtin_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1227,9 +1504,15 @@ pub(crate) fn builtin_float(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("float", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("float", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1237,11 +1520,15 @@ pub(crate) fn builtin_float(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let val = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match val {
             Value::Int { n, .. } => ok_val(
                 Value::Float {
@@ -1251,7 +1538,7 @@ pub(crate) fn builtin_float(
                     )),
                 },
                 call_span,
-            ),
+            ).with_diagnostics(_dr_diags),
             Value::Float { n: f, .. } => ok_val(
                 Value::Float {
                     n: f,
@@ -1260,8 +1547,8 @@ pub(crate) fn builtin_float(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected Int or Float, got {}",
@@ -1269,8 +1556,7 @@ pub(crate) fn builtin_float(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 thunk0.span.clone(),
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1281,7 +1567,7 @@ pub(crate) fn builtin_float(
 
 pub(crate) fn builtin_int_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1290,9 +1576,15 @@ pub(crate) fn builtin_int_add(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-add", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-add", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1300,15 +1592,23 @@ pub(crate) fn builtin_int_add(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
-            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
-                .checked_add(*y)
-                .map(|r| {
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => match x.checked_add(*y) {
+                Some(r) => crate::error::DiagnosticResult::ok(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
@@ -1318,16 +1618,12 @@ pub(crate) fn builtin_int_add(
                         },
                         call_span.clone(),
                     ))
-                })
-                .ok_or_else(|| {
-                    Diagnostic::error(
-                        KIND,
-                        format!("{}: integer overflow", "builtin-int-add"),
-                        call_span,
-                    )
-                    .into()
-                }),
-            _ => Err(Diagnostic::error(
+                ).with_diagnostics(_dr_diags),
+                None => crate::error::DiagnosticResult::err(
+                    Diagnostic::error(KIND, format!("{}: integer overflow", "builtin-int-add"), call_span)
+                ).with_diagnostics(_dr_diags),
+            },
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -1335,15 +1631,14 @@ pub(crate) fn builtin_int_add(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_add(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1352,9 +1647,15 @@ pub(crate) fn builtin_float_add(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-add", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-add", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1362,16 +1663,25 @@ pub(crate) fn builtin_float_add(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
-                check_float_result(x + y, "builtin-float-add", call_span)
+                check_float_result(x + y, "builtin-float-add", call_span).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -1379,15 +1689,14 @@ pub(crate) fn builtin_float_add(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_int_to_float(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1396,9 +1705,15 @@ pub(crate) fn builtin_int_to_float(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-to-float", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-to-float", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1406,15 +1721,24 @@ pub(crate) fn builtin_int_to_float(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let v = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let v = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match v {
             Value::Int { n, .. } => {
                 // Precision guard: integers with |n| > 2^53 lose precision as f64.
-                check_int_to_float_precision(n, thunk0.span.clone())?;
+                let (result, diags) = check_int_to_float_precision(n, thunk0.span.clone()).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(()) => {}
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
                 ok_val(
                     Value::Float {
                         n: n as f64,
@@ -1423,24 +1747,23 @@ pub(crate) fn builtin_int_to_float(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {}",
                     ctx.type_display_name(v.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_to_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1449,9 +1772,15 @@ pub(crate) fn builtin_float_to_int(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-to-int", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-to-int", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1459,36 +1788,37 @@ pub(crate) fn builtin_float_to_int(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let thunk0 = args[0].clone();
-        let v = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let v = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match v {
             Value::Float { n, .. } => {
                 if n.is_nan() {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "Float→Integer cast: NaN has no integer representation".to_string(),
                         call_span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
                 if n.is_infinite() {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "Float→Integer cast: infinity has no integer representation".to_string(),
                         call_span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
                 if n > i64::MAX as f64 || n < i64::MIN as f64 {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("Float→Integer cast: {} is out of Integer range", n),
                         call_span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
                 ok_val(
                     Value::Int {
@@ -1498,24 +1828,23 @@ pub(crate) fn builtin_float_to_int(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {}",
                     ctx.type_display_name(v.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_int_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1524,9 +1853,15 @@ pub(crate) fn builtin_int_sub(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-sub", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-sub", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1534,15 +1869,23 @@ pub(crate) fn builtin_int_sub(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
-            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
-                .checked_sub(*y)
-                .map(|r| {
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => match x.checked_sub(*y) {
+                Some(r) => crate::error::DiagnosticResult::ok(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
@@ -1552,16 +1895,12 @@ pub(crate) fn builtin_int_sub(
                         },
                         call_span.clone(),
                     ))
-                })
-                .ok_or_else(|| {
-                    Diagnostic::error(
-                        KIND,
-                        format!("{}: integer overflow", "builtin-int-sub"),
-                        call_span,
-                    )
-                    .into()
-                }),
-            _ => Err(Diagnostic::error(
+                ).with_diagnostics(_dr_diags),
+                None => crate::error::DiagnosticResult::err(
+                    Diagnostic::error(KIND, format!("{}: integer overflow", "builtin-int-sub"), call_span)
+                ).with_diagnostics(_dr_diags),
+            },
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -1569,15 +1908,14 @@ pub(crate) fn builtin_int_sub(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_sub(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1586,9 +1924,15 @@ pub(crate) fn builtin_float_sub(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-sub", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-sub", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1596,16 +1940,25 @@ pub(crate) fn builtin_float_sub(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
-                check_float_result(x - y, "builtin-float-sub", call_span)
+                check_float_result(x - y, "builtin-float-sub", call_span).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -1613,15 +1966,14 @@ pub(crate) fn builtin_float_sub(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_int_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1630,9 +1982,15 @@ pub(crate) fn builtin_int_mul(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-mul", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-mul", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1640,15 +1998,23 @@ pub(crate) fn builtin_int_mul(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
-            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => x
-                .checked_mul(*y)
-                .map(|r| {
+            (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => match x.checked_mul(*y) {
+                Some(r) => crate::error::DiagnosticResult::ok(
                     Arc::new(Thunk::value(
                         Value::Int {
                             n: r,
@@ -1658,16 +2024,12 @@ pub(crate) fn builtin_int_mul(
                         },
                         call_span.clone(),
                     ))
-                })
-                .ok_or_else(|| {
-                    Diagnostic::error(
-                        KIND,
-                        format!("{}: integer overflow", "builtin-int-mul"),
-                        call_span,
-                    )
-                    .into()
-                }),
-            _ => Err(Diagnostic::error(
+                ).with_diagnostics(_dr_diags),
+                None => crate::error::DiagnosticResult::err(
+                    Diagnostic::error(KIND, format!("{}: integer overflow", "builtin-int-mul"), call_span)
+                ).with_diagnostics(_dr_diags),
+            },
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -1675,15 +2037,14 @@ pub(crate) fn builtin_int_mul(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_mul(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1692,9 +2053,15 @@ pub(crate) fn builtin_float_mul(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-mul", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-mul", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1702,16 +2069,25 @@ pub(crate) fn builtin_float_mul(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => {
-                check_float_result(x * y, "builtin-float-mul", call_span)
+                check_float_result(x * y, "builtin-float-mul", call_span).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -1719,8 +2095,7 @@ pub(crate) fn builtin_float_mul(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1730,7 +2105,7 @@ pub(crate) fn builtin_float_mul(
 
 pub(crate) fn builtin_int_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1739,9 +2114,15 @@ pub(crate) fn builtin_int_gt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-gt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-gt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1749,11 +2130,20 @@ pub(crate) fn builtin_int_gt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1763,8 +2153,8 @@ pub(crate) fn builtin_int_gt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -1772,15 +2162,14 @@ pub(crate) fn builtin_int_gt(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1789,9 +2178,15 @@ pub(crate) fn builtin_float_gt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-gt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-gt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1799,11 +2194,20 @@ pub(crate) fn builtin_float_gt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1813,8 +2217,8 @@ pub(crate) fn builtin_float_gt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -1822,15 +2226,14 @@ pub(crate) fn builtin_float_gt(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_str_gt(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1839,9 +2242,15 @@ pub(crate) fn builtin_str_gt(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-str-gt", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-str-gt", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1849,11 +2258,20 @@ pub(crate) fn builtin_str_gt(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (
                 Value::String {
@@ -1876,8 +2294,8 @@ pub(crate) fn builtin_str_gt(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected String, got {} and {}",
@@ -1885,15 +2303,14 @@ pub(crate) fn builtin_str_gt(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_int_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1902,9 +2319,15 @@ pub(crate) fn builtin_int_gte(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-int-gte", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-int-gte", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1912,11 +2335,20 @@ pub(crate) fn builtin_int_gte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Int { n: x, .. }, Value::Int { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1926,8 +2358,8 @@ pub(crate) fn builtin_int_gte(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Integer, got {} and {}",
@@ -1935,15 +2367,14 @@ pub(crate) fn builtin_int_gte(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_float_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1952,9 +2383,15 @@ pub(crate) fn builtin_float_gte(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-float-gte", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-float-gte", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1962,11 +2399,20 @@ pub(crate) fn builtin_float_gte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (Value::Float { n: x, .. }, Value::Float { n: y, .. }) => ok_val(
                 Value::Int {
@@ -1976,8 +2422,8 @@ pub(crate) fn builtin_float_gte(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected Float, got {} and {}",
@@ -1985,15 +2431,14 @@ pub(crate) fn builtin_float_gte(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
 
 pub(crate) fn builtin_str_gte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2002,9 +2447,15 @@ pub(crate) fn builtin_str_gte(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("builtin-str-gte", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = reject_named("builtin-str-gte", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2012,11 +2463,20 @@ pub(crate) fn builtin_str_gte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        let a = args[0].require_value()?.clone();
-        let b = args[1].require_value()?.clone();
+        let (result, diags) = args[0].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let a = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = args[1].require_value().into_parts();
+        _dr_diags.extend(diags);
+        let b = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         match (&a, &b) {
             (
                 Value::String {
@@ -2039,8 +2499,8 @@ pub(crate) fn builtin_str_gte(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected String, got {} and {}",
@@ -2048,8 +2508,7 @@ pub(crate) fn builtin_str_gte(
                     ctx.type_display_name(b.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2240,9 +2699,11 @@ mod tests {
 
     /// Drive an async builtin to completion synchronously in tests.
     fn run(
-        f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-        crate::async_rt::block_on(f)
+        f: impl std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>,
+    ) -> Result<Arc<Thunk>, crate::error::Diagnostic> {
+        let dr = crate::async_rt::block_on(f);
+        let (result, _diags) = dr.into_parts();
+        result
     }
 
     /// Peek a settled thunk's value. Panics with a clear message if the thunk holds an error.

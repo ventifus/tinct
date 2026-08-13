@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::type_tags::*;
 // Pattern import deleted (T-1750)
-use crate::ast::{Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode};
+use crate::ast::{Span, Spanned, SurfaceDocument, SurfaceExpression, SurfaceNode};
 use crate::error::Diagnostic;
 use crate::type_infer::InferenceContext;
 use crate::types::{generalize_tv, InferState};
@@ -202,40 +202,12 @@ pub(crate) async fn process_document(
     state.current_scope = scope.clone();
 
     // Empty record TypeValue: TypeValue.Record { fields: {}, tail: [] (closed) }
-    let empty_dict_ty = make_typevalue_record(indexmap::IndexMap::new(), None);
-
-    // Collect all items in source order as SurfaceNodes.
-    // SurfaceItem::Expr → use the node directly.
-    // SurfaceItem::Decl → synthetic node with SurfaceExpression::Decl so infer_step::Decl
-    //   handles class/instance/type-decl registration (TypeAlias deleted in S-1003).
-    let nodes: Vec<Arc<SurfaceNode>> = doc
-        .items
-        .iter()
-        .map(|item| match item {
-            SurfaceItem::Expr(node) => Arc::clone(node),
-            SurfaceItem::Decl(d) => Arc::new(SurfaceNode::new(
-                SurfaceExpression::Decl(Box::new(d.node.clone())),
-                d.span.clone(),
-            )),
-        })
-        .collect();
-
-    if nodes.is_empty() {
-        return (empty_dict_ty, Vec::new());
-    }
-
     let _enclosing_level = state.ctx.current_level;
-    let last_span = nodes.last().unwrap().span.clone();
-
-    // Route all document nodes through the CEK machine's Sequential arm — the single
-    // canonical path for all expression evaluation. Every document is a Sequential,
-    // including single-expression documents (degenerate case).
-    let span = nodes[0].span.clone();
-    let doc_node = Arc::new(SurfaceNode::new(SurfaceExpression::Sequential(nodes), span));
+    let last_span = doc.body.span.clone();
 
     let mut errors = Vec::new();
     let result_ty =
-        typecheck_cek::run_typecheck(&doc_node, state, &mut errors, type_map, &mut Vec::new())
+        typecheck_cek::run_typecheck(&doc.body, state, &mut errors, type_map, &mut Vec::new())
             .await;
 
     // Check that the last expression's type is a Dict subtype.

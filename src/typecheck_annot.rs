@@ -1273,7 +1273,8 @@ async fn resolve_property_dict_as_record(
                 // type dict). If eval_type_stage_expr also fails, propagate `e` as the original
                 // cause rather than silencing it.
                 let synth_node = synthesize_type_stage_node(entries, span.clone());
-                match eval_type_stage_expr(&synth_node, state).await {
+                let (etse_result, _etse_diags) = eval_type_stage_expr(&synth_node, state).await.into_parts();
+                match etse_result {
                     Ok(ty) => Ok(ty),
                     Err(eval_err) => {
                         // Both resolve_type_dict and eval_type_stage_expr failed.
@@ -1563,19 +1564,24 @@ async fn resolve_type_head(
         v
     };
     for chain in &chains_to_search {
-        if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(chain, name) {
+        let (chain_result, chain_diags) =
+            crate::symbol_table::SymbolTable::get_in_chain(chain, name).into_parts();
+        state.diagnostics.extend(chain_diags);
+        if let Some(thunk) = chain_result? {
             if let Some(eval_ctx) = &state.eval_ctx {
-                let val = crate::eval::materialize(&thunk, None, eval_ctx)
+                let (mat_result, _mat_diags) = crate::eval::materialize(&thunk, None, eval_ctx)
                     .await
-                    .map_err(|e| *e)?;
-                let convert_result = typenode_value_to_type(
+                    .into_parts();
+                let val = mat_result?;
+                let (tv_result, _tv_diags) = typenode_value_to_type(
                     &val,
                     eval_ctx,
                     &state.type_stage_data.scope,
                     &state.type_name_to_id,
                 )
                 .await
-                .map_err(|e| *e)?;
+                .into_parts();
+                let convert_result = tv_result?;
                 if let Some(tv) = convert_result {
                     if args.is_empty() {
                         return Ok(tv);
@@ -1587,7 +1593,8 @@ async fn resolve_type_head(
                     return Ok(result);
                 }
                 scope_lookup_info = Some(format!(
-                    "found in scope, materialized, but not a TypeNode value"
+                    "found in scope, materialized to type_decl_id={}, but typenode_value_to_type returned None",
+                    val.type_decl_id_of(),
                 ));
             } else {
                 scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
@@ -2031,7 +2038,7 @@ pub(crate) async fn resolve_type_expr(
                                         type_params_scope,
                                     ))
                                     .await?;
-                                    params.push((param_name, param_ty));
+                                    params.push((param_name, param_ty, entry.span.clone()));
                                 }
                             }
                             SurfaceExpression::Call {
@@ -2040,7 +2047,6 @@ pub(crate) async fn resolve_type_expr(
                                 args: inner_args,
                                 ..
                             } => {
-                                // Param list itself is an implied call: [a b c] → VarRef("a") + args
                                 let param_ty = Box::pin(resolve_type_expr(
                                     inner_func,
                                     state,
@@ -2050,7 +2056,7 @@ pub(crate) async fn resolve_type_expr(
                                     type_params_scope,
                                 ))
                                 .await?;
-                                params.push((None, param_ty));
+                                params.push((None, param_ty, inner_func.span.clone()));
                                 for a in inner_args.iter() {
                                     let param_ty = Box::pin(resolve_type_expr(
                                         a,
@@ -2061,11 +2067,10 @@ pub(crate) async fn resolve_type_expr(
                                         type_params_scope,
                                     ))
                                     .await?;
-                                    params.push((None, param_ty));
+                                    params.push((None, param_ty, a.span.clone()));
                                 }
                             }
                             _ => {
-                                // Single param that's not a Dict
                                 let param_ty = Box::pin(resolve_type_expr(
                                     param_list,
                                     state,
@@ -2075,7 +2080,7 @@ pub(crate) async fn resolve_type_expr(
                                     type_params_scope,
                                 ))
                                 .await?;
-                                params.push((None, param_ty));
+                                params.push((None, param_ty, param_list.span.clone()));
                             }
                         }
                     }
@@ -2361,7 +2366,8 @@ pub(crate) async fn resolve_type_expr(
                         _ => {}
                     }
                     // General case: try eval_type_stage_expr for other lowercase-headed calls.
-                    return eval_type_stage_expr(node, state).await.map_err(|e| *e);
+                    let (etse_result, _etse_diags) = eval_type_stage_expr(node, state).await.into_parts();
+                    return etse_result;
                 }
             }
 
@@ -3144,28 +3150,39 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
 async fn variant_payload_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Option<HashMap<String, Value>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<HashMap<String, Value>>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let payload_id = match val {
         Value::Variant {
             payload: Some(id), ..
         } => id.clone(),
-        _ => return Ok(None),
+        _ => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     };
     let payload_thunk = payload_id;
-    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await?;
+    let (mat_result, mat_diags) = crate::eval::materialize(&payload_thunk, None, ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    let payload_val = match mat_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
     match payload_val {
         Value::Dict { entries: dict, .. } => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
             for (key, thunk) in &dict {
                 if let HashableValue::Str(k) = key {
-                    let v = crate::eval::materialize(thunk, None, ctx).await?;
+                    let (mat_result2, mat_diags2) = crate::eval::materialize(thunk, None, ctx).await.into_parts();
+                    _dr_diags.extend(mat_diags2);
+                    let v = match mat_result2 {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                     fields.insert(k.to_string(), v);
                 }
             }
-            Ok(Some(fields))
+            crate::error::DiagnosticResult::ok(Some(fields)).with_diagnostics(_dr_diags)
         }
-        _ => Ok(None),
+        _ => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     }
 }
 
@@ -3182,11 +3199,12 @@ async fn collect_typenode_seq(
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Result<Option<Vec<TypeValue>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<Vec<TypeValue>>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Value::Annotated is removed; no unwrapping needed.
     let dict = match dict_val {
         Value::Dict { entries: d, .. } => d,
-        _ => return Ok(None),
+        _ => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     };
 
     let mut result = Vec::new();
@@ -3194,23 +3212,31 @@ async fn collect_typenode_seq(
     loop {
         match dict.get(&HashableValue::Int(i)) {
             Some(thunk) => {
-                let val = crate::eval::materialize(thunk, None, ctx).await?;
-                match Box::pin(typenode_value_to_type(
+                let (mat_result, mat_diags) = crate::eval::materialize(thunk, None, ctx).await.into_parts();
+                _dr_diags.extend(mat_diags);
+                let val = match mat_result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (tv_result, tv_diags) = Box::pin(typenode_value_to_type(
                     &val,
                     ctx,
                     type_stage_scope,
                     type_name_to_id,
                 ))
-                .await?
-                {
-                    Some(ty) => {
+                .await
+                .into_parts();
+                _dr_diags.extend(tv_diags);
+                match tv_result {
+                    Ok(Some(ty)) => {
                         result.push(ty);
                         i += 1;
                     }
-                    None => return Ok(None),
+                    Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                 }
             }
-            None => return Ok(Some(result)),
+            None => return crate::error::DiagnosticResult::ok(Some(result)).with_diagnostics(_dr_diags),
         }
     }
 }
@@ -3228,12 +3254,13 @@ pub(crate) async fn typenode_value_to_type(
     ctx: &Arc<crate::eval::EvalContext>,
     type_stage_scope: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Result<Option<TypeValue>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<TypeValue>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         match val {
             // TypeValue.* variants — already in TypeValue form: return as-is.
             Value::Variant { type_decl_id, .. } if *type_decl_id == TYPE_ID_TYPE_VALUE => {
-                Ok(Some(Arc::new(val.clone())))
+                crate::error::DiagnosticResult::ok(Some(Arc::new(val.clone()))).with_diagnostics(_dr_diags)
             }
 
             // TypeNode.* variants — convert to TypeValue.
@@ -3243,113 +3270,131 @@ pub(crate) async fn typenode_value_to_type(
                 ..
             } if *variant_tdid == TYPE_ID_TYPE_NODE => {
                 match *ctor_index {
-                    TN_UNKNOWN => Ok(Some(make_typevalue_unknown())),
+                    TN_UNKNOWN => crate::error::DiagnosticResult::ok(Some(make_typevalue_unknown())).with_diagnostics(_dr_diags),
                     // Top is the sound lattice top (τ <: Top for all τ).
-                    TN_TOP => Ok(Some(make_typevalue_top())),
-                    TN_NEVER => Ok(Some(make_typevalue_never())),
+                    TN_TOP => crate::error::DiagnosticResult::ok(Some(make_typevalue_top())).with_diagnostics(_dr_diags),
+                    TN_NEVER => crate::error::DiagnosticResult::ok(Some(make_typevalue_never())).with_diagnostics(_dr_diags),
                     // Absent: the empty closed dict type — the Rust-protocol encoding of the absent/null sentinel.
                     // The empty dict `[]` is Value::Dict({}) at runtime; @Absent is its static type.
-                    TN_ABSENT => Ok(Some(make_typevalue_record(indexmap::IndexMap::new(), None))),
+                    TN_ABSENT => crate::error::DiagnosticResult::ok(Some(make_typevalue_record(indexmap::IndexMap::new(), None))).with_diagnostics(_dr_diags),
                     // Primitive leaf types — no payload, direct mapping to TypeValue.Repr variants.
                     // These appear as field values in TypeNode.Dict payloads (e.g., the
                     // "fields" dict of a Dict TypeNode) and as union/intersection members.
-                    TN_INT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))),
-                    TN_FLOAT => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))),
-                    TN_STRING => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))),
-                    TN_BYTES => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))),
-                    TN_PROXY => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))),
+                    TN_INT => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_INT))).with_diagnostics(_dr_diags),
+                    TN_FLOAT => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_FLOAT))).with_diagnostics(_dr_diags),
+                    TN_STRING => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_STRING))).with_diagnostics(_dr_diags),
+                    TN_BYTES => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_BYTES))).with_diagnostics(_dr_diags),
+                    TN_PROXY => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_PROXY))).with_diagnostics(_dr_diags),
                     // Any callable — variadic function with zero required fixed params and unknown
                     // return type. Variadic=true means any number of arguments is accepted; the
                     // arity check skips the "too many arguments" path for variadic functions.
                     // This is DISTINCT from TypeValue.Unknown: Callable asserts the value IS a
                     // function; Unknown means we know nothing about the value at all.
-                    TN_CALLABLE => Ok(Some(make_typevalue_fn_with_flags(
+                    TN_CALLABLE => crate::error::DiagnosticResult::ok(Some(make_typevalue_fn_with_flags(
                         vec![],
                         make_typevalue_unknown(),
                         Some(0), // required_count — no fixed params
                         true,    // variadic — accepts any number of arguments
                         Vec::new(),
-                    ))),
+                    ))).with_diagnostics(_dr_diags),
 
                     // ── Union ─────────────────────────────────────────────────────────────
                     // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
                     TN_UNION => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let types_val = match fields.get(TN_FIELD_TYPES) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
-                        let members = match collect_typenode_seq(
+                        let (cts_result, cts_diags) = collect_typenode_seq(
                             types_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(v) => v,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(cts_diags);
+                        let members = match cts_result {
+                            Ok(Some(v)) => v,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         if members.is_empty() {
-                            return Ok(None); // Empty union is ill-formed — fall back to Unknown.
+                            return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags); // Empty union is ill-formed — fall back to Unknown.
                         }
-                        Ok(Some(typevalue_normalize_union(members)))
+                        crate::error::DiagnosticResult::ok(Some(typevalue_normalize_union(members))).with_diagnostics(_dr_diags)
                     }
 
                     // ── Intersect ────────────────────────────────────────────────────────
                     // TypeNode.Intersect { types: [Seq TypeNode] } → typevalue_normalize_intersection(members)
                     TN_INTERSECT => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let types_val = match fields.get(TN_FIELD_TYPES) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
-                        let members = match collect_typenode_seq(
+                        let (cts_result, cts_diags) = collect_typenode_seq(
                             types_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(v) => v,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(cts_diags);
+                        let members = match cts_result {
+                            Ok(Some(v)) => v,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         if members.is_empty() {
-                            return Ok(None); // Empty intersection is ill-formed — fall back to Unknown.
+                            return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags); // Empty intersection is ill-formed — fall back to Unknown.
                         }
-                        Ok(Some(typevalue_normalize_intersection(members)))
+                        crate::error::DiagnosticResult::ok(Some(typevalue_normalize_intersection(members))).with_diagnostics(_dr_diags)
                     }
 
                     // ── Negation ─────────────────────────────────────────────────────────
                     // TypeNode.Negation { inner: TypeNode } → make_typevalue_negation(inner)
                     TN_NEGATION => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let inner_val = match fields.get(TN_FIELD_INNER) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
-                        let inner_type = match typenode_value_to_type(
+                        let (tv_result, tv_diags) = typenode_value_to_type(
                             &inner_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(t) => t,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(tv_diags);
+                        let inner_type = match tv_result {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
-                        Ok(Some(make_typevalue_negation(inner_type)))
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_negation(inner_type))).with_diagnostics(_dr_diags)
                     }
 
                     // ── Dict ─────────────────────────────────────────────────────────────
@@ -3362,17 +3407,20 @@ pub(crate) async fn typenode_value_to_type(
                     //   open: 1, no key-type → Uniform { key: None, value: Any } (open record)
                     //   open: 0, no key-type → Empty                            (closed / Null)
                     TN_DICT => {
-                        let payload_fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let payload_fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let fields_val = match payload_fields.get(TN_FIELD_FIELDS) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let open_val = match payload_fields.get(TN_FIELD_OPEN) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
 
                         // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
@@ -3384,17 +3432,25 @@ pub(crate) async fn typenode_value_to_type(
                                     indexmap::IndexMap::new();
                                 for (key, thunk) in dict {
                                     if let HashableValue::Str(k) = key {
-                                        let v = crate::eval::materialize(thunk, None, ctx).await?;
-                                        let ty = match typenode_value_to_type(
+                                        let (mat_result, mat_diags) = crate::eval::materialize(thunk, None, ctx).await.into_parts();
+                                        _dr_diags.extend(mat_diags);
+                                        let v = match mat_result {
+                                            Ok(v) => v,
+                                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                        };
+                                        let (tv_result, tv_diags) = typenode_value_to_type(
                                             &v,
                                             ctx,
                                             type_stage_scope,
                                             type_name_to_id,
                                         )
-                                        .await?
-                                        {
-                                            Some(t) => t,
-                                            None => return Ok(None),
+                                        .await
+                                        .into_parts();
+                                        _dr_diags.extend(tv_diags);
+                                        let ty = match tv_result {
+                                            Ok(Some(t)) => t,
+                                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                                         };
                                         out.insert(k.to_string(), ty);
                                     }
@@ -3402,7 +3458,7 @@ pub(crate) async fn typenode_value_to_type(
                                 out
                             }
                             // fields is not a Dict — TypeNode.Dict payload is malformed; cannot convert.
-                            _ => return Ok(None),
+                            _ => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
 
                         // Optional key-type: and value-type: fields enable typed-key map encoding.
@@ -3411,31 +3467,37 @@ pub(crate) async fn typenode_value_to_type(
                         let tail =
                             if let Some(kt_val) = payload_fields.get(TN_FIELD_KEY_TYPE).cloned() {
                                 // key-type: present — resolve it to a TypeValue.
-                                let key_ty = match typenode_value_to_type(
+                                let (tv_result, tv_diags) = typenode_value_to_type(
                                     &kt_val,
                                     ctx,
                                     type_stage_scope,
                                     type_name_to_id,
                                 )
-                                .await?
-                                {
-                                    Some(t) => t,
-                                    None => return Ok(None),
+                                .await
+                                .into_parts();
+                                _dr_diags.extend(tv_diags);
+                                let key_ty = match tv_result {
+                                    Ok(Some(t)) => t,
+                                    Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                                 };
                                 // value-type: defaults to Top when absent.
                                 let value_ty = if let Some(vt_val) =
                                     payload_fields.get(TN_FIELD_VALUE_TYPE).cloned()
                                 {
-                                    match typenode_value_to_type(
+                                    let (tv_result2, tv_diags2) = typenode_value_to_type(
                                         &vt_val,
                                         ctx,
                                         type_stage_scope,
                                         type_name_to_id,
                                     )
-                                    .await?
-                                    {
-                                        Some(t) => t,
-                                        None => return Ok(None),
+                                    .await
+                                    .into_parts();
+                                    _dr_diags.extend(tv_diags2);
+                                    match tv_result2 {
+                                        Ok(Some(t)) => t,
+                                        Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                                     }
                                 } else {
                                     make_typevalue_top()
@@ -3449,52 +3511,66 @@ pub(crate) async fn typenode_value_to_type(
                                 None
                             };
 
-                        Ok(Some(make_typevalue_record(record_fields, tail)))
+                        if let Some(Value::Int { n, .. }) = payload_fields.get("repr") {
+                            if *n > 0 {
+                                return crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(*n as u64))).with_diagnostics(_dr_diags);
+                            }
+                        }
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_record(record_fields, tail))).with_diagnostics(_dr_diags)
                     }
 
                     // ── Arrow ─────────────────────────────────────────────────────────────
                     // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
                     // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
                     TN_ARROW => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let params_val = match fields.get(TN_FIELD_PARAMS) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let result_val = match fields.get(TN_FIELD_RESULT) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
 
-                        let param_types = match collect_typenode_seq(
+                        let (cts_result, cts_diags) = collect_typenode_seq(
                             params_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(v) => v,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(cts_diags);
+                        let param_types = match cts_result {
+                            Ok(Some(v)) => v,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
-                        let ret_type = match typenode_value_to_type(
+                        let (tv_result, tv_diags) = typenode_value_to_type(
                             &result_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(t) => t,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(tv_diags);
+                        let ret_type = match tv_result {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
 
-                        let param_types_named: Vec<(Option<String>, TypeValue)> =
-                            param_types.into_iter().map(|ty| (None, ty)).collect();
-                        Ok(Some(make_typevalue_fn(param_types_named, ret_type)))
+                        let param_types_named: Vec<(Option<String>, TypeValue, crate::ast::Span)> =
+                            param_types.into_iter().map(|ty| (None, ty, crate::rust_span!())).collect();
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_fn(param_types_named, ret_type))).with_diagnostics(_dr_diags)
                     }
 
                     // ── TypeConstructor ───────────────────────────────────────────────────
@@ -3502,17 +3578,20 @@ pub(crate) async fn typenode_value_to_type(
                     // Bare (transient): name without '.' → Type::TyCon(name) for expansion
                     // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
                     TN_TYPE_CONSTRUCTOR => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let name_val = match fields.get(TN_FIELD_NAME) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let name = match name_val.as_str() {
                             Some(s) => s.to_string(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         // Look up the name in the type-stage scope chain.
                         // The type-stage scope holds resolved TypeValues directly.
@@ -3520,60 +3599,69 @@ pub(crate) async fn typenode_value_to_type(
                         // user-defined or prelude-defined type-stage names.
                         for scope in type_stage_scope {
                             if let Some(tv) = scope.get(&name) {
-                                return Ok(Some(tv.clone()));
+                                return crate::error::DiagnosticResult::ok(Some(tv.clone())).with_diagnostics(_dr_diags);
                             }
                         }
                         // Not found in the type-stage scope — treat as an opaque TyCon.
                         // This is correct for types declared in the runtime section (e.g., Color,
                         // BuilderHandle) that are not yet in the type-stage scope chain.
-                        Ok(Some(make_typevalue_nominal(
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(
                             type_name_to_id.get(name.as_str()).copied().unwrap_or(0),
-                        )))
+                        ))).with_diagnostics(_dr_diags)
                     }
 
                     // ── TypeApplication ───────────────────────────────────────────────────
                     // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
                     // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
                     TN_TYPE_APPLICATION => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let ctor_val = match fields.get(TN_FIELD_CTOR) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let args_val = match fields.get(TN_FIELD_ARGS) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
 
-                        let ctor_type = match typenode_value_to_type(
+                        let (tv_result, tv_diags) = typenode_value_to_type(
                             &ctor_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(t) => t,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(tv_diags);
+                        let ctor_type = match tv_result {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
-                        let arg_types = match collect_typenode_seq(
+                        let (cts_result, cts_diags) = collect_typenode_seq(
                             args_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         )
-                        .await?
-                        {
-                            Some(v) => v,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(cts_diags);
+                        let arg_types = match cts_result {
+                            Ok(Some(v)) => v,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
 
                         if arg_types.is_empty() {
                             // Zero-arg application — return the constructor itself.
-                            return Ok(Some(ctor_type));
+                            return crate::error::DiagnosticResult::ok(Some(ctor_type)).with_diagnostics(_dr_diags);
                         }
 
                         // Build left-associative App chain.
@@ -3581,27 +3669,30 @@ pub(crate) async fn typenode_value_to_type(
                         for arg in arg_types {
                             result = make_typevalue_app(result, arg);
                         }
-                        Ok(Some(result))
+                        crate::error::DiagnosticResult::ok(Some(result)).with_diagnostics(_dr_diags)
                     }
 
                     // ── TypeVar ───────────────────────────────────────────────────────────
                     // TypeNode.TypeVar { name: String, kind: String }
                     // → TypeValue.Var { name }  (level lives in InferenceContext, not in TypeValue)
                     TN_TYPE_VAR => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let name_val = match fields.get(TN_FIELD_NAME) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let name = match name_val.as_str() {
                             Some(s) => s.to_string(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         // Level is not stored in TypeValue.Var — it lives in InferenceContext.
-                        Ok(Some(make_typevalue_var(&name)))
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_var(&name))).with_diagnostics(_dr_diags)
                     }
 
                     // ── Recursive ────────────────────────────────────────────────────────
@@ -3614,32 +3705,38 @@ pub(crate) async fn typenode_value_to_type(
                     // is treated as a non-generalizable TypeVar during inference (never added to
                     // ctx.levels for generalization).
                     TN_RECURSIVE => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         // The "var" field names the binder but is not needed for de Bruijn
                         // representation — only its presence is required for a well-formed
                         // TypeNode.Recursive payload.
                         if !fields.contains_key(TN_FIELD_VAR) {
-                            return Ok(None);
+                            return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
                         }
                         let body_val = match fields.get(TN_FIELD_BODY) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
-                        let body = match Box::pin(typenode_value_to_type(
+                        let (tv_result, tv_diags) = Box::pin(typenode_value_to_type(
                             &body_val,
                             ctx,
                             type_stage_scope,
                             type_name_to_id,
                         ))
-                        .await?
-                        {
-                            Some(t) => t,
-                            None => return Ok(None),
+                        .await
+                        .into_parts();
+                        _dr_diags.extend(tv_diags);
+                        let body = match tv_result {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
-                        Ok(Some(make_typevalue_recursive(body)))
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_recursive(body))).with_diagnostics(_dr_diags)
                     }
 
                     // ── RecursiveRef ──────────────────────────────────────────────────────
@@ -3651,21 +3748,24 @@ pub(crate) async fn typenode_value_to_type(
                     // TypeValue.Var with the same binder name — the InferenceContext tracks
                     // that this var is a recursive self-reference (never generalized).
                     TN_RECURSIVE_REF => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let name_val = match fields.get(TN_FIELD_NAME) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         let name = match name_val.as_str() {
                             Some(s) => s.to_string(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         // RecursiveRef maps to TypeValue.Var — same name as the μ-binder.
                         // The InferenceContext knows this var is a recursive self-reference.
-                        Ok(Some(make_typevalue_var(&name)))
+                        crate::error::DiagnosticResult::ok(Some(make_typevalue_var(&name))).with_diagnostics(_dr_diags)
                     }
 
                     // ── IntLiteral ────────────────────────────────────────────────────────
@@ -3673,70 +3773,79 @@ pub(crate) async fn typenode_value_to_type(
                     // Produced by union/or when a raw integer value is normalized via
                     // _wrap-typenode-value in the type-stage prelude (e.g. `[or 0 1]`).
                     TN_INT_LITERAL => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let n_val = match fields.get(TN_FIELD_N) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         match n_val {
-                            Value::Int { n, .. } => Ok(Some(make_typevalue_int_lit(n))),
-                            _ => Ok(None),
+                            Value::Int { n, .. } => crate::error::DiagnosticResult::ok(Some(make_typevalue_int_lit(n))).with_diagnostics(_dr_diags),
+                            _ => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         }
                     }
 
                     // ── FloatLiteral ──────────────────────────────────────────────────────
                     // TypeNode.FloatLiteral { value: Float } → TypeValue.FloatLit
                     TN_FLOAT_LITERAL => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let v_val = match fields.get(TN_FIELD_FLOAT_VALUE) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         match v_val {
-                            Value::Float { n, .. } => Ok(Some(make_typevalue_float_lit(n))),
-                            _ => Ok(None),
+                            Value::Float { n, .. } => crate::error::DiagnosticResult::ok(Some(make_typevalue_float_lit(n))).with_diagnostics(_dr_diags),
+                            _ => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         }
                     }
 
                     // ── StringLiteral ─────────────────────────────────────────────────────
                     // TypeNode.StringLiteral { s: String } → TypeValue.StrLit
                     TN_STRING_LITERAL => {
-                        let fields = match variant_payload_dict(val, ctx).await? {
-                            Some(f) => f,
-                            None => return Ok(None),
+                        let (vpd_result, vpd_diags) = variant_payload_dict(val, ctx).await.into_parts();
+                        _dr_diags.extend(vpd_diags);
+                        let fields = match vpd_result {
+                            Ok(Some(f)) => f,
+                            Ok(None) => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                         };
                         let s_val = match fields.get(TN_FIELD_S) {
                             Some(v) => v.clone(),
-                            None => return Ok(None),
+                            None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         };
                         match s_val.as_str() {
-                            Some(s) => Ok(Some(make_typevalue_str_lit(s))),
-                            None => Ok(None),
+                            Some(s) => crate::error::DiagnosticResult::ok(Some(make_typevalue_str_lit(s))).with_diagnostics(_dr_diags),
+                            None => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                         }
                     }
 
                     // Unknown tag — not a recognized TypeNode constructor.
-                    _ => Ok(None),
+                    _ => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
                 }
             }
 
             // Raw Value::Int in type position — produced when a literal integer appears
             // directly in a TypeNode sequence (e.g., inside TypeNode.Union.types).
             // S-991: literals in type position produce IntLit/StrLit/FloatLit TypeValues.
-            Value::Int { n, .. } => Ok(Some(make_typevalue_int_lit(*n))),
+            Value::Int { n, .. } => crate::error::DiagnosticResult::ok(Some(make_typevalue_int_lit(*n))).with_diagnostics(_dr_diags),
             Value::String {
                 source, start, end, ..
-            } => Ok(Some(make_typevalue_str_lit(&source[*start..*end]))),
+            } => crate::error::DiagnosticResult::ok(Some(make_typevalue_str_lit(&source[*start..*end]))).with_diagnostics(_dr_diags),
             // Raw Value::Float in type position — produced when a float literal appears
             // directly in a TypeNode sequence (e.g., @[or 1.5 2.5] in type-stage evaluation).
             // Parallel to Value::Int handling above.
-            Value::Float { n, .. } => Ok(Some(make_typevalue_float_lit(*n))),
+            Value::Float { n, .. } => crate::error::DiagnosticResult::ok(Some(make_typevalue_float_lit(*n))).with_diagnostics(_dr_diags),
 
             // Constructor dict — a tinct ADT declaration like `Color: [type Red Green Blue]`
             // evaluates to `{ Red: Variant("Color.Red"), Green: Variant("Color.Green"), ... }`.
@@ -3771,7 +3880,7 @@ pub(crate) async fn typenode_value_to_type(
                                 }
                             }
                         }
-                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()).with_diagnostics(_dr_diags),
                         None => {
                             // Thunk not yet materialized — can't determine
                             all_match = false;
@@ -3781,24 +3890,24 @@ pub(crate) async fn typenode_value_to_type(
                 }
                 if all_match {
                     match shared_type_decl_id {
-                        Some(id) => Ok(Some(make_typevalue_nominal(id))),
-                        None => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))),
+                        Some(id) => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(id))).with_diagnostics(_dr_diags),
+                        None => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))).with_diagnostics(_dr_diags),
                     }
                 } else {
                     // Not an ADT-constructor dict — this is a plain dict value in TypeNode
                     // position (e.g., the Dict from the TypeNode type-stage scope when some
                     // thunks are unsettled). Treat as the plain Dict type.
-                    Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT)))
+                    crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))).with_diagnostics(_dr_diags)
                 }
             }
 
             // Empty Value::Dict in TypeNode position — treat as the plain Dict type.
             // This covers the case where an empty dict is the result of type-stage evaluation
             // for an @Dict annotation.
-            Value::Dict { .. } => Ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))),
+            Value::Dict { .. } => crate::error::DiagnosticResult::ok(Some(make_typevalue_nominal(crate::value::TYPE_ID_DICT))).with_diagnostics(_dr_diags),
 
             // Not a recognizable TypeNode or ADT value.
-            _ => Ok(None),
+            _ => crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
         }
     })
     .await
@@ -3854,7 +3963,8 @@ pub(crate) async fn typenode_value_to_type(
 pub(crate) async fn as_type_dispatch(
     val: &Value,
     state: &mut InferState,
-) -> Result<Option<TypeValue>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Option<TypeValue>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Step 1: locate the `AS_TYPENODE_PROTOCOL_NAME` resolver in type_stage_fns.
     // This function is a parameterized type constructor that dispatches TypeNode values.
     let resolver_thunk = {
@@ -3884,7 +3994,7 @@ pub(crate) async fn as_type_dispatch(
                         diag_span,
                     ));
                 }
-                return Ok(None);
+                return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
             }
         }
     };
@@ -3892,9 +4002,14 @@ pub(crate) async fn as_type_dispatch(
     // Step 2: materialise the thunk to get the resolver function value.
     let eval_ctx = match state.eval_ctx.clone() {
         Some(ctx) => ctx,
-        None => return Ok(None),
+        None => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     };
-    let fn_val = crate::eval::materialize(&resolver_thunk, None, &eval_ctx).await?;
+    let (mat_result, mat_diags) = crate::eval::materialize(&resolver_thunk, None, &eval_ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    let fn_val = match mat_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     // Step 3: call the resolver with the TypeNode value as its sole argument.
     // Invoke inline rather than via a helper so the result conversion uses
@@ -3914,7 +4029,7 @@ pub(crate) async fn as_type_dispatch(
             // with different arities are malformed.
             let all_single_param = clauses.iter().all(|c| c.params.len() == 1);
             if !all_single_param || clauses.is_empty() {
-                return Ok(None);
+                return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
             }
             let call_ctx = crate::eval_call::CallContext {
                 clauses,
@@ -3926,19 +4041,36 @@ pub(crate) async fn as_type_dispatch(
                 ctx: &eval_ctx,
                 type_instantiation: std::collections::HashMap::new(),
             };
-            crate::eval_call::invoke_function(&call_ctx).await?
+            {
+                let (inv_result, inv_diags) = crate::eval_call::invoke_function(&call_ctx).await.into_parts();
+                _dr_diags.extend(inv_diags);
+                match inv_result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            }
         }
-        _ => return Ok(None),
+        _ => return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags),
     };
 
-    let result_val = crate::eval::materialize(&result_thunk, None, &eval_ctx).await?;
+    let (mat_result2, mat_diags2) = crate::eval::materialize(&result_thunk, None, &eval_ctx).await.into_parts();
+    _dr_diags.extend(mat_diags2);
+    let result_val = match mat_result2 {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     // Convert using typenode_value_to_type ONLY — no as_type_dispatch fallback here.
     // This prevents infinite recursion: if the resolver itself returns an unrecognised tag,
     // we return Ok(None) rather than attempting further dispatch.
     // Pass empty type_stage_scope: as_type_dispatch is itself the dispatch path for
     // unrecognised TypeConstructor names; recursing into scope lookup here would loop.
-    typenode_value_to_type(&result_val, &eval_ctx, &[], &state.type_name_to_id).await
+    let (tv_result, tv_diags) = typenode_value_to_type(&result_val, &eval_ctx, &[], &state.type_name_to_id).await.into_parts();
+    _dr_diags.extend(tv_diags);
+    match tv_result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
 }
 
 /// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
@@ -3975,7 +4107,8 @@ pub(crate) async fn as_type_dispatch(
 pub(crate) async fn eval_expr(
     node: &Arc<SurfaceNode>,
     state: &InferState,
-) -> Result<crate::value::Value, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<crate::value::Value> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let node_span = node.span.clone();
 
     let ctx: std::sync::Arc<crate::eval::EvalContext> = if let Some(ref eval_ctx) = state.eval_ctx {
@@ -3994,15 +4127,26 @@ pub(crate) async fn eval_expr(
         .take(&ctx.runtime_diagnostics)
         .expect("eval_expr always succeeds");
 
-    crate::eval::materialize(&thunk, Some(&node_span), &ctx).await
+    let (mat_result, mat_diags) = crate::eval::materialize(&thunk, Some(&node_span), &ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    match mat_result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
 }
 
 pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     state: &mut InferState,
-) -> Result<TypeValue, Box<Diagnostic>> {
+) -> crate::error::DiagnosticResult<TypeValue> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let node_span = node.span.clone();
-    let typenode_val = eval_expr(node, state).await?;
+    let (ee_result, ee_diags) = eval_expr(node, state).await.into_parts();
+    _dr_diags.extend(ee_diags);
+    let typenode_val = match ee_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
     let ctx: std::sync::Arc<crate::eval::EvalContext> = if let Some(ref eval_ctx) = state.eval_ctx {
         std::sync::Arc::clone(eval_ctx)
@@ -4015,41 +4159,47 @@ pub(crate) async fn eval_type_stage_expr(
     // as_type_dispatch to normalise the value through the prelude's `as-typenode`
     // function before giving up.
     // Propagate eval errors from typenode_value_to_type and as_type_dispatch as Diagnostics.
-    match typenode_value_to_type(
+    let (tv_result, tv_diags) = typenode_value_to_type(
         &typenode_val,
         &ctx,
         &state.type_stage_data.scope,
         &state.type_name_to_id,
     )
     .await
-    .map_err(|e| {
-        Diagnostic::error(
-            KIND,
-            format!("type-stage field materialization failed: {e}"),
-            node_span.clone(),
-        )
-    })? {
-        Some(ty) => return Ok(ty),
-        None => {}
+    .into_parts();
+    _dr_diags.extend(tv_diags);
+    match tv_result {
+        Ok(Some(ty)) => return crate::error::DiagnosticResult::ok(ty).with_diagnostics(_dr_diags),
+        Ok(None) => {}
+        Err(e) => {
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("type-stage field materialization failed: {e}"),
+                node_span.clone(),
+            )).with_diagnostics(_dr_diags);
+        }
     }
-    match as_type_dispatch(&typenode_val, state).await.map_err(|e| {
-        Diagnostic::error(
-            KIND,
-            format!("type-stage field materialization failed: {e}"),
-            node_span.clone(),
-        )
-    })? {
-        Some(ty) => return Ok(ty),
-        None => {}
+    let (atd_result, atd_diags) = as_type_dispatch(&typenode_val, state).await.into_parts();
+    _dr_diags.extend(atd_diags);
+    match atd_result {
+        Ok(Some(ty)) => return crate::error::DiagnosticResult::ok(ty).with_diagnostics(_dr_diags),
+        Ok(None) => {}
+        Err(e) => {
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("type-stage field materialization failed: {e}"),
+                node_span.clone(),
+            )).with_diagnostics(_dr_diags);
+        }
     }
-    Err(Box::new(Diagnostic::error(
+    crate::error::DiagnosticResult::err(Diagnostic::error(
         KIND,
         format!(
             "type-stage expression produced an unrecognized value: {}",
             typenode_val.render(state.tycon_env_ref())
         ),
         node_span,
-    )))
+    )).with_diagnostics(_dr_diags)
 }
 
 // ============================================================================
@@ -4145,7 +4295,7 @@ async fn try_resolve_fn_type_expr(
                     type_params_scope,
                 )
                 .await?;
-                params.push((param_name, param_ty));
+                params.push((param_name, param_ty, entry.span.clone()));
             }
         }
         SurfaceExpression::Call {
@@ -4165,7 +4315,7 @@ async fn try_resolve_fn_type_expr(
                 type_params_scope,
             )
             .await?;
-            params.push((None, param_ty));
+            params.push((None, param_ty, func.span.clone()));
             for arg in args.iter() {
                 let param_ty = resolve_type_expr(
                     arg,
@@ -4176,7 +4326,7 @@ async fn try_resolve_fn_type_expr(
                     type_params_scope,
                 )
                 .await?;
-                params.push((None, param_ty));
+                params.push((None, param_ty, arg.span.clone()));
             }
         }
         _ => {

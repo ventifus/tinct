@@ -2215,8 +2215,8 @@ async fn test_constrain_cfn_variadic_callable_accepts_any_arity() {
     // Concrete function: Fn([Int, Int], return: Int) — the type of [fn [let x y] [+ x y]].
     let concrete_fn = crate::type_infer::make_typevalue_fn_with_flags(
         vec![
-            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
-            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT), crate::rust_span!()),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT), crate::rust_span!()),
         ],
         make_typevalue_nominal(crate::value::TYPE_ID_INT),
         None, // required_count — all params required
@@ -2254,8 +2254,8 @@ async fn test_constrain_cfn_callable_as_sup_accepts_any_arity() {
     // Concrete function as sub.
     let concrete_fn = crate::type_infer::make_typevalue_fn_with_flags(
         vec![
-            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
-            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT)),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT), crate::rust_span!()),
+            (None, make_typevalue_nominal(crate::value::TYPE_ID_INT), crate::rust_span!()),
         ],
         make_typevalue_nominal(crate::value::TYPE_ID_INT),
         None, // required_count — all params required

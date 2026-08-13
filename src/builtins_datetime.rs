@@ -23,39 +23,62 @@ use crate::value::{
 
 const KIND: &str = "eval";
 
-/// Helper to create a boxed Diagnostic from a message.
-fn dt_err(msg: impl Into<String>, span: Span) -> Box<Diagnostic> {
-    Diagnostic::error(KIND, msg.into(), span).into()
+/// Helper to create a Diagnostic from a message.
+fn dt_err(msg: impl Into<String>, span: Span) -> Diagnostic {
+    Diagnostic::error(KIND, msg.into(), span)
 }
 
 /// Parse an RFC 3339 timestamp string to a Timestamp (i64 nanoseconds).
 /// Errors if the format is invalid or the timestamp overflows i64 nanoseconds.
 pub fn builtin_parse_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [s_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "parse-timestamp requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
+        };
+        let s_thunk = s_thunk.clone();
+
+        let s_val = {
+            let (result, diags) = s_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let s = match s_val.as_str() {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "parse-timestamp requires a String",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        let s_val = s_thunk.clone().require_value()?.clone();
-        let s = s_val
-            .as_str()
-            .ok_or_else(|| dt_err("parse-timestamp requires a String", call_span.clone()))?;
-
         // Parse RFC 3339 string using jiff
-        let ts = jiff::Timestamp::from_str(s).map_err(|e| {
-            dt_err(
-                format!("invalid RFC 3339 timestamp: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let ts = match jiff::Timestamp::from_str(s) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("invalid RFC 3339 timestamp: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -64,67 +87,95 @@ pub fn builtin_parse_timestamp(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Format a Timestamp as an RFC 3339 string.
 pub fn builtin_format_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "format-timestamp requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "format-timestamp requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Format as RFC 3339 string
         let s = ts.to_string();
 
-        Ok(Arc::new(Thunk::value(string_val(&s), call_span)))
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(string_val(&s), call_span)))
+            .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert a Timestamp to Unix seconds (truncating nanoseconds).
 pub fn builtin_timestamp_to_unix(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp->unix requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp->unix requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let seconds = ts.as_nanosecond() as i64 / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: seconds,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -133,40 +184,70 @@ pub fn builtin_timestamp_to_unix(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert Unix seconds to a Timestamp.
 pub fn builtin_unix_to_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "unix->timestamp requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let seconds = match &n_val {
             Value::Int { n, .. } => *n,
-            _ => return Err(dt_err("unix->timestamp requires an Int", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "unix->timestamp requires an Int",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        let nanos = seconds
-            .checked_mul(1_000_000_000)
-            .ok_or_else(|| dt_err("unix->timestamp overflow", call_span.clone()))?;
+        let nanos = match seconds.checked_mul(1_000_000_000) {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "unix->timestamp overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-            dt_err(
-                format!("unix->timestamp: nanoseconds out of range: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let ts = match jiff::Timestamp::from_nanosecond(nanos as i128) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("unix->timestamp: nanoseconds out of range: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -175,23 +256,45 @@ pub fn builtin_unix_to_timestamp(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Read the current time from a ClockCap.
 pub fn builtin_now(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [cap_thunk] = args.args.as_slice() else {
-            return Err(dt_err("now requires 1 argument", call_span.clone()));
+            return crate::error::DiagnosticResult::err(dt_err(
+                "now requires 1 argument",
+                call_span.clone(),
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let cap_thunk = cap_thunk.clone();
 
-        let cap_val = cap_thunk.clone().require_value()?.clone();
+        let cap_val = {
+            let (result, diags) = cap_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let clock_cap = match &cap_val {
             Value::ClockCap { inner, .. } => inner,
-            _ => return Err(dt_err("now requires a ClockCap", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "now requires a ClockCap",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
         let ts = match clock_cap.as_ref() {
@@ -206,7 +309,7 @@ pub fn builtin_now(
             }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -215,33 +318,50 @@ pub fn builtin_now(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a fixed ClockCap that always returns the given timestamp.
 pub fn builtin_fixed_clock(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err("fixed-clock requires 1 argument", call_span.clone()));
+            return crate::error::DiagnosticResult::err(dt_err(
+                "fixed-clock requires 1 argument",
+                call_span.clone(),
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "fixed-clock requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let nanos = ts.as_nanosecond() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -250,57 +370,93 @@ pub fn builtin_fixed_clock(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Add a duration to a timestamp.
 pub fn builtin_timestamp_add(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk, d_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-add requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
+        let d_thunk = d_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
-        let d_val = d_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let d_val = {
+            let (result, diags) = d_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let t_nanos = match &t_val {
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-add requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let d_nanos = match &d_val {
             Value::Duration { nanos: n, .. } => *n,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-add requires Duration as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let result_nanos = t_nanos
-            .checked_add(d_nanos)
-            .ok_or_else(|| dt_err("timestamp-add overflow", call_span.clone()))?;
+        let result_nanos = match t_nanos.checked_add(d_nanos) {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "timestamp-add overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        let result_ts = jiff::Timestamp::from_nanosecond(result_nanos as i128).map_err(|e| {
-            dt_err(
-                format!("timestamp-add: result out of range: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let result_ts = match jiff::Timestamp::from_nanosecond(result_nanos as i128) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("timestamp-add: result out of range: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts: result_ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -309,50 +465,82 @@ pub fn builtin_timestamp_add(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Compute the duration between two timestamps (t1 - t2).
 pub fn builtin_timestamp_diff(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-diff requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t1_thunk = t1_thunk.clone();
+        let t2_thunk = t2_thunk.clone();
 
-        let t1_val = t1_thunk.clone().require_value()?.clone();
-        let t2_val = t2_thunk.clone().require_value()?.clone();
+        let t1_val = {
+            let (result, diags) = t1_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let t2_val = {
+            let (result, diags) = t2_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let t1_nanos = match &t1_val {
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-diff requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let t2_nanos = match &t2_val {
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-diff requires Timestamp as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let result = t1_nanos
-            .checked_sub(t2_nanos)
-            .ok_or_else(|| dt_err("timestamp-diff overflow", call_span.clone()))?;
+        let result = match t1_nanos.checked_sub(t2_nanos) {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "timestamp-diff overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos: result,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -361,46 +549,71 @@ pub fn builtin_timestamp_diff(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Compare two timestamps: t1 < t2
 pub fn builtin_timestamp_lt(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp<? requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t1_thunk = t1_thunk.clone();
+        let t2_thunk = t2_thunk.clone();
 
-        let t1_val = t1_thunk.clone().require_value()?.clone();
-        let t2_val = t2_thunk.clone().require_value()?.clone();
+        let t1_val = {
+            let (result, diags) = t1_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let t2_val = {
+            let (result, diags) = t2_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp<? requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let t2 = match &t2_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp<? requires Timestamp as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 < t2 { 1 } else { 0 },
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -409,46 +622,71 @@ pub fn builtin_timestamp_lt(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Compare two timestamps: t1 > t2
 pub fn builtin_timestamp_gt(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp>? requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t1_thunk = t1_thunk.clone();
+        let t2_thunk = t2_thunk.clone();
 
-        let t1_val = t1_thunk.clone().require_value()?.clone();
-        let t2_val = t2_thunk.clone().require_value()?.clone();
+        let t1_val = {
+            let (result, diags) = t1_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let t2_val = {
+            let (result, diags) = t2_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp>? requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let t2 = match &t2_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp>? requires Timestamp as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 > t2 { 1 } else { 0 },
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -457,46 +695,71 @@ pub fn builtin_timestamp_gt(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Compare two timestamps for equality: t1 == t2
 pub fn builtin_timestamp_eq(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t1_thunk, t2_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp=? requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t1_thunk = t1_thunk.clone();
+        let t2_thunk = t2_thunk.clone();
 
-        let t1_val = t1_thunk.clone().require_value()?.clone();
-        let t2_val = t2_thunk.clone().require_value()?.clone();
+        let t1_val = {
+            let (result, diags) = t1_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let t2_val = {
+            let (result, diags) = t2_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let t1 = match &t1_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp=? requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let t2 = match &t2_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp=? requires Timestamp as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: if t1 == t2 { 1 } else { 0 },
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -505,37 +768,51 @@ pub fn builtin_timestamp_eq(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC year from a timestamp.
 pub fn builtin_timestamp_year(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-year requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-year requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let year = dt.year() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: year,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -544,37 +821,51 @@ pub fn builtin_timestamp_year(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC month (1-12) from a timestamp.
 pub fn builtin_timestamp_month(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-month requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-month requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let month = dt.month() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: month,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -583,37 +874,51 @@ pub fn builtin_timestamp_month(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC day (1-31) from a timestamp.
 pub fn builtin_timestamp_day(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-day requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-day requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let day = dt.day() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: day,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -622,37 +927,51 @@ pub fn builtin_timestamp_day(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC hour (0-23) from a timestamp.
 pub fn builtin_timestamp_hour(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-hour requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-hour requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let hour = dt.hour() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: hour,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -661,37 +980,51 @@ pub fn builtin_timestamp_hour(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC minute (0-59) from a timestamp.
 pub fn builtin_timestamp_minute(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-minute requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-minute requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let minute = dt.minute() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: minute,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -700,37 +1033,51 @@ pub fn builtin_timestamp_minute(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract the UTC second (0-59) from a timestamp.
 pub fn builtin_timestamp_second(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-second requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-second requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let dt = ts.to_zoned(jiff::tz::TimeZone::UTC);
         let second = dt.second() as i64;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: second,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -739,30 +1086,44 @@ pub fn builtin_timestamp_second(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Extract all UTC components from a timestamp as a dict.
 pub fn builtin_timestamp_parts(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-parts requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-parts requires a Timestamp",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -842,7 +1203,7 @@ pub fn builtin_timestamp_parts(
             )),
         );
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
                 type_decl_id: TYPE_ID_DICT,
@@ -852,29 +1213,48 @@ pub fn builtin_timestamp_parts(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a duration from nanoseconds.
 pub fn builtin_duration_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration-nanos requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let nanos = match &n_val {
             Value::Int { n, .. } => *n,
-            _ => return Err(dt_err("duration-nanos requires an Int", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-nanos requires an Int",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -883,6 +1263,7 @@ pub fn builtin_duration_nanos(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -893,30 +1274,52 @@ pub fn builtin_duration_nanos(
 /// must survive serialize/deserialize without conversion through seconds.
 pub fn builtin_timestamp_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-nanos requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let nanos = match &n_val {
             Value::Int { n, .. } => *n,
-            _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "timestamp-nanos requires an Int",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-            dt_err(
-                format!("timestamp-nanos: nanoseconds out of range: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let ts = match jiff::Timestamp::from_nanosecond(nanos as i128) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("timestamp-nanos: nanoseconds out of range: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -925,38 +1328,59 @@ pub fn builtin_timestamp_nanos(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a duration from seconds.
 pub fn builtin_duration_seconds(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration-seconds requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let seconds = match &n_val {
             Value::Int { n, .. } => *n,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "duration-seconds requires an Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let nanos = seconds
-            .checked_mul(1_000_000_000)
-            .ok_or_else(|| dt_err("duration-seconds overflow", call_span.clone()))?;
+        let nanos = match seconds.checked_mul(1_000_000_000) {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-seconds overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -965,39 +1389,62 @@ pub fn builtin_duration_seconds(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a duration from minutes.
 pub fn builtin_duration_minutes(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration-minutes requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let minutes = match &n_val {
             Value::Int { n, .. } => *n,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "duration-minutes requires an Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let nanos = minutes
+        let nanos = match minutes
             .checked_mul(60)
             .and_then(|s| s.checked_mul(1_000_000_000))
-            .ok_or_else(|| dt_err("duration-minutes overflow", call_span.clone()))?;
+        {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-minutes overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1006,34 +1453,62 @@ pub fn builtin_duration_minutes(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a duration from hours.
 pub fn builtin_duration_hours(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration-hours requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let hours = match &n_val {
             Value::Int { n, .. } => *n,
-            _ => return Err(dt_err("duration-hours requires an Int", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-hours requires an Int",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        let nanos = hours
+        let nanos = match hours
             .checked_mul(3600)
             .and_then(|s| s.checked_mul(1_000_000_000))
-            .ok_or_else(|| dt_err("duration-hours overflow", call_span.clone()))?;
+        {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-hours overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1042,34 +1517,62 @@ pub fn builtin_duration_hours(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Create a duration from days.
 pub fn builtin_duration_days(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [n_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration-days requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let n_thunk = n_thunk.clone();
 
-        let n_val = n_thunk.clone().require_value()?.clone();
+        let n_val = {
+            let (result, diags) = n_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let days = match &n_val {
             Value::Int { n, .. } => *n,
-            _ => return Err(dt_err("duration-days requires an Int", call_span.clone())),
+            _ => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-days requires an Int",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
         };
 
-        let nanos = days
+        let nanos = match days
             .checked_mul(86400)
             .and_then(|s| s.checked_mul(1_000_000_000))
-            .ok_or_else(|| dt_err("duration-days overflow", call_span.clone()))?;
+        {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "duration-days overflow",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Duration {
                 nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1078,36 +1581,50 @@ pub fn builtin_duration_days(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert a duration to seconds (truncating nanoseconds).
 pub fn builtin_duration_to_seconds(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [d_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration->seconds requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let d_thunk = d_thunk.clone();
 
-        let d_val = d_thunk.clone().require_value()?.clone();
+        let d_val = {
+            let (result, diags) = d_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let nanos = match &d_val {
             Value::Duration { nanos: n, .. } => *n,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "duration->seconds requires a Duration",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let seconds = nanos / 1_000_000_000;
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: seconds,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1116,34 +1633,48 @@ pub fn builtin_duration_to_seconds(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert a duration to nanoseconds.
 pub fn builtin_duration_to_nanos(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [d_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "duration->nanos requires 1 argument",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let d_thunk = d_thunk.clone();
 
-        let d_val = d_thunk.clone().require_value()?.clone();
+        let d_val = {
+            let (result, diags) = d_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
         let nanos = match &d_val {
             Value::Duration { nanos: n, .. } => *n,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "duration->nanos requires a Duration",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Int {
                 n: nanos,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1152,67 +1683,110 @@ pub fn builtin_duration_to_nanos(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Load a timezone from a zoneinfo directory (via DirCap).
 pub fn builtin_load_tz(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [dir_thunk, name_thunk] = args.args.as_slice() else {
-            return Err(dt_err("load-tz requires 2 arguments", call_span.clone()));
+            return crate::error::DiagnosticResult::err(dt_err(
+                "load-tz requires 2 arguments",
+                call_span.clone(),
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let dir_thunk = dir_thunk.clone();
+        let name_thunk = name_thunk.clone();
 
-        let dir_val = dir_thunk.clone().require_value()?.clone();
-        let name_val = name_thunk.clone().require_value()?.clone();
+        let dir_val = {
+            let (result, diags) = dir_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let name_val = {
+            let (result, diags) = name_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let dir = match &dir_val {
             Value::DirCap { dir, .. } => dir,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "load-tz requires DirCap as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let name = name_val.as_str().ok_or_else(|| {
-            dt_err(
-                "load-tz requires String as second argument",
-                call_span.clone(),
-            )
-        })?;
+        let name = match name_val.as_str() {
+            Some(v) => v,
+            None => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    "load-tz requires String as second argument",
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
         // Read the timezone file from the zoneinfo directory
-        let file = dir.open(name).map_err(|e| {
-            dt_err(
-                format!("failed to open timezone file {name}: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let file = match dir.open(name) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("failed to open timezone file {name}: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
         // Read the file contents
         use std::io::Read;
         let mut buf = Vec::new();
         let mut reader = std::io::BufReader::new(file);
-        reader.read_to_end(&mut buf).map_err(|e| {
-            dt_err(
-                format!("failed to read timezone file {name}: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        match reader.read_to_end(&mut buf) {
+            Ok(_) => {}
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("failed to read timezone file {name}: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        }
 
         // Parse the TZif binary format
-        let tz = jiff::tz::TimeZone::tzif(name, &buf).map_err(|e| {
-            dt_err(
-                format!("failed to parse timezone file {name}: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let tz = match jiff::tz::TimeZone::tzif(name, &buf) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("failed to parse timezone file {name}: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timezone {
                 tz: Arc::new(tz),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1221,42 +1795,67 @@ pub fn builtin_load_tz(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert a timestamp to local time in a timezone.
 pub fn builtin_timestamp_in_tz(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         let [t_thunk, tz_thunk] = args.args.as_slice() else {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "timestamp-in-tz requires 2 arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         };
+        let t_thunk = t_thunk.clone();
+        let tz_thunk = tz_thunk.clone();
 
-        let t_val = t_thunk.clone().require_value()?.clone();
-        let tz_val = tz_thunk.clone().require_value()?.clone();
+        let t_val = {
+            let (result, diags) = t_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let tz_val = {
+            let (result, diags) = tz_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let ts = match &t_val {
             Value::Timestamp { ts, .. } => ts.clone(),
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-in-tz requires Timestamp as first argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let tz = match &tz_val {
             Value::Timezone { tz, .. } => tz,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "timestamp-in-tz requires Timezone as second argument",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1355,7 +1954,7 @@ pub fn builtin_timestamp_in_tz(
             )),
         );
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: map,
                 type_decl_id: TYPE_ID_DICT,
@@ -1365,113 +1964,201 @@ pub fn builtin_timestamp_in_tz(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
 /// Convert local time components to a UTC timestamp in a timezone.
 pub fn builtin_local_to_timestamp(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         if args.args.len() != 7 {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "local->timestamp requires 7 arguments (year month day hour minute second timezone)",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let year_val = Arc::clone(&args.args[0]).require_value()?.clone();
-        let month_val = Arc::clone(&args.args[1]).require_value()?.clone();
-        let day_val = Arc::clone(&args.args[2]).require_value()?.clone();
-        let hour_val = Arc::clone(&args.args[3]).require_value()?.clone();
-        let minute_val = Arc::clone(&args.args[4]).require_value()?.clone();
-        let second_val = Arc::clone(&args.args[5]).require_value()?.clone();
-        let tz_val = Arc::clone(&args.args[6]).require_value()?.clone();
+        let year_thunk = args.args[0].clone();
+        let month_thunk = args.args[1].clone();
+        let day_thunk = args.args[2].clone();
+        let hour_thunk = args.args[3].clone();
+        let minute_thunk = args.args[4].clone();
+        let second_thunk = args.args[5].clone();
+        let tz_thunk = args.args[6].clone();
+
+        let year_val = {
+            let (result, diags) = year_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let month_val = {
+            let (result, diags) = month_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let day_val = {
+            let (result, diags) = day_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let hour_val = {
+            let (result, diags) = hour_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let minute_val = {
+            let (result, diags) = minute_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let second_val = {
+            let (result, diags) = second_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
+        let tz_val = {
+            let (result, diags) = tz_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
+        };
 
         let year = match &year_val {
             Value::Int { n, .. } => *n as i16,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp year must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let month = match &month_val {
             Value::Int { n, .. } => *n as i8,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp month must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let day = match &day_val {
             Value::Int { n, .. } => *n as i8,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp day must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let hour = match &hour_val {
             Value::Int { n, .. } => *n as i8,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp hour must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let minute = match &minute_val {
             Value::Int { n, .. } => *n as i8,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp minute must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let second = match &second_val {
             Value::Int { n, .. } => *n as i8,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp second must be Int",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let tz = match &tz_val {
             Value::Timezone { tz, .. } => tz,
             _ => {
-                return Err(dt_err(
+                return crate::error::DiagnosticResult::err(dt_err(
                     "local->timestamp timezone must be Timezone",
                     call_span.clone(),
                 ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Build a datetime in the given timezone
-        let dt =
-            jiff::civil::DateTime::new(year, month, day, hour, minute, second, 0).map_err(|e| {
-                dt_err(
+        let dt = match jiff::civil::DateTime::new(year, month, day, hour, minute, second, 0) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
                     format!("invalid datetime components: {e}"),
                     call_span.clone(),
-                )
-            })?;
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
-        let zoned = dt.to_zoned((**tz).clone()).map_err(|e| {
-            dt_err(
-                format!("failed to convert to zoned datetime: {e}"),
-                call_span.clone(),
-            )
-        })?;
+        let zoned = match dt.to_zoned((**tz).clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(dt_err(
+                    format!("failed to convert to zoned datetime: {e}"),
+                    call_span.clone(),
+                ))
+                .with_diagnostics(_dr_diags)
+            }
+        };
 
         let ts = zoned.timestamp();
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Timestamp {
                 ts,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -1480,6 +2167,7 @@ pub fn builtin_local_to_timestamp(
             },
             call_span,
         )))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -1525,16 +2213,17 @@ fn local_tz_from_symlink() -> Result<String, std::io::Error> {
 
 /// Resolve the timezone name from `/etc/localtime`, mapping `NotFound` to `"UTC"` and
 /// propagating any other IO error as a tinct user error.
-fn resolve_tz_from_symlink(call_span: &Span) -> Result<String, Box<crate::error::Diagnostic>> {
+fn resolve_tz_from_symlink(call_span: &Span) -> crate::error::DiagnosticResult<String> {
     match local_tz_from_symlink() {
-        Ok(name) => Ok(name),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("UTC".to_string()),
-        Err(e) => Err(Diagnostic::error(
+        Ok(name) => crate::error::DiagnosticResult::ok(name),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::error::DiagnosticResult::ok("UTC".to_string())
+        }
+        Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("local-tz-name: failed to read system timezone: {e}"),
             call_span.clone(),
-        )
-        .into()),
+        )),
     }
 }
 
@@ -1544,14 +2233,16 @@ fn resolve_tz_from_symlink(call_span: &Span) -> Result<String, Box<crate::error:
 /// (analogous to `std::env::var("TZ")`), not a file the caller controls via capability.
 pub fn builtin_local_tz_name(
     args: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let call_span = args.call_span.clone();
         if !args.args.is_empty() {
-            return Err(dt_err(
+            return crate::error::DiagnosticResult::err(dt_err(
                 "local-tz-name takes no arguments",
                 call_span.clone(),
-            ));
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Determine the local timezone name.
@@ -1572,16 +2263,43 @@ pub fn builtin_local_tz_name(
                 if !tz.is_empty() {
                     tz
                 } else {
-                    resolve_tz_from_symlink(&call_span)?
+                    let (result, diags) = resolve_tz_from_symlink(&call_span).into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return crate::error::DiagnosticResult::err(e)
+                                .with_diagnostics(_dr_diags)
+                        }
+                    }
                 }
             } else {
-                resolve_tz_from_symlink(&call_span)?
+                let (result, diags) = resolve_tz_from_symlink(&call_span).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return crate::error::DiagnosticResult::err(e)
+                            .with_diagnostics(_dr_diags)
+                    }
+                }
             }
         } else {
-            resolve_tz_from_symlink(&call_span)?
+            let (result, diags) = resolve_tz_from_symlink(&call_span).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => {
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags)
+                }
+            }
         };
 
-        Ok(Arc::new(Thunk::value(string_val(&tz_name), call_span)))
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
+            string_val(&tz_name),
+            call_span,
+        )))
+        .with_diagnostics(_dr_diags)
     })
 }
 

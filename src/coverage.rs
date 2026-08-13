@@ -472,14 +472,18 @@ async fn ast_pattern_to_coverage_inner(
         } => {
             // Evaluate the base expression to get the type dict (e.g., Color in Color.Red)
             let base_arc = std::sync::Arc::new((**base).clone());
-            let base_val = crate::typecheck::typecheck_annot::eval_expr(&base_arc, state)
-                .await
-                .map_err(|e| {
-                    e.with_label(
+            let base_val = {
+                let (ee_result, _ee_diags) = crate::typecheck::typecheck_annot::eval_expr(&base_arc, state)
+                    .await
+                    .into_parts();
+                match ee_result {
+                    Ok(v) => v,
+                    Err(e) => return Err(e.with_label(
                         base.span.clone(),
                         format!("while evaluating base of `.{}`", field),
-                    )
-                })?;
+                    )),
+                }
+            };
 
             // Convert the field to a HashableValue for lookup
             let field_key = match field {
@@ -500,14 +504,18 @@ async fn ast_pattern_to_coverage_inner(
                             } else {
                                 crate::eval::EvalContext::new_empty()
                             };
-                        let field_val = crate::eval::materialize(thunk, Some(&node.span), &ctx)
-                            .await
-                            .map_err(|e| {
-                                e.with_label(
+                        let field_val = {
+                            let (mat_result, _mat_diags) = crate::eval::materialize(thunk, Some(&node.span), &ctx)
+                                .await
+                                .into_parts();
+                            match mat_result {
+                                Ok(v) => v,
+                                Err(e) => return Err(e.with_label(
                                     node.span.clone(),
                                     format!("while materializing field `{}` in pattern", field),
-                                )
-                            })?;
+                                )),
+                            }
+                        };
 
                         // Check if it's a unit variant constructor
                         match &field_val {
@@ -546,14 +554,18 @@ async fn ast_pattern_to_coverage_inner(
                 _ => {
                     // Base is not a dict — fall through to catch-all for error handling
                     let node_arc = std::sync::Arc::new(node.clone());
-                    let val = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
-                        .await
-                        .map_err(|e| {
-                            e.with_label(
+                    let val = {
+                        let (ee_result, _ee_diags) = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
+                            .await
+                            .into_parts();
+                        match ee_result {
+                            Ok(v) => v,
+                            Err(e) => return Err(e.with_label(
                                 node.span.clone(),
                                 format!("while evaluating pattern `{}`", node.expr),
-                            )
-                        })?;
+                            )),
+                        }
+                    };
                     let tycon_env = state.tycon_env_ref();
                     match &val {
                         Value::Variant {
@@ -586,14 +598,18 @@ async fn ast_pattern_to_coverage_inner(
 
         _ => {
             let node_arc = std::sync::Arc::new(node.clone());
-            let val = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
-                .await
-                .map_err(|e| {
-                    e.with_label(
+            let val = {
+                let (ee_result, _ee_diags) = crate::typecheck::typecheck_annot::eval_expr(&node_arc, state)
+                    .await
+                    .into_parts();
+                match ee_result {
+                    Ok(v) => v,
+                    Err(e) => return Err(e.with_label(
                         node.span.clone(),
                         format!("while evaluating pattern `{}`", node.expr),
-                    )
-                })?;
+                    )),
+                }
+            };
             let tycon_env = state.tycon_env_ref();
             match &val {
                 Value::Variant {

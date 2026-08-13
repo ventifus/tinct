@@ -24,7 +24,7 @@
 //! See doc/04-functions.md §`$_` Desugaring for the complete formal specification.
 
 use crate::ast::{
-    Annotation, Span, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
+    Annotation, Span, Spanned, SurfaceDocument, SurfaceEntry, SurfaceExpression,
     SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use std::sync::Arc;
@@ -52,24 +52,12 @@ pub fn desugar_program_full(program: &SurfaceProgram) -> SurfaceProgram {
 }
 
 /// Desugar a single SurfaceDocument (all expression items).
-/// Returns a new SurfaceDocument with desugared expression items.
 fn desugar_surface_document(doc: &SurfaceDocument) -> SurfaceDocument {
-    let items = doc
-        .items
-        .iter()
-        .map(|item| match item {
-            SurfaceItem::Expr(node_arc) => {
-                let mut new_node = Arc::clone(node_arc);
-                desugar_surface_node(&mut new_node, 0);
-                SurfaceItem::Expr(new_node)
-            }
-            // Skip SurfaceItem::Decl — declarations are handled by the expander, not the evaluator
-            other => other.clone(),
-        })
-        .collect();
+    let mut body = Arc::clone(&doc.body);
+    desugar_surface_node(&mut body, 0);
     SurfaceDocument {
         header: doc.header.clone(),
-        items,
+        body,
     }
 }
 

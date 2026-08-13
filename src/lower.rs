@@ -393,16 +393,27 @@ fn lower_expr(
                         }
                     }
                 }
+                let assigned_slot = match se.node.assigned_slot.get().copied() {
+                    Some(slot) => slot,
+                    None => {
+                        let key_name = se.node.key.as_ref().map(|k| match &k.expr {
+                            SurfaceExpression::StringLiteral { content, .. } => content.clone(),
+                            SurfaceExpression::VarRef { name, .. } => name.clone(),
+                            _ => format!("{:?}", std::mem::discriminant(&k.expr)),
+                        }).unwrap_or_else(|| format!("<positional {}>", core_entries.len()));
+                        diagnostics.push(crate::error::Diagnostic::error(
+                            "lower",
+                            format!("dict entry '{}' has no assigned_slot (resolver did not visit this entry)", key_name),
+                            se.span.clone(),
+                        ));
+                        continue;
+                    }
+                };
                 core_entries.push(Spanned::new(
                     CoreEntry {
                         key,
                         value,
-                        assigned_slot: se
-                            .node
-                            .assigned_slot
-                            .get()
-                            .copied()
-                            .expect("resolver must set assigned_slot"),
+                        assigned_slot,
                     },
                     se.span.clone(),
                 ));
@@ -560,7 +571,7 @@ fn lower_expr(
                     .map(Arc::clone)
                     .filter(|tv| !is_typevalue_unknown(tv))
                     .unwrap_or_else(make_typevalue_unknown);
-                let fn_params: Vec<(Option<String>, std::sync::Arc<crate::value::Value>)> = params
+                let fn_params: Vec<(Option<String>, std::sync::Arc<crate::value::Value>, crate::ast::Span)> = params
                     .iter()
                     .filter(|p| !p.node.variadic)
                     .map(|p| {
@@ -570,7 +581,7 @@ fn lower_expr(
                             .get()
                             .map(Arc::clone)
                             .unwrap_or_else(make_typevalue_unknown);
-                        (Some(p.node.name.clone()), tv)
+                        (Some(p.node.name.clone()), tv, p.span.clone())
                     })
                     .collect();
                 let is_variadic = params.iter().any(|p| p.node.variadic);
@@ -802,9 +813,16 @@ fn lower_expr(
             inferred_type: make_typevalue_unknown(),
         },
 
-        SurfaceExpression::Decl(_) => CoreExpr::Placeholder {
-            inferred_type: make_typevalue_unknown(),
-        },
+        SurfaceExpression::Decl(decl) => {
+            diagnostics.push(crate::error::Diagnostic::error(
+                "lower",
+                format!("unexpanded declaration reached lowerer: {:?}", std::mem::discriminant(decl.as_ref())),
+                arc.span.clone(),
+            ));
+            CoreExpr::Placeholder {
+                inferred_type: make_typevalue_unknown(),
+            }
+        }
 
         SurfaceExpression::UnitVariant {
             ctor_index,
@@ -1181,7 +1199,7 @@ fn lower_let_decl_binding(
 mod tests {
     use super::*;
     use crate::ast::{
-        Provenance, Resolution, Spanned, SurfaceDeclaration, SurfaceExpression, SurfaceItem,
+        Provenance, Resolution, Spanned, SurfaceDeclaration, SurfaceExpression,
         SurfaceNode, TypeAnnotation,
     };
     use std::sync::Arc;
@@ -1334,67 +1352,6 @@ mod tests {
         );
     }
 
-    // ── builtin-lower Decl-skip key contiguity ────────────────────────────────
-    //
-    // Regression test for the expr_idx fix (C-516 F-1): when a SurfaceDocument has a
-    // SurfaceItem::Decl before a SurfaceItem::Expr, the key for the first Expr item must
-    // be "0", not "1". Using enumerate() over all items (before the fix) would assign "1"
-    // because the Decl item was counted. The corrected logic uses a separate expr_idx
-    // counter incremented only on Expr arms.
-    //
-    // This test replicates the builtin_lower item-iteration logic directly to verify that
-    // the key assigned to the first expression entry in entries[0].0 is "0" regardless
-    // of how many Decl items precede it.
-    #[test]
-    fn test_builtin_lower_decl_skip_key_contiguity() {
-        let span = rust_span!();
-
-        // Construct a SurfaceDocument with:
-        //   item 0: SurfaceItem::Decl (a TypeAlias declaration — simulates [type Color ...])
-        //   item 1: SurfaceItem::Expr (a simple integer literal — simulates [x: 42])
-        let decl_body = Arc::new(SurfaceNode::new(SurfaceExpression::Int(0), span.clone()));
-        let decl = SurfaceDeclaration::TypeAlias {
-            params: vec![],
-            body: decl_body,
-        };
-        let spanned_decl = Spanned::new(decl, span.clone());
-
-        let expr_node = Arc::new(SurfaceNode::new(SurfaceExpression::Int(42), span.clone()));
-
-        let items: Vec<SurfaceItem> = vec![
-            SurfaceItem::Decl(spanned_decl),
-            SurfaceItem::Expr(expr_node),
-        ];
-
-        // Replicate builtin_lower's key-assignment loop.
-        let mut entries: Vec<(String, Arc<crate::ast::Spanned<CoreExpr>>)> = Vec::new();
-        let mut expr_idx: usize = 0;
-        for item in &items {
-            let node = match item {
-                SurfaceItem::Expr(n) => n,
-                SurfaceItem::Decl(_) => continue,
-            };
-            let lower_result = lower(node, &std::collections::HashMap::new());
-            let (result, _diagnostics) = lower_result.into_parts();
-            let value = result.expect("lowering always succeeds");
-            entries.push((format!("{expr_idx}"), Arc::new(value)));
-            expr_idx += 1;
-        }
-
-        // There should be exactly one entry (the Expr item; the Decl is skipped).
-        assert_eq!(
-            entries.len(),
-            1,
-            "expected exactly 1 entry (Decl skipped), got {}",
-            entries.len()
-        );
-        // The key for the first Expr item must be "0", not "1".
-        assert_eq!(
-            entries[0].0, "0",
-            "first expression entry key must be \"0\" after skipping leading Decl items; got {:?}",
-            entries[0].0
-        );
-    }
 
     // ── process_escapes unit tests ────────────────────────────────────────────
     //

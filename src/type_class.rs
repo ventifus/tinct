@@ -698,14 +698,16 @@ pub(crate) async fn try_fd_improvement(
 
                 // Call the resolver function. The result is already a TypeValue (evaluate_resolver_with_thunk
                 // runs typenode_value_to_type internally and returns Arc<Value> TypeValue).
-                let computed_ty = match crate::type_normalize::evaluate_resolver_with_thunk(
+                let (resolver_result, resolver_diags) = crate::type_normalize::evaluate_resolver_with_thunk(
                     resolver_thunk,
                     &tn_args,
                     eval_ctx,
                     type_name_to_id,
                 )
                 .await
-                {
+                .into_parts();
+                diagnostics.extend(resolver_diags);
+                let computed_ty = match resolver_result {
                     Ok(Some(tv)) => tv,
                     Ok(None) => continue, // Resolver not applicable — skip.
                     Err(eval_err) => {

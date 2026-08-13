@@ -15,8 +15,8 @@
 //! - Must run before typechecking and evaluation (both consumers of resolved coords).
 
 use crate::ast::{
-    node_id, DotKey, ResolutionTable, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, VarAddr,
+    node_id, DotKey, ResolutionTable, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
+    SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::Diagnostic;
 use crate::symbol_table::SymbolTable;
@@ -42,7 +42,7 @@ pub struct ResolveResult {
 
 /// Extract binding variable names from a `[let name1 name2 ...]` node.
 /// Excludes `_` (wildcard) from the result — `_` is not a binding.
-fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
+fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<(String, Span)> {
     match &let_bindings.expr {
         SurfaceExpression::LetDecl { bindings } => bindings
             .iter()
@@ -51,7 +51,7 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
                     if name == "_" {
                         None // wildcard, not a binding
                     } else {
-                        Some(name.clone())
+                        Some((name.clone(), b.span.clone()))
                     }
                 } else {
                     None
@@ -65,30 +65,31 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<String> {
 struct SurfaceResolver {
     /// Scope stack: index 0 is the outermost scope, last element is the innermost.
     scope_stack: Vec<Arc<SymbolTable>>,
+    /// Type-stage scope chain. Searched for VarRefs in type expression positions
+    /// (annotations, type declaration field types). Type-stage has different bindings
+    /// than runtime — e.g., `or` is a union constructor in type-stage but a boolean
+    /// function in runtime.
+    type_stage_scope: Vec<Arc<SymbolTable>>,
     table: ResolutionTable,
     diagnostics: Vec<Diagnostic>,
-    /// Maps method_name -> EffectPerform VarAddr for typeclass method calls.
-    /// Entries are inserted when class/instance pairs are discovered within a dict.
-    /// The corresponding SymbolTable entry uses EFFECT_SENTINEL as its slot.
     effect_perform_addrs: std::collections::HashMap<String, VarAddr>,
-    /// The initial (outermost) scope passed by the caller, used for unreferenced tracking.
     initial_scope: Option<Arc<SymbolTable>>,
-    /// Scope frames accumulated by this document's Sequential. Recorded by
-    /// walk_surface_document after the walk completes. The caller (pipeline /
-    /// init program) receives these via finish() → scope_frames.
     document_scope_frames: Vec<Arc<SymbolTable>>,
-    /// Names from the initial scope that were referenced during resolution.
     referenced_initial_names: std::collections::HashSet<String>,
 }
 
 impl SurfaceResolver {
-    fn new(initial_scope: &Arc<SymbolTable>) -> Self {
+    fn from_chain(
+        scope: &crate::symbol_table::ScopeChain,
+        type_stage_scope: &crate::symbol_table::ScopeChain,
+    ) -> Self {
         Self {
-            scope_stack: vec![Arc::clone(initial_scope)],
+            scope_stack: scope.clone(),
+            type_stage_scope: type_stage_scope.clone(),
             table: ResolutionTable::new(),
             diagnostics: Vec::new(),
             effect_perform_addrs: std::collections::HashMap::new(),
-            initial_scope: Some(Arc::clone(initial_scope)),
+            initial_scope: scope.last().cloned(),
             document_scope_frames: Vec::new(),
             referenced_initial_names: std::collections::HashSet::new(),
         }
@@ -96,10 +97,10 @@ impl SurfaceResolver {
 
     /// Enter a scope with contiguous 0-based slots for the given names.
     /// Returns the Arc<SymbolTable> for setting on AST nodes.
-    fn enter_scope(&mut self, names: &[String]) -> Arc<SymbolTable> {
+    fn enter_scope(&mut self, names: &[(String, Span)]) -> Arc<SymbolTable> {
         let mut st = SymbolTable::new();
-        for (i, name) in names.iter().enumerate() {
-            st.insert(name.clone(), i as u32, None);
+        for (i, (name, span)) in names.iter().enumerate() {
+            st.insert(name.clone(), i as u32, span.clone());
         }
         let arc = Arc::new(st);
         self.scope_stack.push(Arc::clone(&arc));
@@ -145,6 +146,19 @@ impl SurfaceResolver {
         }
         Some(VarAddr::Dispatch(depth, slot))
     }
+
+    /// Resolve a name in a type expression context: search type-stage scope first,
+    /// then runtime scope. Type-stage has different bindings (e.g., `or` produces
+    /// unions, not booleans). Falls back to runtime scope if not found in type-stage.
+    fn resolve_name_type_expr(&mut self, name: &str) -> Option<VarAddr> {
+        for frame in self.type_stage_scope.iter().rev() {
+            if frame.entries().contains_key(name) {
+                return Some(VarAddr::Dispatch(0, 0));
+            }
+        }
+        self.resolve_name(name)
+    }
+
 
     /// Resolve `name` using leading-dot semantics: find the **second** occurrence of `name`
     /// in the scope stack, skipping the innermost (first) binding.
@@ -207,11 +221,17 @@ impl SurfaceResolver {
                     self.table.insert(node_id(arc), addr);
                 } else {
                     resolution.set(None);
-                    self.diagnostics.push(Diagnostic::error(
+                    let mut diag = Diagnostic::error(
                         KIND,
                         format!("undefined variable: {}", name),
                         arc.span.clone(),
-                    ));
+                    );
+                    for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                        &self.scope_stack, None,
+                    ) {
+                        diag = diag.with_note(note);
+                    }
+                    self.diagnostics.push(diag);
                 }
             }
 
@@ -270,7 +290,7 @@ impl SurfaceResolver {
                     if let Some(key) = &entry.node.key {
                         match &key.expr {
                             SurfaceExpression::StringLiteral { content, .. } => {
-                                st.insert(content.clone(), scope_slot, None);
+                                st.insert(content.clone(), scope_slot, key.span.clone());
                                 scope_slot += 1;
                             }
                             SurfaceExpression::VarRef {
@@ -278,7 +298,7 @@ impl SurfaceResolver {
                                 escaped: false,
                                 ..
                             } => {
-                                st.insert(name.clone(), scope_slot, None);
+                                st.insert(name.clone(), scope_slot, key.span.clone());
                                 scope_slot += 1;
                             }
                             _ => {}
@@ -306,7 +326,7 @@ impl SurfaceResolver {
                                         });
                                     if let Some(name) = method_name {
                                         if !st.entries().contains_key(&name) {
-                                            st.insert(name.clone(), scope_slot, None);
+                                            st.insert(name.clone(), scope_slot, me.span.clone());
                                             scope_slot += 1;
                                         }
                                         let _ = me.node.assigned_slot.set(overall_slot);
@@ -335,7 +355,7 @@ impl SurfaceResolver {
                                         .get(method_name)
                                         .map_or(true, |e| e.slot == EFFECT_SENTINEL);
                                     if should_inject {
-                                        st.insert(method_name.clone(), EFFECT_SENTINEL, None);
+                                        st.insert(method_name.clone(), EFFECT_SENTINEL, entry.span.clone());
                                         self.effect_perform_addrs.insert(
                                             method_name.clone(),
                                             VarAddr::EffectPerform {
@@ -389,7 +409,7 @@ impl SurfaceResolver {
                     }
                 }
 
-                let param_names: Vec<String> = params.iter().map(|p| p.node.name.clone()).collect();
+                let param_names: Vec<(String, Span)> = params.iter().map(|p| (p.node.name.clone(), p.span.clone())).collect();
                 // Set resolved dispatch slots on param nodes for lowerer use.
                 // Slots are per-frame relative (0-based).
                 for (i, p) in params.iter().enumerate() {
@@ -501,7 +521,7 @@ impl SurfaceResolver {
                         let _ = arm.scope.set(scope_arc);
                     }
 
-                    self.walk_surface_node(&arm.pattern);
+                    self.walk_type_expr_node(&arm.pattern);
 
                     if let Some(guard) = &arm.guard {
                         self.walk_surface_node(guard);
@@ -545,7 +565,7 @@ impl SurfaceResolver {
                 self.walk_surface_node(payload);
             }
             SurfaceExpression::TypeDecl { inner, .. } => {
-                self.walk_surface_node(inner);
+                self.walk_type_decl_inner(inner);
             }
             SurfaceExpression::ReprDecl { inner, is_pred, .. } => {
                 if let Some(is_pred_node) = is_pred {
@@ -563,6 +583,74 @@ impl SurfaceResolver {
 
             // Placeholder (...) is a genuine TODO marker — no special handling needed.
             SurfaceExpression::Placeholder(..) => {}
+        }
+    }
+
+    /// Walk a TypeDecl's inner expression. Handles:
+    /// - ReprDecl wrapper: unwrap and recurse
+    /// - Constructor dict (expanded): Dict entries with UnitVariant/Fn/Call values.
+    ///   Sets up letrec scope (assigned_slots) and walks constructor bodies (runtime).
+    /// - Structural alias body (original Dict preserved): Dict entries where VALUES
+    ///   are type expressions (VarRefs like `String`, `TypeValue`). Sets up letrec
+    ///   scope and walks values through type-stage resolution.
+    fn walk_type_decl_inner(&mut self, inner: &Arc<SurfaceNode>) {
+        match &inner.expr {
+            SurfaceExpression::ReprDecl { inner: repr_inner, is_pred, .. } => {
+                if let Some(is_pred_node) = is_pred {
+                    self.walk_surface_node(is_pred_node);
+                }
+                self.walk_type_decl_inner(repr_inner);
+            }
+            SurfaceExpression::Dict { entries, scope: dict_scope, .. } => {
+                // Walk key expressions in outer scope.
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        self.walk_surface_node(key);
+                    }
+                }
+                // Build the letrec scope (same as normal Dict handler).
+                let mut st = SymbolTable::new();
+                let mut scope_slot = 0u32;
+                let mut overall_slot = 0u32;
+                for entry in entries.iter() {
+                    if let Some(key) = &entry.node.key {
+                        match &key.expr {
+                            SurfaceExpression::StringLiteral { content, .. } => {
+                                st.insert(content.clone(), scope_slot, key.span.clone());
+                                scope_slot += 1;
+                            }
+                            SurfaceExpression::VarRef { name, escaped: false, .. } => {
+                                st.insert(name.clone(), scope_slot, key.span.clone());
+                                scope_slot += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let _ = entry.node.assigned_slot.set(overall_slot);
+                    overall_slot += 1;
+                }
+                let st_arc = Arc::new(st);
+                let _ = dict_scope.set(Arc::clone(&st_arc));
+                let saved_depth = self.scope_stack.len();
+                self.scope_stack.push(st_arc);
+
+                // Walk entry values: runtime code (Fn/UnitVariant/Call) through
+                // normal resolution, type expressions through type-stage resolution.
+                for entry in entries {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Fn { .. }
+                        | SurfaceExpression::UnitVariant { .. }
+                        | SurfaceExpression::Call { .. } => {
+                            self.walk_surface_node(&entry.node.value);
+                        }
+                        _ => {
+                            self.walk_type_expr_node(&entry.node.value);
+                        }
+                    }
+                }
+                self.scope_stack.truncate(saved_depth);
+            }
+            _ => {}
         }
     }
 
@@ -656,7 +744,17 @@ impl SurfaceResolver {
                     if let Some(key) = &entry.node.key {
                         self.walk_surface_node(key);
                     }
-                    self.walk_surface_node(&entry.node.value);
+                    let is_runtime_key = entry.node.key.as_ref().is_some_and(|k| {
+                        matches!(&k.expr,
+                            SurfaceExpression::StringLiteral { content, .. }
+                            if content == "default" || content == "doc" || content == "bind"
+                        )
+                    });
+                    if is_runtime_key {
+                        self.walk_surface_node(&entry.node.value);
+                    } else {
+                        self.walk_type_expr_node(&entry.node.value);
+                    }
                 }
             }
             crate::ast::Annotation::Annotated(outer, inner) => {
@@ -665,6 +763,46 @@ impl SurfaceResolver {
                 let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span.clone());
                 self.walk_surface_annotation(&inner_spanned);
             }
+        }
+    }
+
+    /// Walk a node in a type expression context. VarRefs resolve against
+    /// type-stage scope first, then runtime scope. Used for annotation values,
+    /// type declaration field types, and other positions where names refer to
+    /// type-stage definitions.
+    fn walk_type_expr_node(&mut self, arc: &Arc<SurfaceNode>) {
+        match &arc.expr {
+            SurfaceExpression::VarRef {
+                name, resolution, ..
+            } => {
+                if let Some(addr) = self.resolve_name_type_expr(name) {
+                    resolution.set(Some(addr.clone()));
+                    self.table.insert(node_id(arc), addr);
+                }
+            }
+            SurfaceExpression::Call { func, args, named_args, .. } => {
+                self.walk_type_expr_node(func);
+                for arg in args {
+                    self.walk_type_expr_node(arg);
+                }
+                for na in named_args {
+                    self.walk_type_expr_node(&na.node.value);
+                }
+            }
+            SurfaceExpression::Dict { entries, .. } => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        self.walk_surface_node(key);
+                    }
+                    self.walk_type_expr_node(&entry.node.value);
+                }
+            }
+            SurfaceExpression::Field { expr, .. } => {
+                if let Some(target) = expr {
+                    self.walk_type_expr_node(target);
+                }
+            }
+            _ => self.walk_surface_node(arc),
         }
     }
 
@@ -711,24 +849,8 @@ impl SurfaceResolver {
     fn walk_surface_document(&mut self, doc: &SurfaceDocument) {
         let saved_depth = self.scope_stack.len();
 
-        for item in doc.items.iter() {
-            match item {
-                SurfaceItem::Expr(node) => {
-                    self.walk_surface_node(node);
-                    if let SurfaceExpression::Dict { scope, .. } = &node.expr {
-                        if let Some(dict_st) = scope.get() {
-                            self.scope_stack.push(Arc::clone(dict_st));
-                        }
-                    }
-                }
-                SurfaceItem::Decl(decl) => {
-                    self.walk_surface_declaration(&decl.node);
-                }
-            }
-        }
+        self.walk_surface_node(&doc.body);
 
-        // Record accumulated scopes for the caller (pipeline / init program),
-        // then restore the stack.
         self.document_scope_frames = self.scope_stack[saved_depth..].to_vec();
         self.scope_stack.truncate(saved_depth);
     }
@@ -763,8 +885,12 @@ impl SurfaceResolver {
 /// - `table`: resolution table mapping node IDs to VarAddr values.
 /// - `diagnostics`: resolve errors (undefined variables).
 /// - `unreferenced`: names from `scope` that were never referenced.
-pub fn resolve_document(doc: &SurfaceDocument, scope: &Arc<SymbolTable>) -> ResolveResult {
-    let mut resolver = SurfaceResolver::new(scope);
+pub fn resolve_document(
+    doc: &SurfaceDocument,
+    scope: &crate::symbol_table::ScopeChain,
+    type_stage_scope: &crate::symbol_table::ScopeChain,
+) -> ResolveResult {
+    let mut resolver = SurfaceResolver::from_chain(scope, type_stage_scope);
     resolver.walk_surface_document(doc);
     resolver.finish()
 }
@@ -778,8 +904,12 @@ pub fn resolve_document(doc: &SurfaceDocument, scope: &Arc<SymbolTable>) -> Reso
 /// - `table`: resolution table mapping node IDs to VarAddr values.
 /// - `diagnostics`: resolve errors (undefined variables).
 /// - `unreferenced`: names from `scope` that were never referenced.
-pub fn resolve_program(program: &SurfaceProgram, scope: &Arc<SymbolTable>) -> ResolveResult {
-    let mut resolver = SurfaceResolver::new(scope);
+pub fn resolve_program(
+    program: &SurfaceProgram,
+    scope: &crate::symbol_table::ScopeChain,
+    type_stage_scope: &crate::symbol_table::ScopeChain,
+) -> ResolveResult {
+    let mut resolver = SurfaceResolver::from_chain(scope, type_stage_scope);
     for doc_spanned in &program.documents {
         resolver.walk_surface_document(&doc_spanned.node);
     }
@@ -798,11 +928,10 @@ pub fn collect_document_produced_keys(
     doc: &crate::ast::SurfaceDocument,
     doc_span: &crate::ast::Span,
 ) -> (Vec<String>, crate::ast::Span) {
-    // Find the last Expr item.
-    let last_expr = doc.items.iter().rev().find_map(|item| match item {
-        SurfaceItem::Expr(node) => Some(node),
-        SurfaceItem::Decl(_) => None,
-    });
+    let last_expr = match &doc.body.expr {
+        SurfaceExpression::Sequential(exprs) => exprs.last(),
+        _ => Some(&doc.body),
+    };
     let Some(expr_node) = last_expr else {
         return (Vec::new(), doc_span.clone());
     };
@@ -874,11 +1003,7 @@ pub fn collect_var_accesses(
 ) -> (Vec<String>, bool) {
     let mut field_accesses = Vec::new();
     let mut dynamic_use = false;
-    for item in &doc.items {
-        if let SurfaceItem::Expr(node) = item {
-            collect_var_accesses_node(node, var_name, &mut field_accesses, &mut dynamic_use);
-        }
-    }
+    collect_var_accesses_node(&doc.body, var_name, &mut field_accesses, &mut dynamic_use);
     (field_accesses, dynamic_use)
 }
 
@@ -1133,8 +1258,8 @@ mod tests {
         let program = crate::desugar::desugar_surface_program(&output.program);
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
-        let scope = SymbolTable::empty();
-        let result = resolve_program(&program, &scope);
+        let scope = SymbolTable::empty_chain();
+        let result = resolve_program(&program, &scope, &Vec::new());
         (program, result.table)
     }
 
@@ -1155,12 +1280,7 @@ mod tests {
         name: &str,
         out: &mut Vec<(NodeId, Arc<SurfaceNode>)>,
     ) {
-        for item in &doc.items {
-            match item {
-                crate::ast::SurfaceItem::Expr(node) => collect_varrefs_in_node(node, name, out),
-                crate::ast::SurfaceItem::Decl(_) => {}
-            }
-        }
+        collect_varrefs_in_node(&doc.body, name, out);
     }
 
     fn collect_varrefs_in_node(
@@ -1467,8 +1587,8 @@ mod tests {
         for (i, name) in env_names.iter().enumerate() {
             st.insert(name.clone(), i as u32, None);
         }
-        let scope = Arc::new(st);
-        let result = resolve_document(doc, &scope);
+        let scope = vec![Arc::new(st)];
+        let result = resolve_document(doc, &scope, &Vec::new());
         result.unreferenced
     }
 
@@ -1676,8 +1796,8 @@ mod tests {
         // Build root scope with one entry.
         let mut root_st = SymbolTable::new();
         root_st.insert("builtin-dict-get".to_string(), 0, None);
-        let scope = Arc::new(root_st);
-        let result = resolve_document(doc, &scope);
+        let scope = vec![Arc::new(root_st)];
+        let result = resolve_document(doc, &scope, &Vec::new());
 
         // With per-frame 0-based slots:
         // Outer dict scope: x→0, inner→1
@@ -1794,7 +1914,14 @@ mod tests {
         // Build a SurfaceDocument with no Expr items — only an empty header.
         let doc = crate::ast::SurfaceDocument {
             header: indexmap::IndexMap::new(),
-            items: Vec::new(),
+            body: std::sync::Arc::new(crate::ast::SurfaceNode {
+                expr: crate::ast::SurfaceExpression::Sequential(Vec::new()),
+                span: crate::ast::Span::new(10, 5, 20, 15, std::sync::Arc::from("test-file.llt")),
+                type_guard: Default::default(),
+                provenance: Default::default(),
+                inferred_type_decl_id: Default::default(),
+                type_instantiation: Default::default(),
+            }),
         };
         let doc_span = crate::ast::Span::new(10, 5, 20, 15, std::sync::Arc::from("test-file.llt"));
         let (keys, span) = super::collect_document_produced_keys(&doc, &doc_span);

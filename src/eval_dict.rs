@@ -25,16 +25,17 @@ fn value_to_key(
     value: &Value,
     span: &Span,
     ctx: &Arc<EvalContext>,
-) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<HashableValue> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     match value {
         Value::String {
             ref source,
             start,
             end,
             ..
-        } => Ok(HashableValue::Str(Arc::from(&source[*start..*end]))),
-        Value::Int { n, .. } => Ok(HashableValue::Int(*n)),
-        Value::Float { n, .. } => Ok(HashableValue::Float(n.to_bits())),
+        } => crate::error::DiagnosticResult::ok(HashableValue::Str(Arc::from(&source[*start..*end]))).with_diagnostics(_dr_diags),
+        Value::Int { n, .. } => crate::error::DiagnosticResult::ok(HashableValue::Int(*n)).with_diagnostics(_dr_diags),
+        Value::Float { n, .. } => crate::error::DiagnosticResult::ok(HashableValue::Float(n.to_bits())).with_diagnostics(_dr_diags),
         Value::Variant {
             type_decl_id,
             ctor_index,
@@ -46,26 +47,32 @@ fn value_to_key(
                 Some(p) => {
                     let p_val = match p.peek_result() {
                         Some(Ok(v)) => v,
-                        Some(Err(e)) => return Err(Box::new((**e).clone())),
+                        Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()).with_diagnostics(_dr_diags),
                         None => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 "variant payload not materialized".to_string(),
                                 span.clone(),
-                            )
-                            .into())
+                            ))
+                            .with_diagnostics(_dr_diags)
                         }
                     };
-                    Some(Box::new(value_to_key(p_val, span, ctx)?))
+                    let (result, diags) = value_to_key(p_val, span, ctx).into_parts();
+                    _dr_diags.extend(diags);
+                    let val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    Some(Box::new(val))
                 }
             };
-            Ok(HashableValue::Variant {
+            crate::error::DiagnosticResult::ok(HashableValue::Variant {
                 type_decl_id: *type_decl_id,
                 ctor_index: *ctor_index,
                 payload: hv_payload,
-            })
+            }).with_diagnostics(_dr_diags)
         }
-        _ => Err(Diagnostic::error(
+        _ => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "type mismatch: expected {}, got {}",
@@ -73,8 +80,8 @@ fn value_to_key(
                 ctx.type_display_name(value.type_decl_id_of())
             ),
             span.clone(),
-        )
-        .into()),
+        ))
+        .with_diagnostics(_dr_diags),
     }
 }
 
@@ -102,7 +109,8 @@ async fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
     _parent_env_id: u32,
     ctx: &Arc<EvalContext>,
-) -> Result<Value, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Value> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
@@ -131,13 +139,13 @@ async fn eval_annotation_property_dict(
                     if let Ok(i) = i64::try_from(*n) {
                         HashableValue::Int(i)
                     } else {
-                        return Err(Box::new(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "u64 key {n} is too large for a dict integer key (max i64::MAX)"
                             ),
                             key_node.span.clone(),
-                        )));
+                        )).with_diagnostics(_dr_diags);
                     }
                 }
                 SurfaceExpression::VarRef { name, .. } => {
@@ -147,25 +155,26 @@ async fn eval_annotation_property_dict(
                     // Annotation property dict keys must be string literals, int literals,
                     // or bare words. Complex key expressions (calls, fn, pipes) are not
                     // valid annotation syntax.
-                    return Err(Box::new(Diagnostic::error(KIND,
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                         format!(
                             "annotation property dict keys must be string literals, int literals, or bare words, got: {:?}",
                             key_node.expr
                         ),
                         key_node.span.clone(),
-                    )));
+                    )).with_diagnostics(_dr_diags);
                 }
             }
         } else {
             // Auto-indexed entry
             let k = HashableValue::Int(auto_index);
-            auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                Diagnostic::error(
+            auto_index = match auto_index.checked_add(1) {
+                Some(v) => v,
+                None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("{}: integer overflow", "annotation dict auto-index"),
                     entry.span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            };
             k
         };
 
@@ -221,19 +230,30 @@ async fn eval_annotation_property_dict(
                     .expect("runtime_diagnostics mutex poisoned")
                     .extend(lower_diags);
                 if has_errors {
-                    return Err(Box::new(crate::error::Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
                         KIND_LOWER,
                         "expression lowering failed",
                         entry.node.value.span.clone(),
-                    )));
+                    )).with_diagnostics(_dr_diags);
                 }
-                match eval_core_expr(&core_expr, &SymbolTable::empty_chain(), ctx).await {
-                    Ok(thunk) => materialize(&thunk, Some(&entry.node.value.span), ctx).await?,
-                    Err(e) if e.message.contains("placeholder") => {
-                        // Placeholder from nested type expressions → skip this key.
-                        continue;
+                {
+                    let (ec_result, ec_diags) = eval_core_expr(&core_expr, &SymbolTable::empty_chain(), ctx).await.into_parts();
+                    _dr_diags.extend(ec_diags);
+                    match ec_result {
+                        Ok(thunk) => {
+                            let (mat_result, mat_diags) = materialize(&thunk, Some(&entry.node.value.span), ctx).await.into_parts();
+                            _dr_diags.extend(mat_diags);
+                            match mat_result {
+                                Ok(v) => v,
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            }
+                        },
+                        Err(e) if e.message.contains("placeholder") => {
+                            // Placeholder from nested type expressions → skip this key.
+                            continue;
+                        }
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
                     }
-                    Err(e) => return Err(e),
                 }
             }
         };
@@ -251,24 +271,24 @@ async fn eval_annotation_property_dict(
                 },
                 None => (auto_index - 1).to_string(),
             };
-            return Err(Box::new(
+            return crate::error::DiagnosticResult::err(
                 Diagnostic::error(
                     KIND,
                     format!("duplicate key: {}", key_str),
                     entry.span.clone(),
                 )
                 .with_secondary_span(prev_span, "previously defined here"),
-            ));
+            ).with_diagnostics(_dr_diags);
         }
     }
 
-    Ok(Value::Dict {
+    crate::error::DiagnosticResult::ok(Value::Dict {
         entries: dict_map,
         type_decl_id: TYPE_ID_DICT,
         type_val: Some(crate::type_infer::make_typevalue_nominal(
             crate::value::TYPE_ID_DICT,
         )),
-    })
+    }).with_diagnostics(_dr_diags)
 }
 
 // ============================================================================
@@ -337,7 +357,8 @@ pub(crate) async fn eval_dict_core(
     resolver_scope: Option<&Arc<SymbolTable>>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let mut dict_map: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
@@ -369,16 +390,24 @@ pub(crate) async fn eval_dict_core(
         // must not see letrec sibling bindings. Pass outer_scope so computed keys can
         // reference outer-scope variables.
         let key = match &entry.node.key {
-            Some(key_expr) => eval_key_core(key_expr, outer_scope, ctx).await?,
+            Some(key_expr) => {
+                let (ek_result, ek_diags) = eval_key_core(key_expr, outer_scope, ctx).await.into_parts();
+                _dr_diags.extend(ek_diags);
+                match ek_result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            }
             None => {
                 let k = HashableValue::Int(auto_index);
-                auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                    Diagnostic::error(
+                auto_index = match auto_index.checked_add(1) {
+                    Some(v) => v,
+                    None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("{}: integer overflow", "dict auto-index"),
                         entry.span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                };
                 k
             }
         };
@@ -478,8 +507,14 @@ pub(crate) async fn eval_dict_core(
                 // type-level metadata, not runtime values.
                 if let Some(ann_entries) = extract_property_dict_from_annotation(&annotation.node) {
                     // Evaluate the annotation PropertyDict to a Value::Dict
-                    let annotation_value =
-                        eval_annotation_property_dict(ann_entries, 0u32, ctx).await?;
+                    let annotation_value = {
+                        let (eapd_result, eapd_diags) = eval_annotation_property_dict(ann_entries, 0u32, ctx).await.into_parts();
+                        _dr_diags.extend(eapd_diags);
+                        match eapd_result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    };
 
                     // Wrap value in Value::Annotated.
                     // For literals (already materialized): wrap immediately in Value::Annotated.
@@ -544,14 +579,14 @@ pub(crate) async fn eval_dict_core(
                 },
                 None => (auto_index - 1).to_string(),
             };
-            return Err(Box::new(
+            return crate::error::DiagnosticResult::err(
                 Diagnostic::error(
                     KIND,
                     format!("duplicate key: {}", key_str),
                     entry.span.clone(),
                 )
                 .with_secondary_span(prev_span, "previously defined here"),
-            ));
+            ).with_diagnostics(_dr_diags);
         }
 
         // Insert into the letrec SymbolTable for named entries (only when creating new scope).
@@ -560,7 +595,7 @@ pub(crate) async fn eval_dict_core(
                 letrec_scope_owned
                     .as_mut()
                     .unwrap()
-                    .insert(name, slot, Some(span));
+                    .insert(name, slot, span);
             }
         }
         // Track all non-literal thunks (both static and computed key) for scope patching.
@@ -629,7 +664,7 @@ pub(crate) async fn eval_dict_core(
         }
     }
 
-    Ok(Arc::new(Thunk::value(
+    crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
         Value::Dict {
             entries: dict_map,
             type_decl_id: TYPE_ID_DICT,
@@ -638,7 +673,7 @@ pub(crate) async fn eval_dict_core(
             )),
         },
         dict_span.clone(),
-    )))
+    ))).with_diagnostics(_dr_diags)
 }
 
 /// Evaluate a dict key from a `CoreExpr` node, returning a concrete `HashableValue`.
@@ -649,23 +684,23 @@ pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
     scope: &ScopeChain,
     ctx: &Arc<EvalContext>,
-) -> Result<HashableValue, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<HashableValue> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // Direct key evaluation for statically-known keys — avoids thunk creation and materialization
     match &key_expr.node {
-        CoreExpr::Str { value: s, .. } => return Ok(HashableValue::Str(Arc::from(s.as_str()))),
-        CoreExpr::Int { value: n, .. } => return Ok(HashableValue::Int(*n)),
-        CoreExpr::Float { value: f, .. } => return Ok(HashableValue::Float(f.to_bits())),
+        CoreExpr::Str { value: s, .. } => return crate::error::DiagnosticResult::ok(HashableValue::Str(Arc::from(s.as_str()))).with_diagnostics(_dr_diags),
+        CoreExpr::Int { value: n, .. } => return crate::error::DiagnosticResult::ok(HashableValue::Int(*n)).with_diagnostics(_dr_diags),
+        CoreExpr::Float { value: f, .. } => return crate::error::DiagnosticResult::ok(HashableValue::Float(f.to_bits())).with_diagnostics(_dr_diags),
         // U64 keys that fit in i64 are used as integer keys; larger values error.
         CoreExpr::U64 { value: n, .. } => {
             if let Ok(i) = i64::try_from(*n) {
-                return Ok(HashableValue::Int(i));
+                return crate::error::DiagnosticResult::ok(HashableValue::Int(i)).with_diagnostics(_dr_diags);
             }
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
                 key_expr.span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         // Annotated keys (e.g., `name@[doc: "..."]`) always resolve to the bare name.
         // The key is a Var { annotation: Some(_) } — the name field is the bare identifier.
@@ -675,13 +710,28 @@ pub(crate) async fn eval_key_core(
             annotation: Some(_),
             ..
         } => {
-            return Ok(HashableValue::Str(Arc::from(name.as_str())));
+            return crate::error::DiagnosticResult::ok(HashableValue::Str(Arc::from(name.as_str()))).with_diagnostics(_dr_diags);
         }
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete HashableValue keys.
     // Key expressions evaluate in the parent scope.
-    let thunk = eval_core_expr(key_expr.as_ref(), scope, ctx).await?;
-    let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
-    value_to_key(&value, &key_expr.span, ctx)
+    let (ec_result, ec_diags) = eval_core_expr(key_expr.as_ref(), scope, ctx).await.into_parts();
+    _dr_diags.extend(ec_diags);
+    let thunk = match ec_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    let (mat_result, mat_diags) = materialize(&thunk, Some(&key_expr.span), ctx).await.into_parts();
+    _dr_diags.extend(mat_diags);
+    let value = match mat_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    let (vtk_result, vtk_diags) = value_to_key(&value, &key_expr.span, ctx).into_parts();
+    _dr_diags.extend(vtk_diags);
+    match vtk_result {
+        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    }
 }

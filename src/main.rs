@@ -15,12 +15,12 @@ use tinct::{
 const KIND: &str = "cli";
 
 /// Create a CLI-level diagnostic error (for argument validation, file I/O, etc.).
-fn cli_error(message: impl Into<String>) -> Box<tinct::Diagnostic> {
-    Box::new(tinct::Diagnostic::error(
+fn cli_error(message: impl Into<String>) -> tinct::Diagnostic {
+    tinct::Diagnostic::error(
         KIND,
         message.into(),
         tinct::rust_span!(),
-    ))
+    )
 }
 
 // Exit codes for llt eval
@@ -317,7 +317,7 @@ async fn async_main() -> i32 {
     // Hard RLIMIT_AS backstop: catches anything that bypasses the allocator
     // (direct mmap, stack growth, shared-library mappings).
     #[cfg(unix)]
-    if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds) {
+    if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds).into_parts().0 {
         eprintln!("error: {e}");
         return EXIT_ERROR;
     }
@@ -388,7 +388,7 @@ async fn async_main() -> i32 {
         }
     };
 
-    match result {
+    match result.into_parts().0 {
         Ok(()) => EXIT_OK,
         Err(e) => {
             eprintln!("{e}");
@@ -404,83 +404,88 @@ async fn async_main() -> i32 {
 fn open_cap_fs_entries(
     cap_fs: &[String],
     no_fs: bool,
-) -> Result<Vec<(String, Arc<cap_std::fs::Dir>, tinct::DirPerms)>, Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<Vec<(String, Arc<cap_std::fs::Dir>, tinct::DirPerms)>> {
     if no_fs {
-        return Ok(Vec::new());
+        return tinct::DiagnosticResult::ok(Vec::new());
     }
 
-    let parsed_entries = parse_cap_fs_entries(cap_fs)?;
+    let parsed_entries = match parse_cap_fs_entries(cap_fs).into_parts().0 {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(e),
+    };
     let mut result = Vec::new();
 
     for (name, cap_path, perms) in parsed_entries {
-        let cap_dir = cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority())
-            .map_err(|e| {
-            cli_error(format!(
+        let cap_dir = match cap_std::fs::Dir::open_ambient_dir(&cap_path, cap_std::ambient_authority()) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-fs: cannot open directory {:?}: {e}",
                 cap_path.display()
-            ))
-        })?;
+            ))),
+        };
         result.push((name, Arc::new(cap_dir), perms));
     }
 
-    Ok(result)
+    tinct::DiagnosticResult::ok(result)
 }
 
 /// Parse a duration string like "5s", "500ms", "2m" into seconds (u32).
 /// Rounds up milliseconds to the nearest second (minimum 1).
-fn parse_duration(s: &str) -> Result<u32, Box<tinct::Diagnostic>> {
+fn parse_duration(s: &str) -> tinct::DiagnosticResult<u32> {
     let s = s.trim();
 
     // Try to parse with suffix
     if let Some(rest) = s.strip_suffix("ms") {
-        let ms: u64 = rest
-            .trim()
-            .parse()
-            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
+        let ms: u64 = match rest.trim().parse() {
+            Ok(v) => v,
+            Err(_) => return tinct::DiagnosticResult::err(cli_error(format!("invalid duration: {s}"))),
+        };
         // Round up to nearest second, minimum 1
-        let secs = ms
-            .checked_add(999)
-            .ok_or_else(|| cli_error(format!("duration out of range: {s}")))?
-            / 1000;
+        let secs = match ms.checked_add(999) {
+            Some(v) => v,
+            None => return tinct::DiagnosticResult::err(cli_error(format!("duration out of range: {s}"))),
+        } / 1000;
         if secs == 0 || secs > u32::MAX as u64 {
-            return Err(cli_error(format!("duration out of range: {s}")));
+            return tinct::DiagnosticResult::err(cli_error(format!("duration out of range: {s}")));
         }
-        return Ok(secs as u32);
+        return tinct::DiagnosticResult::ok(secs as u32);
     }
 
     if let Some(rest) = s.strip_suffix('s') {
-        let secs: u32 = rest
-            .trim()
-            .parse()
-            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
+        let secs: u32 = match rest.trim().parse() {
+            Ok(v) => v,
+            Err(_) => return tinct::DiagnosticResult::err(cli_error(format!("invalid duration: {s}"))),
+        };
         if secs == 0 {
-            return Err(cli_error("timeout must be at least 1 second"));
+            return tinct::DiagnosticResult::err(cli_error("timeout must be at least 1 second"));
         }
-        return Ok(secs);
+        return tinct::DiagnosticResult::ok(secs);
     }
 
     if let Some(rest) = s.strip_suffix('m') {
-        let mins: u32 = rest
-            .trim()
-            .parse()
-            .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
+        let mins: u32 = match rest.trim().parse() {
+            Ok(v) => v,
+            Err(_) => return tinct::DiagnosticResult::err(cli_error(format!("invalid duration: {s}"))),
+        };
         if mins == 0 {
-            return Err(cli_error("timeout must be at least 1 second"));
+            return tinct::DiagnosticResult::err(cli_error("timeout must be at least 1 second"));
         }
-        let secs = mins
-            .checked_mul(60)
-            .ok_or_else(|| cli_error(format!("duration out of range: {s}")))?;
-        return Ok(secs);
+        let secs = match mins.checked_mul(60) {
+            Some(v) => v,
+            None => return tinct::DiagnosticResult::err(cli_error(format!("duration out of range: {s}"))),
+        };
+        return tinct::DiagnosticResult::ok(secs);
     }
 
     // No suffix — assume seconds
-    let secs: u32 = s
-        .parse()
-        .map_err(|_| cli_error(format!("invalid duration: {s}")))?;
+    let secs: u32 = match s.parse() {
+        Ok(v) => v,
+        Err(_) => return tinct::DiagnosticResult::err(cli_error(format!("invalid duration: {s}"))),
+    };
     if secs == 0 {
-        return Err(cli_error("timeout must be at least 1 second"));
+        return tinct::DiagnosticResult::err(cli_error("timeout must be at least 1 second"));
     }
-    Ok(secs)
+    tinct::DiagnosticResult::ok(secs)
 }
 
 /// SIGALRM handler — exits with timeout code.
@@ -522,8 +527,11 @@ extern "C" fn sigint_profile_handler(_sig: i32) {
 
 /// Install SIGALRM handler and start the alarm timer.
 #[cfg(unix)]
-fn install_timeout(duration_str: &str) -> Result<(), Box<tinct::Diagnostic>> {
-    let seconds = parse_duration(duration_str)?;
+fn install_timeout(duration_str: &str) -> tinct::DiagnosticResult<()> {
+    let seconds = match parse_duration(duration_str).into_parts().0 {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(e),
+    };
 
     unsafe {
         // Install signal handler using sigaction (more portable than signal())
@@ -534,14 +542,14 @@ fn install_timeout(duration_str: &str) -> Result<(), Box<tinct::Diagnostic>> {
         libc::sigemptyset(&mut sa.sa_mask);
 
         if libc::sigaction(libc::SIGALRM, &sa, std::ptr::null_mut()) != 0 {
-            return Err(cli_error("failed to install SIGALRM handler"));
+            return tinct::DiagnosticResult::err(cli_error("failed to install SIGALRM handler"));
         }
 
         // Start the alarm
         libc::alarm(seconds);
     }
 
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Install the SIGINT handler that triggers profile flushing.
@@ -551,7 +559,7 @@ fn install_timeout(duration_str: &str) -> Result<(), Box<tinct::Diagnostic>> {
 /// after the final flush. Without this handler, Ctrl-C kills the process before
 /// the background thread can write the profile file.
 #[cfg(unix)]
-fn install_sigint_profile_handler() -> Result<(), Box<tinct::Diagnostic>> {
+fn install_sigint_profile_handler() -> tinct::DiagnosticResult<()> {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = sigint_profile_handler as *const () as libc::sighandler_t;
@@ -562,10 +570,10 @@ fn install_sigint_profile_handler() -> Result<(), Box<tinct::Diagnostic>> {
         libc::sigemptyset(&mut sa.sa_mask);
 
         if libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut()) != 0 {
-            return Err(cli_error("profiling: failed to install SIGINT handler"));
+            return tinct::DiagnosticResult::err(cli_error("profiling: failed to install SIGINT handler"));
         }
     }
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Apply rlimit resource caps (Unix only).
@@ -586,7 +594,7 @@ fn setup_rlimits(
     max_memory: Option<u64>,
     max_cpu: Option<u64>,
     max_fds: Option<u64>,
-) -> Result<(), Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<()> {
     // Helper: apply a single rlimit. Must be called within an unsafe block.
     // resource: the POSIX constant (RLIMIT_AS, RLIMIT_CPU, etc.)
     // limit_val: soft and hard limit value (same for both — we set a hard cap).
@@ -594,21 +602,21 @@ fn setup_rlimits(
     let apply_rlimit = |resource: libc::__rlimit_resource_t,
                         limit_val: libc::rlim_t,
                         name: &str|
-     -> Result<(), Box<tinct::Diagnostic>> {
+     -> tinct::DiagnosticResult<()> {
         let rlim = libc::rlimit {
             rlim_cur: limit_val,
             rlim_max: limit_val,
         };
         let ret = unsafe { libc::setrlimit(resource, &rlim) };
         if ret != 0 {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "failed to set {} limit to {}: {}",
                 name,
                 limit_val,
                 std::io::Error::last_os_error()
             )));
         }
-        Ok(())
+        tinct::DiagnosticResult::ok(())
     };
 
     // RLIMIT_AS: virtual address space limit. Only applied when explicitly requested.
@@ -616,7 +624,10 @@ fn setup_rlimits(
     // Value of 0 means: caller explicitly disabled this limit.
     let memory_limit = max_memory.unwrap_or(0) as libc::rlim_t;
     if memory_limit > 0 {
-        apply_rlimit(libc::RLIMIT_AS, memory_limit, "RLIMIT_AS (max-memory)")?;
+        match apply_rlimit(libc::RLIMIT_AS, memory_limit, "RLIMIT_AS (max-memory)").into_parts().0 {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(e),
+        }
     }
 
     // RLIMIT_CPU: CPU time in seconds.
@@ -624,11 +635,14 @@ fn setup_rlimits(
     // This complements --timeout (wall-clock); RLIMIT_CPU limits compute time only.
     if let Some(cpu_secs) = max_cpu {
         if cpu_secs > 0 {
-            apply_rlimit(
+            match apply_rlimit(
                 libc::RLIMIT_CPU,
                 cpu_secs as libc::rlim_t,
                 "RLIMIT_CPU (max-cpu)",
-            )?;
+            ).into_parts().0 {
+                Ok(()) => {},
+                Err(e) => return tinct::DiagnosticResult::err(e),
+            }
         }
     }
 
@@ -637,10 +651,13 @@ fn setup_rlimits(
     // Value of 0 means: caller explicitly disabled this limit.
     let fd_limit = max_fds.unwrap_or(64) as libc::rlim_t;
     if fd_limit > 0 {
-        apply_rlimit(libc::RLIMIT_NOFILE, fd_limit, "RLIMIT_NOFILE (max-fds)")?;
+        match apply_rlimit(libc::RLIMIT_NOFILE, fd_limit, "RLIMIT_NOFILE (max-fds)").into_parts().0 {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(e),
+        }
     }
 
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Apply seccomp-bpf network and process sandbox (Linux only).
@@ -660,7 +677,7 @@ fn setup_rlimits(
 /// old or seccomp is disabled), the error is printed as a warning and evaluation
 /// continues. This matches the Landlock degradation model used above.
 #[cfg(target_os = "linux")]
-fn setup_seccomp(allow_network: bool) -> Result<(), Box<tinct::Diagnostic>> {
+fn setup_seccomp(allow_network: bool) -> tinct::DiagnosticResult<()> {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
     use std::collections::BTreeMap;
 
@@ -672,7 +689,7 @@ fn setup_seccomp(allow_network: bool) -> Result<(), Box<tinct::Diagnostic>> {
         _ => {
             // seccompiler only supports x86_64 and aarch64. On other architectures
             // (e.g. arm, riscv64, s390x) we degrade gracefully without error.
-            return Ok(())
+            return tinct::DiagnosticResult::ok(())
         }
     };
 
@@ -713,24 +730,29 @@ fn setup_seccomp(allow_network: bool) -> Result<(), Box<tinct::Diagnostic>> {
     // Build and compile the filter.
     // mismatch_action = Allow: all syscalls not in `rules` are permitted.
     // match_action = Errno(EPERM): blocked syscalls return EPERM to the caller.
-    let filter = SeccompFilter::new(
+    let filter = match SeccompFilter::new(
         rules,
         SeccompAction::Allow,
         SeccompAction::Errno(libc::EPERM as u32),
         arch,
-    )
-    .map_err(|e| cli_error(format!("seccomp: failed to build filter: {e}")))?;
+    ) {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("seccomp: failed to build filter: {e}"))),
+    };
 
-    let bpf_prog: BpfProgram = filter
-        .try_into()
-        .map_err(|e| cli_error(format!("seccomp: failed to compile filter: {e}")))?;
+    let bpf_prog: BpfProgram = match filter.try_into() {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("seccomp: failed to compile filter: {e}"))),
+    };
 
     // Apply the filter to all threads via TSYNC (ensures child threads also
     // inherit the filter, not just the calling thread).
-    seccompiler::apply_filter_all_threads(&bpf_prog)
-        .map_err(|e| cli_error(format!("seccomp: failed to apply filter: {e}")))?;
+    match seccompiler::apply_filter_all_threads(&bpf_prog) {
+        Ok(()) => {},
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("seccomp: failed to apply filter: {e}"))),
+    }
 
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Apply Landlock filesystem ACL enforcement (Linux 5.13+ only, defense-in-depth).
@@ -759,7 +781,7 @@ fn setup_seccomp(allow_network: bool) -> Result<(), Box<tinct::Diagnostic>> {
 fn setup_landlock(
     allowed_paths: &[PathBuf],
     extra_readable: &[PathBuf],
-) -> Result<(), Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<()> {
     use landlock::{
         Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
     };
@@ -770,30 +792,35 @@ fn setup_landlock(
 
     // Build the initial ruleset handling both read and write filesystem access.
     // Cap-fs paths get read+write; extra_readable paths get read-only.
-    let mut ruleset_created = Ruleset::default()
-        .handle_access(AccessFs::from_all(abi))
-        .map_err(|e| cli_error(format!("landlock: failed to configure ruleset: {e}")))?
-        .create()
-        .map_err(|e| cli_error(format!("landlock: failed to create ruleset: {e}")))?;
+    let ruleset_handled = match Ruleset::default().handle_access(AccessFs::from_all(abi)) {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("landlock: failed to configure ruleset: {e}"))),
+    };
+    let mut ruleset_created = match ruleset_handled.create() {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("landlock: failed to create ruleset: {e}"))),
+    };
 
     // Grant read+write access to --cap-fs paths (full capability).
     for path in allowed_paths {
         if !path.exists() {
             continue;
         }
-        let fd = PathFd::new(path).map_err(|e| {
-            cli_error(format!(
+        let fd = match PathFd::new(path) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "landlock: cannot open allowed path \"{}\": {e}",
                 path.display()
-            ))
-        })?;
+            ))),
+        };
         let rule = PathBeneath::new(fd, AccessFs::from_all(abi));
-        ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
-            cli_error(format!(
+        ruleset_created = match ruleset_created.add_rule(rule) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "landlock: failed to add rule for \"{}\": {e}",
                 path.display()
-            ))
-        })?;
+            ))),
+        };
     }
 
     // Grant read-only access to extra_readable paths (input files, libdir).
@@ -801,29 +828,32 @@ fn setup_landlock(
         if !path.exists() {
             continue;
         }
-        let fd = PathFd::new(path).map_err(|e| {
-            cli_error(format!(
+        let fd = match PathFd::new(path) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "landlock: cannot open readable path \"{}\": {e}",
                 path.display()
-            ))
-        })?;
+            ))),
+        };
         let rule = PathBeneath::new(fd, AccessFs::from_read(abi));
-        ruleset_created = ruleset_created.add_rule(rule).map_err(|e| {
-            cli_error(format!(
+        ruleset_created = match ruleset_created.add_rule(rule) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "landlock: failed to add rule for \"{}\": {e}",
                 path.display()
-            ))
-        })?;
+            ))),
+        };
     }
 
     // restrict_self() applies the ruleset to the current thread group.
     // On kernels < 5.13, this returns Ok(status) where status.ruleset is
     // NotEnforced — the call does not fail, it just has no effect.
-    ruleset_created
-        .restrict_self()
-        .map_err(|e| cli_error(format!("landlock: failed to restrict self: {e}")))?;
+    match ruleset_created.restrict_self() {
+        Ok(_) => {},
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("landlock: failed to restrict self: {e}"))),
+    }
 
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Resolve the stdlib directory path from the binary location.
@@ -847,19 +877,19 @@ fn resolve_libdir_path(override_path: Option<&str>) -> Option<std::path::PathBuf
 ///
 /// Special value: `any` creates an unrestricted NetCap that allows all hosts/ports.
 /// This is the CLI equivalent of a wildcard allowlist, intended for trusted scripts.
-fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, Box<tinct::Diagnostic>> {
+fn parse_cli_net_cap_entry(s: &str) -> tinct::DiagnosticResult<tinct::NetCapEntry> {
     use tinct::NetCapEntry;
 
     if s == "any" {
-        return Ok(NetCapEntry::Any);
+        return tinct::DiagnosticResult::ok(NetCapEntry::Any);
     }
 
     if s.contains('/') {
         // CIDR range — check before host:port to avoid misinterpreting IPv6
         // addresses (e.g. 2001:db8::/32) as host:port.
         match s.parse::<ipnet::IpNet>() {
-            Ok(net) => Ok(NetCapEntry::Cidr(net)),
-            Err(e) => Err(cli_error(format!(
+            Ok(net) => tinct::DiagnosticResult::ok(NetCapEntry::Cidr(net)),
+            Err(e) => tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-net: invalid CIDR notation '{}': {}",
                 s, e
             ))),
@@ -867,24 +897,24 @@ fn parse_cli_net_cap_entry(s: &str) -> Result<tinct::NetCapEntry, Box<tinct::Dia
     } else if s.contains('*') {
         // Glob pattern (prefix wildcard only)
         if !s.starts_with("*.") {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-net: only prefix wildcards are supported (e.g., '*.internal'), got '{}'",
                 s
             )));
         }
-        Ok(NetCapEntry::HostnameGlob(s.to_string()))
+        tinct::DiagnosticResult::ok(NetCapEntry::HostnameGlob(s.to_string()))
     } else if let Some((host, port_str)) = s.rsplit_once(':') {
         // host:port format — use rsplit_once so IPv6 addresses without CIDR
         // (e.g. [::1]:8080) split on the last colon.
         if let Ok(port) = port_str.parse::<u16>() {
-            Ok(NetCapEntry::HostPort(host.to_string(), port))
+            tinct::DiagnosticResult::ok(NetCapEntry::HostPort(host.to_string(), port))
         } else {
             // Not a valid port — treat as plain hostname
-            Ok(NetCapEntry::Hostname(s.to_string()))
+            tinct::DiagnosticResult::ok(NetCapEntry::Hostname(s.to_string()))
         }
     } else {
         // Plain hostname
-        Ok(NetCapEntry::Hostname(s.to_string()))
+        tinct::DiagnosticResult::ok(NetCapEntry::Hostname(s.to_string()))
     }
 }
 
@@ -982,22 +1012,23 @@ fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<Pipelin
 /// Returns an error if any entry is malformed or has invalid mode syntax.
 fn parse_cap_fs_entries(
     cap_fs: &[String],
-) -> Result<Vec<(String, PathBuf, tinct::DirPerms)>, Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<Vec<(String, PathBuf, tinct::DirPerms)>> {
     use std::path::PathBuf;
     use tinct::DirPerms;
 
     let mut result = Vec::new();
 
     for cap_fs_entry in cap_fs {
-        let (name, path_and_mode) = cap_fs_entry.split_once('=').ok_or_else(|| {
-            cli_error(format!(
+        let (name, path_and_mode) = match cap_fs_entry.split_once('=') {
+            Some(v) => v,
+            None => return tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-fs: expected NAME=PATH[:MODE] format, got {:?}",
                 cap_fs_entry
-            ))
-        })?;
+            ))),
+        };
         let name = name.trim();
         if name.is_empty() {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-fs: NAME must not be empty in {:?}",
                 cap_fs_entry
             )));
@@ -1015,7 +1046,7 @@ fn parse_cap_fs_entries(
         let perms = if let Some(mode) = mode_str {
             let mode = mode.trim();
             if mode.is_empty() {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-fs mode string is empty: NAME=PATH: (did you mean NAME=PATH:r?)\nGot: {:?}",
                     cap_fs_entry
                 )));
@@ -1023,7 +1054,7 @@ fn parse_cap_fs_entries(
             if mode.starts_with('[') {
                 // Extended syntax: [Readable Writable ...]
                 if !mode.ends_with(']') {
-                    return Err(cli_error(format!(
+                    return tinct::DiagnosticResult::err(cli_error(format!(
                         "--cap-fs: extended mode must end with ']', got {:?}",
                         mode
                     )));
@@ -1054,7 +1085,7 @@ fn parse_cap_fs_entries(
                         "PosixPermissions" => perms.posix_permissions = true,
                         "ExtendedAttributes" => perms.extended_attributes = true,
                         _ => {
-                            return Err(cli_error(format!(
+                            return tinct::DiagnosticResult::err(cli_error(format!(
                                 "--cap-fs: unknown capability {:?} in extended mode",
                                 cap_name
                             )))
@@ -1080,7 +1111,7 @@ fn parse_cap_fs_entries(
                     if let Some(letter_perms) = DirPerms::from_letter(c) {
                         perms = perms.union(&letter_perms);
                     } else {
-                        return Err(cli_error(format!(
+                        return tinct::DiagnosticResult::err(cli_error(format!(
                             "--cap-fs: unknown mode letter {:?} (expected r/w/a/s/l/y)",
                             c
                         )));
@@ -1090,7 +1121,7 @@ fn parse_cap_fs_entries(
             }
         } else {
             // No mode specified → error (mode is required)
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "--cap-fs requires mode suffix: NAME=PATH:MODE (e.g., mydir=/tmp:rwls)\nGot: {:?}",
                 cap_fs_entry
             )));
@@ -1099,7 +1130,7 @@ fn parse_cap_fs_entries(
         result.push((name.to_string(), cap_path, perms));
     }
 
-    Ok(result)
+    tinct::DiagnosticResult::ok(result)
 }
 
 /// Spawn the background profile flush thread.
@@ -1219,7 +1250,7 @@ fn spawn_profile_flush_thread(
 
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
-async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
+async fn run_eval(args: RunArgs) -> tinct::DiagnosticResult<()> {
     #[cfg(target_os = "linux")]
     let no_landlock = args.no_landlock;
     let RunArgs {
@@ -1261,7 +1292,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
         {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "--input: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
                 input_format
             )));
@@ -1272,7 +1303,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
         {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "--output: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
                 output_format
             )));
@@ -1316,20 +1347,22 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 if p.is_absolute() {
                     file_path.clone()
                 } else {
-                    std::env::current_dir()
-                        .map_err(|e| cli_error(format!("cannot determine working directory: {e}")))?
-                        .join(p)
-                        .to_str()
-                        .ok_or_else(|| {
-                            cli_error(format!("file path is not valid UTF-8: {file_path}"))
-                        })?
-                        .to_string()
+                    let cwd = match std::env::current_dir() {
+                        Ok(v) => v,
+                        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot determine working directory: {e}"))),
+                    };
+                    match cwd.join(p).to_str() {
+                        Some(s) => s.to_string(),
+                        None => return tinct::DiagnosticResult::err(cli_error(format!("file path is not valid UTF-8: {file_path}"))),
+                    }
                 }
             };
             // Open file for reading. Must happen before Landlock.
             // AMBIENT-OK: CLI bootstrap — operator-specified file path opened pre-Landlock.
-            let file_handle = std::fs::File::open(file_path.as_str())
-                .map_err(|e| cli_error(format!("cannot open {:?}: {e}", file_path)))?;
+            let file_handle = match std::fs::File::open(file_path.as_str()) {
+                Ok(v) => v,
+                Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot open {:?}: {e}", file_path))),
+            };
             pre_opened_files.push((
                 file_path.clone(),
                 PreOpenedFile {
@@ -1344,8 +1377,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     // being blocked by the filesystem ACL if --cap-fs is also specified.
     // AMBIENT-OK: CLI bootstrap — operator-specified --init file path, pre-Landlock.
     let init_source_owned: Option<String> = if let Some(ref path) = init {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| cli_error(format!("cannot read --init file '{}': {e}", path)))?;
+        let source = match std::fs::read_to_string(path) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot read --init file '{}': {e}", path))),
+        };
         Some(source)
     } else {
         None
@@ -1355,11 +1390,14 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     if let Some(ref duration) = timeout {
         #[cfg(unix)]
         {
-            install_timeout(duration)?;
+            match install_timeout(duration).into_parts().0 {
+                Ok(()) => {},
+                Err(e) => return tinct::DiagnosticResult::err(e),
+            }
         }
         #[cfg(not(unix))]
         {
-            return Err(cli_error("--timeout is only supported on Unix platforms"));
+            return tinct::DiagnosticResult::err(cli_error("--timeout is only supported on Unix platforms"));
         }
     }
 
@@ -1401,8 +1439,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             let path = std::path::Path::new(&pf.abs_path);
             let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 Some(d) => d.to_path_buf(),
-                None => std::env::current_dir()
-                    .map_err(|e| cli_error(format!("cannot determine working directory: {e}")))?,
+                None => match std::env::current_dir() {
+                    Ok(v) => v,
+                    Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot determine working directory: {e}"))),
+                },
             };
             match dir.canonicalize() {
                 Ok(canon) => extra_readable.push(canon),
@@ -1410,7 +1450,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                     // Directory was removed between open and canonicalize — skip it.
                 }
                 Err(e) => {
-                    return Err(cli_error(format!(
+                    return tinct::DiagnosticResult::err(cli_error(format!(
                         "cannot canonicalize input file directory '{}': {e}",
                         dir.display()
                     )));
@@ -1427,7 +1467,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 }
             }
         }
-        setup_landlock(&cap_fs_paths, &extra_readable)?;
+        match setup_landlock(&cap_fs_paths, &extra_readable).into_parts().0 {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(e),
+        }
     }
     // On non-Linux platforms, --no-landlock is accepted for CLI compatibility
     // but has no effect (Landlock is a Linux-only API).
@@ -1439,7 +1482,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     #[cfg(target_os = "linux")]
     {
         let allow_network = !cap_net.is_empty();
-        if let Err(e) = setup_seccomp(allow_network) {
+        if let Err(e) = setup_seccomp(allow_network).into_parts().0 {
             eprintln!("warning: seccomp sandbox not active: {e}");
         }
     }
@@ -1452,10 +1495,14 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     if !no_cwd && !no_fs {
         use tinct::Value;
         // AMBIENT-OK: process CWD at startup
-        let cwd_path = std::env::current_dir()
-            .map_err(|e| cli_error(format!("cannot determine working directory for %cwd: {e}")))?;
-        let cwd_dir = cap_std::fs::Dir::open_ambient_dir(&cwd_path, cap_std::ambient_authority())
-            .map_err(|e| cli_error(format!("cannot open %cwd directory: {e}")))?;
+        let cwd_path = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot determine working directory for %cwd: {e}"))),
+        };
+        let cwd_dir = match cap_std::fs::Dir::open_ambient_dir(&cwd_path, cap_std::ambient_authority()) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot open %cwd directory: {e}"))),
+        };
         let cwd_value = Value::DirCap {
             dir: cwd_dir,
             perms: tinct::DirPerms::full(),
@@ -1478,9 +1525,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             // We duplicate it so the Value::File owns an independent fd and closing it
             // does not close the process's stdin for other users (e.g. the shell).
             let stdin_owned: std::fs::File = unsafe { std::fs::File::from_raw_fd(0) };
-            let stdin_dup = stdin_owned
-                .try_clone()
-                .map_err(|e| cli_error(format!("cannot duplicate stdin fd for %stdin: {e}")))?;
+            let stdin_dup = match stdin_owned.try_clone() {
+                Ok(v) => v,
+                Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot duplicate stdin fd for %stdin: {e}"))),
+            };
             // Prevent the original from being closed when stdin_owned drops.
             std::mem::forget(stdin_owned);
             let cap_file = cap_std::fs::File::from_std(stdin_dup);
@@ -1563,7 +1611,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
     // to user code when filesystem access is globally disabled.
     {
         use tinct::Value;
-        let cap_entries = open_cap_fs_entries(&cap_fs, no_fs)?;
+        let cap_entries = match open_cap_fs_entries(&cap_fs, no_fs).into_parts().0 {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(e),
+        };
         for (name, cap_dir_arc, perms) in cap_entries {
             // Clone the Arc to get an independent owned Dir for the DirCap value
             let dir_for_cap = cap_dir_arc.open_dir(".").expect("failed to dup cap dir");
@@ -1593,15 +1644,16 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
 
         for cap_net_entry in &cap_net {
-            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
-                cli_error(format!(
+            let (name, entry_str) = match cap_net_entry.split_once('=') {
+                Some(v) => v,
+                None => return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-net: expected NAME=ENTRY format, got {:?}",
                     cap_net_entry
-                ))
-            })?;
+                ))),
+            };
             let name = name.trim();
             if name.is_empty() {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-net: NAME must not be empty in {:?}",
                     cap_net_entry
                 )));
@@ -1610,7 +1662,10 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
             // Parse the entry using parse_cli_net_cap_entry.
             // Key is stored with % prefix so accumulation works correctly.
-            let entry = parse_cli_net_cap_entry(entry_str)?;
+            let entry = match parse_cli_net_cap_entry(entry_str).into_parts().0 {
+                Ok(v) => v,
+                Err(e) => return tinct::DiagnosticResult::err(e),
+            };
             let scoped_name = if name.starts_with('%') {
                 name.to_string()
             } else {
@@ -1638,19 +1693,21 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
         let cap_value = if let Some(timestamp_str) = &cap_clock_fixed {
             // Parse the RFC 3339 timestamp using jiff
-            let timestamp = jiff::Timestamp::from_str(timestamp_str).map_err(|e| {
-                cli_error(format!(
+            let timestamp = match jiff::Timestamp::from_str(timestamp_str) {
+                Ok(v) => v,
+                Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-clock-fixed: invalid RFC 3339 timestamp '{}': {}",
                     timestamp_str, e
-                ))
-            })?;
+                ))),
+            };
             // Convert to nanoseconds (i64)
-            let nanos = i64::try_from(timestamp.as_nanosecond()).map_err(|_| {
-                cli_error(format!(
+            let nanos = match i64::try_from(timestamp.as_nanosecond()) {
+                Ok(v) => v,
+                Err(_) => return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-clock-fixed: timestamp '{}' is out of i64 range",
                     timestamp_str
-                ))
-            })?;
+                ))),
+            };
             Value::ClockCap {
                 inner: Arc::new(ClockCapInner::Fixed(nanos)),
                 type_val: Some(make_typevalue_nominal(TYPE_ID_CLOCKCAP)),
@@ -1677,15 +1734,16 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         use tinct::DirPerms;
         for cap_file_entry in &cap_file {
             // Parse NAME=PATH[:MODE]
-            let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
-                cli_error(format!(
+            let (name, rest) = match cap_file_entry.split_once('=') {
+                Some(v) => v,
+                None => return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-file: expected NAME=PATH[:MODE] format, got {:?}",
                     cap_file_entry
-                ))
-            })?;
+                ))),
+            };
             let name = name.trim();
             if name.is_empty() {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-file: NAME must not be empty in {:?}",
                     cap_file_entry
                 )));
@@ -1700,7 +1758,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             };
 
             if path_str.is_empty() {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-file: PATH must not be empty in {:?}",
                     cap_file_entry
                 )));
@@ -1711,7 +1769,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 if mode.starts_with('[') {
                     // Extended syntax: [Readable Writable ...]
                     if !mode.ends_with(']') {
-                        return Err(cli_error(format!(
+                        return tinct::DiagnosticResult::err(cli_error(format!(
                             "--cap-file: extended mode must end with ']', got {:?}",
                             mode
                         )));
@@ -1728,7 +1786,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                             "Appendable" => appendable = true,
                             "Binary" => binary = true,
                             _ => {
-                                return Err(cli_error(format!(
+                                return tinct::DiagnosticResult::err(cli_error(format!(
                                     "--cap-file: unknown capability {:?} in extended mode (expected Readable, Writable, Appendable, Binary)",
                                     cap_name
                                 )))
@@ -1746,7 +1804,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                         "a" => (false, false, true, false),
                         "ab" => (false, false, true, true),
                         other => {
-                            return Err(cli_error(format!(
+                            return tinct::DiagnosticResult::err(cli_error(format!(
                                 "--cap-file: invalid mode {:?} in {:?}: must be r, rb, w, wb, a, ab, or [Readable Writable ...]",
                                 other, cap_file_entry
                             )));
@@ -1760,7 +1818,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
             // Validate: at least one of readable/writable/appendable must be set
             if !readable && !writable && !appendable {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "--cap-file: mode must specify at least one of Readable, Writable, or Appendable in {:?}",
                     cap_file_entry
                 )));
@@ -1779,14 +1837,13 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 parent_dir.to_path_buf()
             };
 
-            let cap_dir =
-                cap_std::fs::Dir::open_ambient_dir(&abs_parent, cap_std::ambient_authority())
-                    .map_err(|e| {
-                        cli_error(format!(
-                            "--cap-file: cannot open parent directory {:?} for {:?}: {e}",
-                            abs_parent, cap_file_entry
-                        ))
-                    })?;
+            let cap_dir = match cap_std::fs::Dir::open_ambient_dir(&abs_parent, cap_std::ambient_authority()) {
+                Ok(v) => v,
+                Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
+                    "--cap-file: cannot open parent directory {:?} for {:?}: {e}",
+                    abs_parent, cap_file_entry
+                ))),
+            };
 
             let perms = DirPerms {
                 readable,
@@ -1877,8 +1934,11 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
             // Install SIGINT handler so Ctrl-C triggers a final profile flush before exit.
             #[cfg(unix)]
-            if let Err(e) = install_sigint_profile_handler() {
-                eprintln!("warning: {e}");
+            {
+                let (result, _diags) = install_sigint_profile_handler().into_parts();
+                if let Err(e) = result {
+                    eprintln!("warning: {e}");
+                }
             }
 
             Some(spawn_profile_flush_thread(
@@ -1929,7 +1989,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         let named_thunk = match thunk.peek_result() {
             Some(Ok(val)) => std::sync::Arc::new(tinct::Thunk::value(val.clone(), span)),
             Some(Err(e)) => {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "capability '{}' thunk settled with error: {}",
                     name, e
                 )))
@@ -2112,7 +2172,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
     // even when loader setup fails.
-    let eval_result: Result<(), Box<tinct::Diagnostic>> = (async {
+    let eval_result: tinct::DiagnosticResult<()> = (async {
         // ── Evaluate loader.llt (or --init override) ─────────────────────────
         //
         // loader.llt is the tinct "main function". It reads %programs, %args, %cwd,
@@ -2128,13 +2188,16 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
         //
         // Dup the libdir into a plain cap_std::fs::Dir. libdir_rc_for_ctx is pre-opened
         // before Landlock fires; open_dir(".") produces a dup without a new ambient open.
-        let libdir_for_loader = libdir_rc_for_ctx
-            .as_ref()
-            .ok_or_else(|| {
+        let libdir_ref = match libdir_rc_for_ctx.as_ref() {
+            Some(v) => v,
+            None => return tinct::DiagnosticResult::err(
                 cli_error("cannot evaluate loader.llt: stdlib directory (--libdir) is required")
-            })?
-            .open_dir(".")
-            .map_err(|e| cli_error(format!("cannot dup libdir for loader expansion: {e}")))?;
+            ),
+        };
+        let libdir_for_loader = match libdir_ref.open_dir(".") {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot dup libdir for loader expansion: {e}"))),
+        };
 
         // Determine init program source and path.
         // init_source_owned was pre-read before Landlock fired (above).
@@ -2145,7 +2208,7 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
                 (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-        tinct::run_loader_pipeline(
+        let loader_result = tinct::run_loader_pipeline(
             &eval_ctx,
             &libdir_for_loader,
             init_source,
@@ -2153,10 +2216,25 @@ async fn run_eval(args: RunArgs) -> Result<(), Box<tinct::Diagnostic>> {
             initial_scope.clone(),
         )
         .await
-        .take(&eval_ctx.runtime_diagnostics)
-        .map_err(|e| Box::new(e))
+        .take(&eval_ctx.runtime_diagnostics);
+        match loader_result {
+            Ok(()) => tinct::DiagnosticResult::ok(()),
+            Err(e) => tinct::DiagnosticResult::err(e),
+        }
     })
     .await; // end of eval_result async block
+
+    {
+        let diags = eval_ctx
+            .runtime_diagnostics
+            .lock()
+            .expect("runtime diagnostics mutex poisoned");
+        for d in diags.iter() {
+            let source_text = std::fs::read_to_string(d.primary_span().file.as_ref()).unwrap_or_default();
+            let file = d.primary_span().file.as_ref();
+            eprintln!("{}", format_diagnostic(d, &source_text, file));
+        }
+    }
 
     // === Unconditional cleanup (runs on success AND failure) ===
 
@@ -2245,15 +2323,20 @@ async fn run_fmt(
     in_place: bool,
     output_name: &str,
     strict: bool,
-) -> Result<(), Box<tinct::Diagnostic>> {
-    let (sf_path, source) = read_source(file_path)?;
+) -> tinct::DiagnosticResult<()> {
+    let (sf_path, source) = match read_source(file_path).into_parts().0 {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(e),
+    };
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
     // Parse once and run the per-document pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output = parse(&source, Arc::clone(&sf_path))
-            .map_err(|e| cli_error(tinct::format_diagnostic(&e, &source, file_path)))?;
+        let output = match parse(&source, Arc::clone(&sf_path)) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(tinct::format_diagnostic(&e, &source, file_path))),
+        };
 
         // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
         let program = tinct::desugar::desugar_program_full(&output.program);
@@ -2265,17 +2348,31 @@ async fn run_fmt(
         // Process builtin_core.llt inline — same pipeline, same context.
         let core_source = include_str!("../stdlib/builtin_core.llt");
         let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-        let core_parsed = parse(core_source, core_sf)
-            .map_err(|e| cli_error(format!("builtin_core.llt parse error: {e}")))?;
+        let core_parsed = match parse(core_source, core_sf) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("builtin_core.llt parse error: {e}"))),
+        };
         let core_program = tinct::desugar::desugar_program_full(&core_parsed.program);
         let core_program = tinct::expand::expand_program(&core_program);
         for doc in &core_program.documents {
-            tinct::process_pipeline_document(doc, &mut state, &ctx).await?;
+            let result = tinct::process_pipeline_document(doc, &mut state, &ctx)
+                .await
+                .take(&ctx.runtime_diagnostics);
+            match result {
+                Ok(()) => {},
+                Err(e) => return tinct::DiagnosticResult::err(e),
+            }
         }
 
         // Process each user document through the pipeline.
         for doc in &program.documents {
-            tinct::process_pipeline_document(doc, &mut state, &ctx).await?;
+            let result = tinct::process_pipeline_document(doc, &mut state, &ctx)
+                .await
+                .take(&ctx.runtime_diagnostics);
+            match result {
+                Ok(()) => {},
+                Err(e) => return tinct::DiagnosticResult::err(e),
+            }
         }
 
         // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
@@ -2298,7 +2395,7 @@ async fn run_fmt(
                 eprintln!("{}", format_diagnostic(&effective, &source, file_path));
             }
             if strict && has_fatal_diag {
-                return Err(cli_error(
+                return tinct::DiagnosticResult::err(cli_error(
                     "type checking failed — type warnings escalated to errors by --strict",
                 ));
             }
@@ -2308,7 +2405,7 @@ async fn run_fmt(
     // Validate formatter name: only alphanumeric and hyphens allowed.
     // This prevents path traversal via -o ../../secret or similar.
     if !output_name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-        return Err(cli_error(format!(
+        return tinct::DiagnosticResult::err(cli_error(format!(
             "fmt: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
             output_name
         )));
@@ -2318,17 +2415,18 @@ async fn run_fmt(
     // AMBIENT-OK: CLI bootstrap — formatter script is loaded from the stdlib directory,
     // which is a trusted operator-controlled path resolved via find_libdir_path().
     let (script_source, script_name) = {
-        let libdir = find_libdir_path().ok_or_else(|| {
-            cli_error(format!(
+        let libdir = match find_libdir_path() {
+            Some(v) => v,
+            None => return tinct::DiagnosticResult::err(cli_error(format!(
                 "stdlib directory not found — cannot locate formatter script '{output_name}'"
-            ))
-        })?;
+            ))),
+        };
         let path = libdir
             .join("cli")
             .join("fmt")
             .join(format!("{output_name}.llt"));
         if !path.exists() {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "fmt: formatter script not found: {} (resolved from -o '{output_name}')",
                 path.display()
             )));
@@ -2339,42 +2437,48 @@ async fn run_fmt(
             .unwrap_or("formatter.llt")
             .to_string();
         // AMBIENT-OK: CLI bootstrap — formatter script from operator-controlled stdlib path.
-        let content = std::fs::read_to_string(&path).map_err(|e| {
-            cli_error(format!(
+        let content = match std::fs::read_to_string(&path) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "cannot read formatter script {}: {e}",
                 path.display()
-            ))
-        })?;
+            ))),
+        };
         (content, name)
     };
 
     let use_compact = output_name == "compact";
-    let formatted = tinct::format_source_tinct(&source, &script_source, &script_name, use_compact)
+    let formatted = match tinct::format_source_tinct(&source, &script_source, &script_name, use_compact)
         .await
-        .map_err(|e| cli_error(e))?;
+    {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(e)),
+    };
 
     if check {
         if source != formatted {
             if file_path == "-" {
-                return Err(cli_error("stdin: not formatted"));
+                return tinct::DiagnosticResult::err(cli_error("stdin: not formatted"));
             }
-            return Err(cli_error(format!("{file_path}: not formatted")));
+            return tinct::DiagnosticResult::err(cli_error(format!("{file_path}: not formatted")));
         }
-        return Ok(());
+        return tinct::DiagnosticResult::ok(());
     }
 
     if in_place {
         if file_path == "-" {
-            return Err(cli_error("--in-place cannot be used with stdin"));
+            return tinct::DiagnosticResult::err(cli_error("--in-place cannot be used with stdin"));
         }
         // AMBIENT-OK: CLI fmt --in-place writing to operator-specified file.
-        std::fs::write(file_path, &formatted)
-            .map_err(|e| cli_error(format!("error writing {file_path}: {e}")))?;
-        return Ok(());
+        match std::fs::write(file_path, &formatted) {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error writing {file_path}: {e}"))),
+        }
+        return tinct::DiagnosticResult::ok(());
     }
 
     print!("{formatted}");
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 // format_diagnostic is now pub in tinct::format_diagnostic (src/lib.rs).
@@ -2382,15 +2486,19 @@ async fn run_fmt(
 /// Compute the blake3 hash of a file and print `blake3:<hexdigest>`.
 /// Used to generate integrity hashes for `$include` second arguments.
 // AMBIENT-OK: CLI hash command on operator-specified file.
-fn run_hash(file_path: &str) -> Result<(), Box<tinct::Diagnostic>> {
+fn run_hash(file_path: &str) -> tinct::DiagnosticResult<()> {
     let mut buf = Vec::new();
-    std::fs::File::open(file_path)
-        .map_err(|e| cli_error(format!("error reading file: {e}")))?
-        .read_to_end(&mut buf)
-        .map_err(|e| cli_error(format!("error reading file: {e}")))?;
+    let mut file = match std::fs::File::open(file_path) {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error reading file: {e}"))),
+    };
+    match file.read_to_end(&mut buf) {
+        Ok(_) => {},
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error reading file: {e}"))),
+    }
     let hash = blake3::hash(&buf);
     println!("blake3:{}", hash.to_hex());
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Read LLT source from a file path or stdin (when path is `-`).
@@ -2398,20 +2506,25 @@ fn run_hash(file_path: &str) -> Result<(), Box<tinct::Diagnostic>> {
 /// Returns a `(Arc<str>, String)` pair of (file_path, source_content) ready to be
 /// threaded into `parse()` so that all spans in the parsed AST carry the file path.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
-fn read_source(file_path: &str) -> Result<(Arc<str>, String), Box<tinct::Diagnostic>> {
+fn read_source(file_path: &str) -> tinct::DiagnosticResult<(Arc<str>, String)> {
     if file_path == "-" {
         let mut buf = String::new();
-        io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(|e| cli_error(format!("error reading stdin: {e}")))?;
-        Ok((Arc::from("-"), buf))
+        match io::stdin().read_to_string(&mut buf) {
+            Ok(_) => {},
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error reading stdin: {e}"))),
+        }
+        tinct::DiagnosticResult::ok((Arc::from("-"), buf))
     } else {
         let mut buf = String::new();
-        std::fs::File::open(file_path)
-            .map_err(|e| cli_error(format!("error reading file: {e}")))?
-            .read_to_string(&mut buf)
-            .map_err(|e| cli_error(format!("error reading file: {e}")))?;
-        Ok((Arc::from(file_path), buf))
+        let mut file = match std::fs::File::open(file_path) {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error reading file: {e}"))),
+        };
+        match file.read_to_string(&mut buf) {
+            Ok(_) => {},
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("error reading file: {e}"))),
+        }
+        tinct::DiagnosticResult::ok((Arc::from(file_path), buf))
     }
 }
 
@@ -2434,21 +2547,24 @@ struct LiterateConfig<'a> {
 ///
 /// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
-async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), Box<tinct::Diagnostic>> {
+async fn run_literate(config: &LiterateConfig<'_>) -> tinct::DiagnosticResult<()> {
     let file_path = config.file_path;
-    let (_, markdown) = read_source(file_path)?;
+    let (_, markdown) = match read_source(file_path).into_parts().0 {
+        Ok(v) => v,
+        Err(e) => return tinct::DiagnosticResult::err(e),
+    };
     let blocks = literate::extract_code_blocks(&markdown);
 
     if blocks.is_empty() {
         match config.mode {
             LiterateMode::Tangle | LiterateMode::Eval => {
                 // Nothing to print — output empty string (no trailing newline).
-                return Ok(());
+                return tinct::DiagnosticResult::ok(());
             }
             LiterateMode::Weave => {
                 // No blocks to weave — print markdown unchanged.
                 print!("{markdown}");
-                return Ok(());
+                return tinct::DiagnosticResult::ok(());
             }
         }
     }
@@ -2457,7 +2573,7 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), Box<tinct::Diag
         LiterateMode::Tangle => {
             let tangled = literate::tangle(blocks);
             println!("{tangled}");
-            Ok(())
+            tinct::DiagnosticResult::ok(())
         }
 
         LiterateMode::Eval => {
@@ -2479,13 +2595,13 @@ async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), Box<tinct::Diag
 async fn run_literate_eval(
     tangled: &str,
     config: &LiterateConfig<'_>,
-) -> Result<(), Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<()> {
     let markdown_path = config.file_path;
 
     // Evaluate via run_eval with the tangled source as a single -e expression.
     // This reuses the full CLI pipeline (loader, prelude, formatters) identically to
     // `tinct run -e "$tangled"` invoked from the markdown file's directory.
-    run_eval(RunArgs {
+    let eval_dr = run_eval(RunArgs {
         files: vec![],
         no_fs: false,
         require_integrity: false,
@@ -2508,14 +2624,15 @@ async fn run_literate_eval(
         output: None,
         profile: None,
     })
-    .await
-    .map_err(|e| {
+    .await;
+    match eval_dr.into_parts().0 {
+        Ok(()) => {},
         // Prefix errors with the markdown file path for context.
-        cli_error(format!("{}: {}", markdown_path, e))
-    })?;
+        Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("{}: {}", markdown_path, e))),
+    }
 
     // run_eval handles output formatting and writing to stdout.
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Weave mode: evaluate literate blocks and annotate the markdown with results.
@@ -2534,14 +2651,14 @@ async fn run_literate_weave(
     markdown: &str,
     blocks: &[String],
     config: &LiterateConfig<'_>,
-) -> Result<(), Box<tinct::Diagnostic>> {
+) -> tinct::DiagnosticResult<()> {
     // Extract blocks with byte offset information for reinsertion.
     let lit_blocks = literate::extract_blocks(markdown);
 
     if lit_blocks.is_empty() {
         // No blocks to weave — print markdown unchanged.
         print!("{markdown}");
-        return Ok(());
+        return tinct::DiagnosticResult::ok(());
     }
 
     // Evaluate each block's cumulative prefix and collect outputs.
@@ -2561,16 +2678,21 @@ async fn run_literate_weave(
 
         // Evaluate via a child tinct process to capture stdout.
         // Find the tinct binary path (current executable).
-        let tinct_exe = std::env::current_exe()
-            .map_err(|e| cli_error(format!("cannot determine tinct executable path: {e}")))?;
+        let tinct_exe = match std::env::current_exe() {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot determine tinct executable path: {e}"))),
+        };
 
-        let child_result = tokio::process::Command::new(&tinct_exe)
+        let child_result = match tokio::process::Command::new(&tinct_exe)
             .arg("run")
             .arg("-e")
             .arg(&cumulative_source)
             .output()
             .await
-            .map_err(|e| cli_error(format!("cannot spawn tinct for block {}: {e}", i + 1)))?;
+        {
+            Ok(v) => v,
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot spawn tinct for block {}: {e}", i + 1))),
+        };
 
         if child_result.status.success() {
             let stdout = String::from_utf8_lossy(&child_result.stdout);
@@ -2584,7 +2706,7 @@ async fn run_literate_weave(
             let stderr = String::from_utf8_lossy(&child_result.stderr);
             let error_msg = stderr.trim().to_string();
             if config.fail_on_errors {
-                return Err(cli_error(format!(
+                return tinct::DiagnosticResult::err(cli_error(format!(
                     "error in block {}: {}",
                     i + 1,
                     error_msg
@@ -2620,14 +2742,17 @@ async fn run_literate_weave(
     if config.in_place {
         // Write back to the source file atomically.
         let tmp_path = format!("{}.tmp", config.file_path);
-        std::fs::write(&tmp_path, &result)
-            .map_err(|e| cli_error(format!("cannot write temp file {tmp_path}: {e}")))?;
-        std::fs::rename(&tmp_path, config.file_path).map_err(|e| {
-            cli_error(format!(
+        match std::fs::write(&tmp_path, &result) {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("cannot write temp file {tmp_path}: {e}"))),
+        }
+        match std::fs::rename(&tmp_path, config.file_path) {
+            Ok(()) => {},
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(format!(
                 "cannot rename {tmp_path} → {}: {e}",
                 config.file_path
-            ))
-        })?;
+            ))),
+        }
     } else {
         print!("{result}");
     }
@@ -2638,7 +2763,7 @@ async fn run_literate_weave(
             if let Some(ref expected) = lit_block.expectations.out {
                 if let Some(Some(ref actual)) = block_outputs.get(i) {
                     if actual.trim() != expected.trim() {
-                        return Err(cli_error(format!(
+                        return tinct::DiagnosticResult::err(cli_error(format!(
                             "block {} output mismatch:\n  expected: {}\n  actual:   {}",
                             i + 1,
                             expected.trim(),
@@ -2650,12 +2775,12 @@ async fn run_literate_weave(
         }
     }
 
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 /// Print a detailed explanation for the given error code string (e.g. "E001").
 /// The code is matched case-insensitively after stripping leading/trailing whitespace.
-fn run_explain(code: &str) -> Result<(), Box<tinct::Diagnostic>> {
+fn run_explain(code: &str) -> tinct::DiagnosticResult<()> {
     let code = code.trim().to_ascii_uppercase();
     let explanation = match code.as_str() {
         "E001" => {
@@ -3136,7 +3261,7 @@ Fix: use a valid variance annotation or a registered class name (e.g., @Covarian
         }
 
         _ => {
-            return Err(cli_error(format!(
+            return tinct::DiagnosticResult::err(cli_error(format!(
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
@@ -3147,7 +3272,7 @@ Fix: use a valid variance annotation or a registered class name (e.g., @Covarian
         }
     };
     println!("{explanation}");
-    Ok(())
+    tinct::DiagnosticResult::ok(())
 }
 
 #[cfg(test)]
@@ -3156,63 +3281,63 @@ mod tests {
 
     #[test]
     fn parse_duration_seconds() {
-        assert_eq!(parse_duration("5s"), Ok(5));
-        assert_eq!(parse_duration("1s"), Ok(1));
-        assert_eq!(parse_duration("30s"), Ok(30));
+        assert_eq!(parse_duration("5s").into_parts().0, Ok(5));
+        assert_eq!(parse_duration("1s").into_parts().0, Ok(1));
+        assert_eq!(parse_duration("30s").into_parts().0, Ok(30));
     }
 
     #[test]
     fn parse_duration_milliseconds() {
-        assert_eq!(parse_duration("500ms"), Ok(1));
-        assert_eq!(parse_duration("1000ms"), Ok(1));
-        assert_eq!(parse_duration("1500ms"), Ok(2));
-        assert_eq!(parse_duration("1ms"), Ok(1));
+        assert_eq!(parse_duration("500ms").into_parts().0, Ok(1));
+        assert_eq!(parse_duration("1000ms").into_parts().0, Ok(1));
+        assert_eq!(parse_duration("1500ms").into_parts().0, Ok(2));
+        assert_eq!(parse_duration("1ms").into_parts().0, Ok(1));
     }
 
     #[test]
     fn parse_duration_minutes() {
-        assert_eq!(parse_duration("1m"), Ok(60));
-        assert_eq!(parse_duration("2m"), Ok(2 * 60));
+        assert_eq!(parse_duration("1m").into_parts().0, Ok(60));
+        assert_eq!(parse_duration("2m").into_parts().0, Ok(2 * 60));
     }
 
     #[test]
     fn parse_duration_bare_number() {
-        assert_eq!(parse_duration("10"), Ok(10));
-        assert_eq!(parse_duration("1"), Ok(1));
+        assert_eq!(parse_duration("10").into_parts().0, Ok(10));
+        assert_eq!(parse_duration("1").into_parts().0, Ok(1));
     }
 
     #[test]
     fn parse_duration_zero_rejected() {
-        assert!(parse_duration("0s").is_err());
-        assert!(parse_duration("0m").is_err());
-        assert!(parse_duration("0").is_err());
-        assert!(parse_duration("0ms").is_err());
+        assert!(parse_duration("0s").into_parts().0.is_err());
+        assert!(parse_duration("0m").into_parts().0.is_err());
+        assert!(parse_duration("0").into_parts().0.is_err());
+        assert!(parse_duration("0ms").into_parts().0.is_err());
     }
 
     #[test]
     fn parse_duration_invalid() {
-        assert!(parse_duration("abc").is_err());
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("5x").is_err());
-        assert!(parse_duration("-1s").is_err());
+        assert!(parse_duration("abc").into_parts().0.is_err());
+        assert!(parse_duration("").into_parts().0.is_err());
+        assert!(parse_duration("5x").into_parts().0.is_err());
+        assert!(parse_duration("-1s").into_parts().0.is_err());
     }
 
     #[test]
     fn parse_duration_whitespace() {
-        assert_eq!(parse_duration(" 5s "), Ok(5));
-        assert_eq!(parse_duration("  10  "), Ok(10));
+        assert_eq!(parse_duration(" 5s ").into_parts().0, Ok(5));
+        assert_eq!(parse_duration("  10  ").into_parts().0, Ok(10));
     }
 
     #[test]
     fn parse_duration_999ms_boundary() {
         // 999ms rounds up to 1 second (alarm() requires whole seconds)
-        assert_eq!(parse_duration("999ms"), Ok(1));
+        assert_eq!(parse_duration("999ms").into_parts().0, Ok(1));
     }
 
     #[test]
     fn parse_duration_large_minutes_overflow() {
         // 100000000 * 60 overflows u32::MAX, should return error
-        assert!(parse_duration("100000000m").is_err());
+        assert!(parse_duration("100000000m").into_parts().0.is_err());
         let err = parse_duration("100000000m").unwrap_err();
         assert!(err.message.contains("duration out of range"));
     }
@@ -3221,7 +3346,7 @@ mod tests {
     fn parse_duration_ms_u32max_overflow() {
         // u32::MAX = 4294967295, so 4294967296 seconds should overflow
         // 4294967296000ms → (4294967296000 + 999) / 1000 = 4294967296 > u32::MAX
-        assert!(parse_duration("4294967296000ms").is_err());
+        assert!(parse_duration("4294967296000ms").into_parts().0.is_err());
         let err = parse_duration("4294967296000ms").unwrap_err();
         assert!(err.message.contains("duration out of range"));
     }
@@ -3233,7 +3358,7 @@ mod tests {
         // u64::MAX - 998 = 18446744073709550617
         // When we call checked_add(999), we get: 18446744073709550617 + 999 = 18446744073709551616
         // This exceeds u64::MAX, so checked_add returns None.
-        assert!(parse_duration("18446744073709550617ms").is_err());
+        assert!(parse_duration("18446744073709550617ms").into_parts().0.is_err());
         let err = parse_duration("18446744073709550617ms").unwrap_err();
         assert!(err.message.contains("duration out of range"));
     }
@@ -3287,9 +3412,9 @@ mod tests {
 
     #[test]
     fn parse_net_cap_entry_cidr_invalid() {
-        assert!(parse_cli_net_cap_entry("192.168.1.0/33").is_err());
-        assert!(parse_cli_net_cap_entry("not-an-ip/24").is_err());
-        assert!(parse_cli_net_cap_entry("192.168.1.0/").is_err());
+        assert!(parse_cli_net_cap_entry("192.168.1.0/33").into_parts().0.is_err());
+        assert!(parse_cli_net_cap_entry("not-an-ip/24").into_parts().0.is_err());
+        assert!(parse_cli_net_cap_entry("192.168.1.0/").into_parts().0.is_err());
     }
 
     #[test]

@@ -31,7 +31,7 @@ const KIND: &str = "eval";
 /// Inherently materializing: must inspect string content to find and replace patterns.
 pub(crate) fn builtin_replace(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -40,9 +40,17 @@ pub(crate) fn builtin_replace(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("replace", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("replace", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -50,20 +58,62 @@ pub(crate) fn builtin_replace(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         // All args pre-materialized by force_count=3
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let pattern_val = thunk0.require_value()?.clone();
-        let replacement_val = thunk1.require_value()?.clone();
-        let input_val = thunk2.require_value()?.clone();
+        let pattern_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let replacement_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let input_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let pattern = require_string("replace", pattern_val, thunk0.span.clone(), &ctx)?;
-        let replacement = require_string("replace", replacement_val, thunk1.span.clone(), &ctx)?;
-        let input = require_string("replace", input_val, thunk2.span.clone(), &ctx)?;
+        let pattern = {
+            let (result, diags) = require_string("replace", pattern_val, thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let replacement = {
+            let (result, diags) = require_string("replace", replacement_val, thunk1.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let input = {
+            let (result, diags) = require_string("replace", input_val, thunk2.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Pre-check output size to prevent memory exhaustion.
         // Empty pattern inserts replacement between every character.
@@ -83,25 +133,27 @@ pub(crate) fn builtin_replace(
 
         const MAX_REPLACE_OUTPUT: usize = 10 * 1024 * 1024; // 10MB
         if output_len > MAX_REPLACE_OUTPUT {
-            return Err(Box::new(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "replace: output would exceed {} bytes (estimated {})",
                     MAX_REPLACE_OUTPUT, output_len
                 ),
                 call_span,
-            )));
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Fast-path: if there are no matches, return the input unchanged
         if match_count == 0 {
-            return ok_val(string_val(&input), call_span);
+            return ok_val(string_val(&input), call_span).with_diagnostics(_dr_diags);
         }
 
         ok_val(
             string_val(&input.replace(&pattern, &replacement)),
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -111,7 +163,7 @@ pub(crate) fn builtin_replace(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -120,9 +172,24 @@ pub(crate) fn builtin_trim(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
-        ok_val(string_val(s.trim()), call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("trim", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(s.trim()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -132,7 +199,7 @@ pub(crate) fn builtin_trim(
 /// Inherently materializing: must inspect string content to count characters.
 pub(crate) fn builtin_str_length(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -141,16 +208,33 @@ pub(crate) fn builtin_str_length(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("str-length", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("str-length", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let len = s.chars().count();
-        let len_i64 = i64::try_from(len).map_err(|_| {
-            Diagnostic::error(
+        let len_i64 = match i64::try_from(len) {
+            Ok(v) => v,
+            Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "str-length: string length exceeds i64::MAX".to_string(),
-                call_span.clone(),
-            )
-        })?;
+                call_span,
+            ))
+            .with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: len_i64,
@@ -160,6 +244,7 @@ pub(crate) fn builtin_str_length(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -168,7 +253,7 @@ pub(crate) fn builtin_str_length(
 /// O(1) — `str.len()` is stored directly. Takes 1 arg (String). Returns an Int.
 pub(crate) fn builtin_str_byte_count(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -177,19 +262,34 @@ pub(crate) fn builtin_str_byte_count(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg(
-            "str-byte-count",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-        let s = require_string(
-            "str-byte-count",
-            val,
-            Arc::clone(&args[0]).span.clone(),
-            &ctx,
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg(
+                "str-byte-count",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string(
+                "str-byte-count",
+                val,
+                Arc::clone(&args[0]).span.clone(),
+                &ctx,
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         ok_val(
             Value::Int {
                 n: s.len() as i64,
@@ -199,6 +299,7 @@ pub(crate) fn builtin_str_byte_count(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -207,7 +308,7 @@ pub(crate) fn builtin_str_byte_count(
 /// O(1) — bounds check only. Takes 2 args (String, Int). Returns Int 1 or 0.
 pub(crate) fn builtin_str_has_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -216,8 +317,9 @@ pub(crate) fn builtin_str_has_nth_byte(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -225,21 +327,35 @@ pub(crate) fn builtin_str_has_nth_byte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named(
-            "builtin-str-has-nth-byte?",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        {
+            let (result, diags) = reject_named(
+                "builtin-str-has-nth-byte?",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let s_val = thunk0.require_value()?.clone();
+        let s_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (str_start, str_end) = match s_val {
             Value::String { start, end, .. } => (start, end),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -247,23 +363,30 @@ pub(crate) fn builtin_str_has_nth_byte(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
-        let idx = match thunk1.require_value()?.clone() {
-            Value::Int { n, .. } => n,
-            other => {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "type mismatch: expected {}, got {}",
-                        "Int",
-                        ctx.type_display_name(other.type_decl_id_of())
-                    ),
-                    call_span,
-                )
-                .into())
+        let idx = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => match v.clone() {
+                    Value::Int { n, .. } => n,
+                    other => {
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "type mismatch: expected {}, got {}",
+                                "Int",
+                                ctx.type_display_name(other.type_decl_id_of())
+                            ),
+                            call_span,
+                        ))
+                        .with_diagnostics(_dr_diags)
+                    }
+                },
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         };
         let len = (str_end - str_start) as i64;
@@ -276,6 +399,7 @@ pub(crate) fn builtin_str_has_nth_byte(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -284,7 +408,7 @@ pub(crate) fn builtin_str_has_nth_byte(
 /// O(1) — direct byte array indexing. Takes 2 args (String, Int). Returns Int.
 pub(crate) fn builtin_str_nth_byte(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -293,8 +417,9 @@ pub(crate) fn builtin_str_nth_byte(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -302,19 +427,33 @@ pub(crate) fn builtin_str_nth_byte(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let s_val = thunk0.require_value()?.clone();
+        let s_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (source, str_start, str_end) = match s_val {
             Value::String {
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -322,32 +461,39 @@ pub(crate) fn builtin_str_nth_byte(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
-        let idx = match thunk1.require_value()?.clone() {
-            Value::Int { n, .. } => n,
-            other => {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "type mismatch: expected {}, got {}",
-                        "Int",
-                        ctx.type_display_name(other.type_decl_id_of())
-                    ),
-                    call_span,
-                )
-                .into())
+        let idx = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => match v.clone() {
+                    Value::Int { n, .. } => n,
+                    other => {
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "type mismatch: expected {}, got {}",
+                                "Int",
+                                ctx.type_display_name(other.type_decl_id_of())
+                            ),
+                            call_span,
+                        ))
+                        .with_diagnostics(_dr_diags)
+                    }
+                },
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         };
         if idx < 0 || idx as usize >= str_end - str_start {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("builtin-str-nth-byte: index {idx} out of bounds"),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         let byte = source.as_bytes()[str_start + idx as usize] as i64;
         ok_val(
@@ -359,6 +505,7 @@ pub(crate) fn builtin_str_nth_byte(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -369,7 +516,7 @@ pub(crate) fn builtin_str_nth_byte(
 /// Inherently materializing: must inspect string content to find character boundaries.
 pub(crate) fn builtin_str_slice(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -378,9 +525,17 @@ pub(crate) fn builtin_str_slice(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("str-slice", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("str-slice", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -388,17 +543,38 @@ pub(crate) fn builtin_str_slice(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Get pre-materialized arguments — calling convention: (string, start, end)
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let input_val = thunk0.require_value()?.clone();
-        let start_val = thunk1.require_value()?.clone();
-        let end_val = thunk2.require_value()?.clone();
+        let input_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let start_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let end_val = {
+            let (result, diags) = thunk2.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract the source Arc<str> from the input string
         let (input_source, input_start, input_end) = match input_val {
@@ -406,7 +582,7 @@ pub(crate) fn builtin_str_slice(
                 source, start, end, ..
             } => (source, start, end),
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -415,8 +591,8 @@ pub(crate) fn builtin_str_slice(
                         ctx.type_display_name(input_val.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -424,7 +600,7 @@ pub(crate) fn builtin_str_slice(
         let start_idx = match start_val {
             Value::Int { n, .. } if n >= 0 => n as usize,
             Value::Int { n, .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -433,11 +609,11 @@ pub(crate) fn builtin_str_slice(
                         format!("Int({n})")
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -446,15 +622,15 @@ pub(crate) fn builtin_str_slice(
                         ctx.type_display_name(start_val.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let end_idx = match end_val {
             Value::Int { n, .. } if n >= 0 => n as usize,
             Value::Int { n, .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -463,11 +639,11 @@ pub(crate) fn builtin_str_slice(
                         format!("Int({n})")
                     ),
                     thunk2.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -476,19 +652,19 @@ pub(crate) fn builtin_str_slice(
                         ctx.type_display_name(end_val.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         // Validate indices
         if start_idx > end_idx {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("str-slice: start index {start_idx} > end index {end_idx}"),
                 call_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Convert character indices to byte offsets
@@ -501,13 +677,13 @@ pub(crate) fn builtin_str_slice(
 
         let char_count = char_indices.len().saturating_sub(1);
         if end_idx > char_count {
-            return Err(Diagnostic::error(KIND, 
+            return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                 format!(
                     "str-slice: end index {end_idx} out of bounds (string has {char_count} characters)"
                 ),
                 call_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let byte_start = input_start + char_indices[start_idx];
@@ -524,6 +700,7 @@ pub(crate) fn builtin_str_slice(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -535,7 +712,7 @@ pub(crate) fn builtin_str_slice(
 /// `String → Int → Int`
 pub(crate) fn builtin_str_has_nth(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -544,8 +721,9 @@ pub(crate) fn builtin_str_has_nth(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -553,20 +731,34 @@ pub(crate) fn builtin_str_has_nth(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-str-has-nth?", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-str-has-nth?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let s_val = thunk0.require_value()?.clone();
+        let s_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (source, str_start, str_end) = match s_val {
             Value::String {
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -574,24 +766,31 @@ pub(crate) fn builtin_str_has_nth(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let idx = match thunk1.require_value()?.clone() {
-            Value::Int { n, .. } => n,
-            other => {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "type mismatch: expected {}, got {}",
-                        "Int",
-                        ctx.type_display_name(other.type_decl_id_of())
-                    ),
-                    call_span,
-                )
-                .into())
+        let idx = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => match v.clone() {
+                    Value::Int { n, .. } => n,
+                    other => {
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "type mismatch: expected {}, got {}",
+                                "Int",
+                                ctx.type_display_name(other.type_decl_id_of())
+                            ),
+                            call_span,
+                        ))
+                        .with_diagnostics(_dr_diags)
+                    }
+                },
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         };
 
@@ -604,7 +803,8 @@ pub(crate) fn builtin_str_has_nth(
                     )),
                 },
                 call_span,
-            );
+            )
+            .with_diagnostics(_dr_diags);
         }
 
         let s = &source[str_start..str_end];
@@ -622,6 +822,7 @@ pub(crate) fn builtin_str_has_nth(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -634,7 +835,7 @@ pub(crate) fn builtin_str_has_nth(
 /// `String → Int → String`
 pub(crate) fn builtin_str_nth_char(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -643,8 +844,9 @@ pub(crate) fn builtin_str_nth_char(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -652,20 +854,34 @@ pub(crate) fn builtin_str_nth_char(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-str-nth-char", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-str-nth-char", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let s_val = thunk0.require_value()?.clone();
+        let s_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (source, str_start, str_end) = match s_val {
             Value::String {
                 source, start, end, ..
             } => (source, start, end),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -673,34 +889,41 @@ pub(crate) fn builtin_str_nth_char(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let idx = match thunk1.require_value()?.clone() {
-            Value::Int { n, .. } => n,
-            other => {
-                return Err(Diagnostic::error(
-                    KIND,
-                    format!(
-                        "type mismatch: expected {}, got {}",
-                        "Int",
-                        ctx.type_display_name(other.type_decl_id_of())
-                    ),
-                    call_span,
-                )
-                .into())
+        let idx = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => match v.clone() {
+                    Value::Int { n, .. } => n,
+                    other => {
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!(
+                                "type mismatch: expected {}, got {}",
+                                "Int",
+                                ctx.type_display_name(other.type_decl_id_of())
+                            ),
+                            call_span,
+                        ))
+                        .with_diagnostics(_dr_diags)
+                    }
+                },
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         };
 
         if idx < 0 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("builtin-str-nth-char: index {idx} is negative"),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let s = &source[str_start..str_end];
@@ -718,16 +941,17 @@ pub(crate) fn builtin_str_nth_char(
                     },
                     call_span,
                 )
+                .with_diagnostics(_dr_diags)
             }
-            None => Err(Diagnostic::error(
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-str-nth-char: index {idx} out of bounds (string has {} codepoints)",
                     s.chars().count()
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -740,7 +964,7 @@ pub(crate) fn builtin_str_nth_char(
 /// Inherently materializing: must inspect string content to extract the first character.
 pub(crate) fn builtin_char_code(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -749,14 +973,22 @@ pub(crate) fn builtin_char_code(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let (input_source, input_start, input_end) = match val {
             Value::String {
                 source, start, end, ..
             } => (source, start, end),
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -765,8 +997,8 @@ pub(crate) fn builtin_char_code(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     Arc::clone(&args[0]).span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -782,11 +1014,12 @@ pub(crate) fn builtin_char_code(
                 },
                 call_span,
             )
+            .with_diagnostics(_dr_diags)
         } else {
-            Err(
-                Diagnostic::error(KIND, "char-code: empty string".to_string(), call_span)
-                    .into(),
+            crate::error::DiagnosticResult::err(
+                Diagnostic::error(KIND, "char-code: empty string".to_string(), call_span),
             )
+            .with_diagnostics(_dr_diags)
         }
     })
 }
@@ -799,7 +1032,7 @@ pub(crate) fn builtin_char_code(
 /// Inherently materializing: must convert the integer to a character.
 pub(crate) fn builtin_chr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -808,22 +1041,31 @@ pub(crate) fn builtin_chr(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match val {
             Value::Int { n, .. } => {
                 if let Some(ch) = char::from_u32(n as u32) {
                     ok_val(string_val(&ch.to_string()), call_span)
+                        .with_diagnostics(_dr_diags)
                 } else {
-                    Err(Diagnostic::error(
+                    crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("chr: invalid Unicode codepoint {}", n),
                         call_span,
-                    )
-                    .into())
+                    ))
+                    .with_diagnostics(_dr_diags)
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -832,8 +1074,8 @@ pub(crate) fn builtin_chr(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 Arc::clone(&args[0]).span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -850,7 +1092,7 @@ pub(crate) fn builtin_chr(
 /// ```
 pub(crate) fn builtin_str_bytes(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use crate::value::bytes_val;
 
@@ -861,18 +1103,27 @@ pub(crate) fn builtin_str_bytes(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        let val = crate::builtins::expect_one_arg(
-            "str-bytes",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "str-bytes",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match val.as_str() {
-            Some(s) => ok_val(bytes_val(s.as_bytes()), call_span),
-            None => Err(Diagnostic::error(
+            Some(s) => ok_val(bytes_val(s.as_bytes()), call_span)
+                .with_diagnostics(_dr_diags),
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -881,8 +1132,8 @@ pub(crate) fn builtin_str_bytes(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 Arc::clone(&args[0]).span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -899,7 +1150,7 @@ pub(crate) fn builtin_str_bytes(
 /// Inherently materializing: must inspect string content to search for substring.
 pub(crate) fn builtin_str_index_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -908,9 +1159,17 @@ pub(crate) fn builtin_str_index_of(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("str-index-of", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("str-index-of", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -918,17 +1177,45 @@ pub(crate) fn builtin_str_index_of(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let needle_val = thunk0.require_value()?.clone();
-        let haystack_val = thunk1.require_value()?.clone();
+        let needle_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let haystack_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let needle = require_string("str-index-of", needle_val, thunk0.span.clone(), &ctx)?;
-        let haystack = require_string("str-index-of", haystack_val, thunk1.span.clone(), &ctx)?;
+        let needle = {
+            let (result, diags) = require_string("str-index-of", needle_val, thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let haystack = {
+            let (result, diags) = require_string("str-index-of", haystack_val, thunk1.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let index: i64 = match haystack.find(needle.as_str()) {
             Some(byte_idx) => {
@@ -936,13 +1223,15 @@ pub(crate) fn builtin_str_index_of(
                 // use the same unit (chars). str-length returns chars, str-slice operates on
                 // chars — str-index-of must return chars to be composable with both.
                 let char_idx = haystack[..byte_idx].chars().count();
-                i64::try_from(char_idx).map_err(|_| {
-                    Diagnostic::error(
+                match i64::try_from(char_idx) {
+                    Ok(v) => v,
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "str-index-of: character index exceeds i64::MAX".to_string(),
-                        call_span.clone(),
-                    )
-                })?
+                        call_span,
+                    ))
+                    .with_diagnostics(_dr_diags),
+                }
             }
             None => -1,
         };
@@ -956,6 +1245,7 @@ pub(crate) fn builtin_str_index_of(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -965,7 +1255,7 @@ pub(crate) fn builtin_str_index_of(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_start(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -974,9 +1264,24 @@ pub(crate) fn builtin_trim_start(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-start", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
-        ok_val(string_val(s.trim_start()), call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("trim-start", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(s.trim_start()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -986,7 +1291,7 @@ pub(crate) fn builtin_trim_start(
 /// Inherently materializing: must inspect string content to identify and remove whitespace.
 pub(crate) fn builtin_trim_end(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -995,9 +1300,24 @@ pub(crate) fn builtin_trim_end(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("trim-end", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
-        ok_val(string_val(s.trim_end()), call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("trim-end", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(s.trim_end()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1013,7 +1333,7 @@ pub(crate) fn builtin_trim_end(
 /// ```
 pub(crate) fn builtin_bytes_str(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         use crate::value::string_val;
 
@@ -1024,26 +1344,35 @@ pub(crate) fn builtin_bytes_str(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        let val = crate::builtins::expect_one_arg(
-            "bytes-str",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "bytes-str",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match val.as_bytes() {
             Some(bytes) => match std::str::from_utf8(bytes) {
-                Ok(s) => ok_val(string_val(s), call_span),
-                Err(e) => Err(Diagnostic::error(
+                Ok(s) => ok_val(string_val(s), call_span)
+                    .with_diagnostics(_dr_diags),
+                Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("bytes-str: invalid UTF-8 sequence: {}", e),
                     call_span,
-                )
-                .into()),
+                ))
+                .with_diagnostics(_dr_diags),
             },
-            None => Err(Diagnostic::error(
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1052,8 +1381,8 @@ pub(crate) fn builtin_bytes_str(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 Arc::clone(&args[0]).span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1064,7 +1393,7 @@ pub(crate) fn builtin_bytes_str(
 /// Returns a String with all characters converted to uppercase.
 pub(crate) fn builtin_upper(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1073,9 +1402,24 @@ pub(crate) fn builtin_upper(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("upper", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("upper", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
-        ok_val(string_val(&s.to_uppercase()), call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("upper", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("upper", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(&s.to_uppercase()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1085,7 +1429,7 @@ pub(crate) fn builtin_upper(
 /// Returns a String with all characters converted to lowercase.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1094,9 +1438,24 @@ pub(crate) fn builtin_lower(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg("lower", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let s = require_string("lower", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
-        ok_val(string_val(&s.to_lowercase()), call_span)
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = expect_one_arg("lower", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("lower", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(&s.to_lowercase()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1108,7 +1467,7 @@ pub(crate) fn builtin_lower(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_int_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1117,22 +1476,40 @@ pub(crate) fn builtin_int_to_string(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("int->string", named.as_ref(), call_span.clone())?;
-        let thunk0 = args.into_iter().next().ok_or_else(|| {
-            Diagnostic::error(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("int->string", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
+        let thunk0 = match args.into_iter().next() {
+            Some(v) => v,
+            None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
                     crate::error::ArityBound::Exact(1),
                     0
                 ),
-                call_span.clone(),
-            )
-        })?;
-        let materialized = thunk0.require_value()?.clone();
+                call_span,
+            ))
+            .with_diagnostics(_dr_diags),
+        };
+        let materialized = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match materialized {
-            Value::Int { n, .. } => ok_val(string_val(&n.to_string()), call_span),
-            other => Err(Diagnostic::error(
+            Value::Int { n, .. } => ok_val(string_val(&n.to_string()), call_span)
+                .with_diagnostics(_dr_diags),
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1141,8 +1518,8 @@ pub(crate) fn builtin_int_to_string(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1155,7 +1532,7 @@ pub(crate) fn builtin_int_to_string(
 /// not call `stringify` and cannot infinitely recurse back through `str`.
 pub(crate) fn builtin_float_to_string(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1164,22 +1541,40 @@ pub(crate) fn builtin_float_to_string(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("float->string", named.as_ref(), call_span.clone())?;
-        let thunk0 = args.into_iter().next().ok_or_else(|| {
-            Diagnostic::error(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("float->string", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
+        let thunk0 = match args.into_iter().next() {
+            Some(v) => v,
+            None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
                     crate::error::ArityBound::Exact(1),
                     0
                 ),
-                call_span.clone(),
-            )
-        })?;
-        let materialized = thunk0.require_value()?.clone();
+                call_span,
+            ))
+            .with_diagnostics(_dr_diags),
+        };
+        let materialized = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match materialized {
-            Value::Float { n, .. } => ok_val(string_val(&n.to_string()), call_span),
-            other => Err(Diagnostic::error(
+            Value::Float { n, .. } => ok_val(string_val(&n.to_string()), call_span)
+                .with_diagnostics(_dr_diags),
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -1188,8 +1583,8 @@ pub(crate) fn builtin_float_to_string(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1203,7 +1598,7 @@ pub(crate) fn builtin_float_to_string(
 /// Inherently materializing: must inspect string content to apply the regex.
 pub(crate) fn builtin_regex_match(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1212,9 +1607,17 @@ pub(crate) fn builtin_regex_match(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("regex-match?", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("regex-match?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1222,17 +1625,45 @@ pub(crate) fn builtin_regex_match(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let pattern_val = thunk0.require_value()?.clone();
-        let haystack_val = thunk1.require_value()?.clone();
+        let pattern_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let haystack_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let pattern = require_string("regex-match?", pattern_val, thunk0.span.clone(), &ctx)?;
-        let haystack = require_string("regex-match?", haystack_val, thunk1.span.clone(), &ctx)?;
+        let pattern = {
+            let (result, diags) = require_string("regex-match?", pattern_val, thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let haystack = {
+            let (result, diags) = require_string("regex-match?", haystack_val, thunk1.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match regex::Regex::new(&pattern) {
             Ok(re) => ok_val(
@@ -1243,13 +1674,14 @@ pub(crate) fn builtin_regex_match(
                     )),
                 },
                 call_span,
-            ),
-            Err(e) => Err(Diagnostic::error(
+            )
+            .with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1263,7 +1695,7 @@ pub(crate) fn builtin_regex_match(
 /// Inherently materializing: must inspect string content to concatenate.
 pub(crate) fn builtin_string_concat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1272,9 +1704,17 @@ pub(crate) fn builtin_string_concat(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("builtin-string-concat", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1282,20 +1722,48 @@ pub(crate) fn builtin_string_concat(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let s1_val = thunk0.require_value()?.clone();
-        let s2_val = thunk1.require_value()?.clone();
+        let s1_val = {
+            let (result, diags) = thunk0.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s2_val = {
+            let (result, diags) = thunk1.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let s1 = require_string("builtin-string-concat", s1_val, thunk0.span.clone(), &ctx)?;
-        let s2 = require_string("builtin-string-concat", s2_val, thunk1.span.clone(), &ctx)?;
+        let s1 = {
+            let (result, diags) = require_string("builtin-string-concat", s1_val, thunk0.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s2 = {
+            let (result, diags) = require_string("builtin-string-concat", s2_val, thunk1.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let result = format!("{}{}", s1, s2);
-        ok_val(string_val(&result), call_span)
+        ok_val(string_val(&result), call_span).with_diagnostics(_dr_diags)
     })
 }
 

@@ -31,8 +31,9 @@ const KIND: &str = "eval/stream";
 /// See `Value::to_tinct` in `src/surface_fmt.rs` for the full serialization logic.
 pub(crate) fn builtin_to_tinct(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -40,23 +41,45 @@ pub(crate) fn builtin_to_tinct(
             ctx,
             ..
         } = ctx_arg;
-        let val = expect_one_arg(
-            "builtin-to-tinct",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let val = {
+            let (result, diags) = expect_one_arg(
+                "builtin-to-tinct",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Deep-force all nested structures before serialization.
         // The WHNF-materialized value may contain unevaluated thunks in dict entries,
         // collection elements, or variant payloads. force_dict_tree recursively materializes
         // all nested values so that to_tinct's peek_result calls succeed.
-        let deep_val = force_dict_tree(&val, &ctx).await?;
+        let deep_val = {
+            let (result, diags) = force_dict_tree(&val, &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let tinct_str = deep_val.to_tinct(Some(&ctx)).map_err(|e| {
+        let tinct_str = match deep_val.to_tinct(Some(&ctx)).map_err(|e| {
             Diagnostic::error(KIND, format!("to-tinct: {}", e), call_span.clone())
-        })?;
-        ok_val(string_val(&tinct_str), call_span)
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = ok_val(string_val(&tinct_str), call_span).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     })
 }

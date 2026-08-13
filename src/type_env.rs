@@ -898,7 +898,7 @@ mod typevalue_scheme_tests {
 
         // Build TypeValue.Fn { params: [TypeValue.Repr(Int)], return: TypeValue.Var("a") }
         let int_repr = make_typevalue_nominal(crate::value::TYPE_ID_INT);
-        let params = vec![(None, Arc::clone(&int_repr))];
+        let params = vec![(None, Arc::clone(&int_repr), crate::rust_span!())];
         let fn_ty = make_typevalue_fn(params, Arc::clone(&tv_a));
 
         // Step 1: generalize at level 0 — "a" at level 1 > 0, so it must be quantified.

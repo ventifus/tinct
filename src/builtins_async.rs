@@ -51,24 +51,22 @@ fn take_one_thunk(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} does not accept named arguments"),
             call_span,
-        )
-        .into());
+        ));
     }
     if args.len() != 1 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} expects 1 argument, got {}", args.len()),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok(Arc::clone(&args[0]))
+    crate::error::DiagnosticResult::ok(Arc::clone(&args[0]))
 }
 
 /// Helper to check argument count for two arguments and extract them as thunks.
@@ -80,24 +78,22 @@ fn take_two_thunks(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<(Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} does not accept named arguments"),
             call_span,
-        )
-        .into());
+        ));
     }
     if args.len() != 2 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} expects 2 arguments, got {}", args.len()),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok((Arc::clone(&args[0]), Arc::clone(&args[1])))
+    crate::error::DiagnosticResult::ok((Arc::clone(&args[0]), Arc::clone(&args[1])))
 }
 
 fn take_three_thunks(
@@ -106,24 +102,22 @@ fn take_three_thunks(
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
     _ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>)> {
     if !named.as_ref().is_none_or(|n| n.is_empty()) {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} does not accept named arguments"),
             call_span,
-        )
-        .into());
+        ));
     }
     if args.len() != 3 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{name} expects 3 arguments, got {}", args.len()),
             call_span,
-        )
-        .into());
+        ));
     }
-    Ok((
+    crate::error::DiagnosticResult::ok((
         Arc::clone(&args[0]),
         Arc::clone(&args[1]),
         Arc::clone(&args[2]),
@@ -145,7 +139,7 @@ fn take_three_thunks(
 /// is never spawned.
 pub(crate) fn builtin_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -154,7 +148,13 @@ pub(crate) fn builtin_task(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span.clone(), &ctx)?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("task", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let func_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Clone what we need for the 'static async block
         let ctx_clone = Arc::clone(&ctx);
@@ -163,9 +163,14 @@ pub(crate) fn builtin_task(
 
         // Spawn the task — all captured types are Send (Arc<EvalContext>, Arc<Thunk>, Value)
         let handle = tokio::spawn(async move {
+            let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
             // Materialize the function
-            let func_value =
-                materialize(&func_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
+            let (result, diags) = materialize(&func_thunk_clone, Some(&call_span_clone), &ctx_clone).await.into_parts();
+            _dr_diags.extend(diags);
+            let func_value = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             // Evaluate the function call
             match func_value {
@@ -180,38 +185,57 @@ pub(crate) fn builtin_task(
                         .expect("Value::Function must have at least one clause");
                     // Check for zero-arg function
                     if !clause.params.is_empty() {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "task expects a zero-arg function, got {} parameter(s)",
                                 clause.params.len()
                             ),
                             call_span_clone,
-                        )
-                        .into());
+                        )).with_diagnostics(_dr_diags);
                     }
                     let mut call_chain = definition_scope.clone();
                     call_chain.push(Arc::new(crate::symbol_table::SymbolTable::new()));
-                    let thunk = eval_core_expr(&clause.body, &call_chain, &ctx_clone).await?;
-                    materialize(&thunk, None, &ctx_clone).await
+                    let (result, diags) = eval_core_expr(&clause.body, &call_chain, &ctx_clone).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let thunk = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    let (result, diags) = materialize(&thunk, None, &ctx_clone).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
                 }
                 Value::Builtin { def, .. } => {
                     // Call the builtin with no arguments
-                    let result = (def.func)(BuiltinArgs {
+                    let (builtin_result, builtin_diags) = (def.func)(BuiltinArgs {
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
                         scope: crate::symbol_table::SymbolTable::empty_chain(),
                         ctx: Arc::clone(&ctx_clone),
                     })
-                    .await?;
+                    .await.into_parts();
+                    _dr_diags.extend(builtin_diags);
+                    let result_thunk = match builtin_result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                     // Materialize the result
-                    materialize(&result, None, &ctx_clone).await
+                    let (result, diags) = materialize(&result_thunk, None, &ctx_clone).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
                 }
                 // Any other materialized value: return it directly as the task result.
                 // The spec signature is `expr → Task@T`, so `[task 42]` is valid and
                 // immediately resolves to 42.
-                other => Ok(other),
+                other => crate::error::DiagnosticResult::ok(other).with_diagnostics(_dr_diags),
             }
         });
 
@@ -226,7 +250,7 @@ pub(crate) fn builtin_task(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -238,7 +262,7 @@ pub(crate) fn builtin_task(
 /// Propagates any error from the task.
 pub(crate) fn builtin_await(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -247,8 +271,19 @@ pub(crate) fn builtin_await(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let task_val = materialize(&task_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("await", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let task_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&task_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let task_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match task_val {
             Value::Task {
@@ -262,15 +297,15 @@ pub(crate) fn builtin_await(
                 // While the first awaiter holds the lock and awaits the JoinHandle, any
                 // second caller blocks at `state_mutex.lock().await` and does not observe
                 // the temporary sentinel placed by mem::replace. When the first awaiter
-                // completes, it stores the real result in Done(Ok(result)) before releasing
+                // completes, it stores the real result in Done(...) before releasing
                 // the lock, so the second caller then reads the correct cached value.
                 //
                 // The Done(result) match arm restores the result to the guard BEFORE
-                // extracting with `?` to ensure subsequent awaits see the same result,
+                // extracting to ensure subsequent awaits see the same result,
                 // whether success or error.
                 match std::mem::replace(
                     &mut *guard,
-                    crate::value::TaskState::Done(Ok(Value::Dict {
+                    crate::value::TaskState::Done(crate::error::DiagnosticResult::ok(Value::Dict {
                         entries: IndexMap::new(),
                         type_decl_id: TYPE_ID_DICT,
                         type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -279,47 +314,66 @@ pub(crate) fn builtin_await(
                     })),
                 ) {
                     crate::value::TaskState::Pending(handle) => {
-                        // Await the handle (JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>), racing against
+                        // Await the handle (JoinHandle<DiagnosticResult<Value>>), racing against
                         // context cancellation.
-                        let val_result: Result<Value, Box<crate::error::Diagnostic>> = tokio::select! {
+                        let val_result: crate::error::DiagnosticResult<Value> = tokio::select! {
                             join_result = handle => {
                                 match join_result {
                                     Ok(inner) => inner,
-                                    Err(e) => Err(Diagnostic::error(KIND,
+                                    Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                                         format!("task panicked: {e}"),
                                         call_span.clone(),
-                                    ).into()),
+                                    )),
                                 }
                             }
                             _ = ctx.cancel.cancelled() => {
                                 // Cache cancellation error so subsequent awaits see it too
-                                let err: Box<Diagnostic> = Diagnostic::error(KIND,
+                                let err = Diagnostic::error(KIND,
                                     "await: cancelled".to_string(), call_span.clone()
-                                ).into();
-                                *guard = crate::value::TaskState::Done(Err(err.clone()));
-                                return Err(err);
+                                );
+                                *guard = crate::value::TaskState::Done(crate::error::DiagnosticResult::err(err.clone()));
+                                return crate::error::DiagnosticResult::err(err).with_diagnostics(_dr_diags);
                             }
                         };
 
-                        // ALWAYS cache the real result (Ok or Err) before returning.
-                        // This prevents the sentinel Done(Ok({})) from being seen by
+                        // ALWAYS cache the real result before returning.
+                        // This prevents the sentinel Done(...) from being seen by
                         // subsequent awaits when the first await fails.
-                        *guard = crate::value::TaskState::Done(val_result.clone());
-
-                        // Return the result
-                        let val = val_result?;
-                        ok_val(val, call_span)
+                        // DiagnosticResult does not implement Clone — decompose, clone
+                        // the inner Result for caching, and consume the original.
+                        let (inner_result, diags) = val_result.into_parts();
+                        _dr_diags.extend(diags);
+                        // Cache for subsequent awaits (diagnostics are consumed, not re-emitted)
+                        *guard = crate::value::TaskState::Done(match &inner_result {
+                            Ok(v) => crate::error::DiagnosticResult::ok(v.clone()),
+                            Err(e) => crate::error::DiagnosticResult::err(e.clone()),
+                        });
+                        let val = match inner_result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
+                        ok_val(val, call_span).with_diagnostics(_dr_diags)
                     }
                     crate::value::TaskState::Done(result) => {
                         // Task already completed — restore the result before extracting.
                         // This ensures subsequent awaits see the cached result, not the sentinel.
-                        *guard = crate::value::TaskState::Done(result.clone());
-                        let val = result?;
-                        ok_val(val, call_span)
+                        // DiagnosticResult does not implement Clone — decompose, clone
+                        // the inner Result for caching, and consume the original.
+                        let (inner_result, diags) = result.into_parts();
+                        _dr_diags.extend(diags);
+                        *guard = crate::value::TaskState::Done(match &inner_result {
+                            Ok(v) => crate::error::DiagnosticResult::ok(v.clone()),
+                            Err(e) => crate::error::DiagnosticResult::err(e.clone()),
+                        });
+                        let val = match inner_result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
+                        ok_val(val, call_span).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -327,8 +381,7 @@ pub(crate) fn builtin_await(
                     ctx.type_display_name(task_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -340,7 +393,7 @@ pub(crate) fn builtin_await(
 /// The capacity must be ≥ 1. `[channel 0]` is a runtime error.
 pub(crate) fn builtin_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -349,9 +402,19 @@ pub(crate) fn builtin_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let capacity_thunk =
-            take_one_thunk("channel", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("channel", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let capacity_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&capacity_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let capacity_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match capacity_val {
             Value::Int { n, .. } if n >= 1 => {
@@ -370,15 +433,14 @@ pub(crate) fn builtin_channel(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            Value::Int { n, .. } if n < 1 => Err(Diagnostic::error(
+            Value::Int { n, .. } if n < 1 => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("channel capacity must be ≥ 1, got {n}"),
                 call_span,
-            )
-            .into()),
-            _ => Err(Diagnostic::error(
+            )).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -386,8 +448,7 @@ pub(crate) fn builtin_channel(
                     ctx.type_display_name(capacity_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -399,7 +460,7 @@ pub(crate) fn builtin_channel(
 /// Suspends if the channel buffer is full. Returns null on success.
 pub(crate) fn builtin_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -408,9 +469,19 @@ pub(crate) fn builtin_send(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (chan_thunk, val_thunk) =
-            take_two_thunks("send", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks("send", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let (chan_thunk, val_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::Channel {
@@ -418,23 +489,31 @@ pub(crate) fn builtin_send(
                 ..
             } => {
                 // Materialize the value to send
-                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) = materialize(&val_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Send the value, racing against context cancellation.
                 tokio::select! {
                     result = channel_inner.sender.send(value) => {
-                        result.map_err(|_| {
-                            Diagnostic::error(KIND,
-                                "channel closed (receiver dropped)".to_string(),
-                                call_span.clone(),
-                            )
-                        })?;
+                        match result {
+                            Ok(_) => {}
+                            Err(_) => return crate::error::DiagnosticResult::err(
+                                Diagnostic::error(KIND,
+                                    "channel closed (receiver dropped)".to_string(),
+                                    call_span.clone(),
+                                )
+                            ).with_diagnostics(_dr_diags),
+                        }
                     }
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::error(KIND,
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             "send: cancelled".to_string(),
                             call_span.clone(),
-                        ).into());
+                        )).with_diagnostics(_dr_diags);
                     }
                 }
 
@@ -447,20 +526,26 @@ pub(crate) fn builtin_send(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             Value::BroadcastChannel {
                 inner: channel_inner,
                 ..
             } => {
-                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
-                channel_inner.sender.send(value).map_err(|_| {
-                    Diagnostic::error(
+                let (result, diags) = materialize(&val_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                match channel_inner.sender.send(value) {
+                    Ok(_) => {}
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "broadcast channel closed (all receivers dropped)".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                }
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
@@ -470,28 +555,35 @@ pub(crate) fn builtin_send(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             Value::OneshotSender {
                 inner: sender_inner,
                 ..
             } => {
-                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) = materialize(&val_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 let mut tx_opt = sender_inner.sender.lock().await;
-                let tx = tx_opt.take().ok_or_else(|| {
-                    Diagnostic::error(
+                let tx = match tx_opt.take() {
+                    Some(v) => v,
+                    None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "oneshot sender already used".to_string(),
                         call_span.clone(),
-                    )
-                })?;
-                tx.send(value).map_err(|_| {
-                    Diagnostic::error(
+                    )).with_diagnostics(_dr_diags),
+                };
+                match tx.send(value) {
+                    Ok(_) => {}
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "oneshot receiver dropped before send".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                }
                 ok_val(
                     Value::Dict {
                         entries: IndexMap::new(),
@@ -501,9 +593,9 @@ pub(crate) fn builtin_send(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -511,8 +603,7 @@ pub(crate) fn builtin_send(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -525,7 +616,7 @@ pub(crate) fn builtin_send(
 /// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -534,8 +625,19 @@ pub(crate) fn builtin_recv(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("recv", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let chan_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::Channel {
@@ -549,16 +651,16 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::error(KIND,
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
-                        ).into());
+                        )).with_diagnostics(_dr_diags);
                     }
                 };
 
                 // Return value directly on success, [Closed] if channel closed
                 match result {
-                    Some(value) => ok_val(value, call_span),
+                    Some(value) => ok_val(value, call_span).with_diagnostics(_dr_diags),
                     None => {
                         // Channel closed
                         ok_val(
@@ -571,7 +673,7 @@ pub(crate) fn builtin_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
@@ -586,16 +688,16 @@ pub(crate) fn builtin_recv(
                 let result = tokio::select! {
                     result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::error(KIND,
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
-                        ).into());
+                        )).with_diagnostics(_dr_diags);
                     }
                 };
 
                 // Return value directly on success, [Closed] or [Lagged n] on recv error
                 match result {
-                    Ok(value) => ok_val(value, call_span),
+                    Ok(value) => ok_val(value, call_span).with_diagnostics(_dr_diags),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
                         let count_thunk = Arc::new(Thunk::value(
@@ -617,7 +719,7 @@ pub(crate) fn builtin_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         // Channel closed
@@ -631,7 +733,7 @@ pub(crate) fn builtin_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
@@ -641,28 +743,29 @@ pub(crate) fn builtin_recv(
             } => {
                 // Take the receiver (single-use)
                 let mut rx_opt = receiver_inner.receiver.lock().await;
-                let rx = rx_opt.take().ok_or_else(|| {
-                    Diagnostic::error(
+                let rx = match rx_opt.take() {
+                    Some(v) => v,
+                    None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "oneshot receiver already used".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                };
 
                 // Receive the single value, racing against context cancellation.
                 let result = tokio::select! {
                     result = rx => result,
                     _ = ctx.cancel.cancelled() => {
-                        return Err(Diagnostic::error(KIND,
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             "recv: cancelled".to_string(),
                             call_span.clone(),
-                        ).into());
+                        )).with_diagnostics(_dr_diags);
                     }
                 };
 
                 // Return value directly on success, [Closed] if sender dropped
                 match result {
-                    Ok(value) => ok_val(value, call_span),
+                    Ok(value) => ok_val(value, call_span).with_diagnostics(_dr_diags),
                     // tokio::sync::oneshot::error::RecvError is a tuple struct with a private
                     // field — its constructor is not accessible outside tokio, so we cannot
                     // match `RecvError(..)` by name. This is the only error variant produced
@@ -679,11 +782,11 @@ pub(crate) fn builtin_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -691,8 +794,7 @@ pub(crate) fn builtin_recv(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -719,7 +821,7 @@ pub(crate) fn builtin_recv(
 /// produce values — typically by spawning the receiver task first.
 pub(crate) fn builtin_broadcast_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -728,14 +830,25 @@ pub(crate) fn builtin_broadcast_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let capacity_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "broadcast-channel",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let capacity_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&capacity_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let capacity_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match capacity_val {
             Value::Int { n, .. } if n >= 1 => {
@@ -753,15 +866,14 @@ pub(crate) fn builtin_broadcast_channel(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            Value::Int { n, .. } if n < 1 => Err(Diagnostic::error(
+            Value::Int { n, .. } if n < 1 => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("broadcast-channel capacity must be ≥ 1, got {n}"),
                 call_span,
-            )
-            .into()),
-            _ => Err(Diagnostic::error(
+            )).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -769,8 +881,7 @@ pub(crate) fn builtin_broadcast_channel(
                     ctx.type_display_name(capacity_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -784,7 +895,7 @@ pub(crate) fn builtin_broadcast_channel(
 /// The receiver can recv exactly once; subsequent recvs fail.
 pub(crate) fn builtin_oneshot_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -793,21 +904,20 @@ pub(crate) fn builtin_oneshot_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "oneshot-channel does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("oneshot-channel expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // Create the oneshot channel
@@ -850,7 +960,7 @@ pub(crate) fn builtin_oneshot_channel(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -862,7 +972,7 @@ pub(crate) fn builtin_oneshot_channel(
 /// and the value is dropped. Returns [Closed] if the receiver has been dropped.
 pub(crate) fn builtin_try_send(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -871,9 +981,19 @@ pub(crate) fn builtin_try_send(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (chan_thunk, val_thunk) =
-            take_two_thunks("try-send", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks("try-send", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let (chan_thunk, val_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::Channel {
@@ -881,7 +1001,12 @@ pub(crate) fn builtin_try_send(
                 ..
             } => {
                 // Materialize the value to send
-                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) = materialize(&val_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let value = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Try to send the value
                 match channel_inner.sender.try_send(value) {
@@ -896,7 +1021,7 @@ pub(crate) fn builtin_try_send(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                         // Channel full: return [Full]
@@ -910,7 +1035,7 @@ pub(crate) fn builtin_try_send(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
@@ -924,11 +1049,11 @@ pub(crate) fn builtin_try_send(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -936,8 +1061,7 @@ pub(crate) fn builtin_try_send(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -948,7 +1072,7 @@ pub(crate) fn builtin_try_send(
 /// had no message ready, or `{closed: []}` if the channel is closed.
 pub(crate) fn builtin_try_recv(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -957,9 +1081,19 @@ pub(crate) fn builtin_try_recv(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk =
-            take_one_thunk("try-recv", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("try-recv", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let chan_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::Channel {
@@ -993,7 +1127,7 @@ pub(crate) fn builtin_try_recv(
                                 )),
                             },
                             call_span,
-                        );
+                        ).with_diagnostics(_dr_diags);
                     }
                 };
 
@@ -1013,7 +1147,7 @@ pub(crate) fn builtin_try_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                         let mut map = IndexMap::new();
@@ -1039,7 +1173,7 @@ pub(crate) fn builtin_try_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                         let mut map = IndexMap::new();
@@ -1065,11 +1199,11 @@ pub(crate) fn builtin_try_recv(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -1077,8 +1211,7 @@ pub(crate) fn builtin_try_recv(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1089,7 +1222,7 @@ pub(crate) fn builtin_try_recv(
 /// had no message ready (or the subscriber lagged), or `{closed: []}` if the channel is closed.
 pub(crate) fn builtin_try_recv_broadcast(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1098,14 +1231,25 @@ pub(crate) fn builtin_try_recv_broadcast(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "try-recv-broadcast",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let chan_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::BroadcastChannel {
@@ -1130,7 +1274,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                         let mut map = IndexMap::new();
@@ -1156,7 +1300,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
                         let mut map = IndexMap::new();
@@ -1182,7 +1326,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                         let mut map = IndexMap::new();
@@ -1208,11 +1352,11 @@ pub(crate) fn builtin_try_recv_broadcast(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -1220,8 +1364,7 @@ pub(crate) fn builtin_try_recv_broadcast(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1233,7 +1376,7 @@ pub(crate) fn builtin_try_recv_broadcast(
 /// or the receiver was already consumed.
 pub(crate) fn builtin_try_recv_oneshot(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1242,14 +1385,25 @@ pub(crate) fn builtin_try_recv_oneshot(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "try-recv-oneshot",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let chan_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&chan_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let chan_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match chan_val {
             Value::OneshotReceiver {
@@ -1283,7 +1437,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 )),
                             },
                             call_span,
-                        );
+                        ).with_diagnostics(_dr_diags);
                     }
                 };
 
@@ -1311,7 +1465,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                             )),
                         },
                         call_span,
-                    );
+                    ).with_diagnostics(_dr_diags);
                 }
 
                 let mut rx = rx_opt.take().unwrap();
@@ -1331,7 +1485,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                         *rx_opt = Some(rx);
@@ -1358,7 +1512,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                         let mut map = IndexMap::new();
@@ -1384,11 +1538,11 @@ pub(crate) fn builtin_try_recv_oneshot(
                                 )),
                             },
                             call_span,
-                        )
+                        ).with_diagnostics(_dr_diags)
                     }
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -1396,8 +1550,7 @@ pub(crate) fn builtin_try_recv_oneshot(
                     ctx.type_display_name(chan_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1410,7 +1563,7 @@ pub(crate) fn builtin_try_recv_oneshot(
 /// Returns the empty dict `[]`.
 pub(crate) fn builtin_yield(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1419,21 +1572,20 @@ pub(crate) fn builtin_yield(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("yield expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "yield does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         tokio::task::yield_now().await;
         ok_val(
@@ -1445,7 +1597,7 @@ pub(crate) fn builtin_yield(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1461,7 +1613,7 @@ pub(crate) fn builtin_yield(
 /// Both `par` and `task` use `tokio::spawn` internally; the distinction is stylistic.
 pub(crate) fn builtin_par(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     builtin_task(ctx_arg)
 }
 
@@ -1476,7 +1628,7 @@ pub(crate) fn builtin_par(
 /// On non-Unix platforms this builtin always returns an error.
 pub(crate) fn builtin_signal_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         #[cfg(unix)]
         {
@@ -1489,20 +1641,31 @@ pub(crate) fn builtin_signal_channel(
                 ctx,
                 ..
             } = ctx_arg;
-            let signals_thunk = take_one_thunk(
+            let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+            let (result, diags) = take_one_thunk(
                 "signal-channel",
                 &args,
                 named.as_ref(),
                 call_span.clone(),
                 &ctx,
-            )?;
-            let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
+            ).into_parts();
+            _dr_diags.extend(diags);
+            let signals_thunk = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
+            let (result, diags) = materialize(&signals_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let signals_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             // Collect signal names from an integer-keyed Dict of Signal variants.
             let sig_dict = match signals_val {
                 Value::Dict { entries: d, .. } => d,
                 other => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "type mismatch: expected {}, got {}",
@@ -1510,14 +1673,18 @@ pub(crate) fn builtin_signal_channel(
                             ctx.type_display_name(other.type_decl_id_of())
                         ),
                         call_span,
-                    )
-                    .into())
+                    )).with_diagnostics(_dr_diags)
                 }
             };
 
             let mut sig_names: Vec<String> = Vec::new();
             for (_idx, head_thunk) in &sig_dict {
-                let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) = materialize(&head_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let head_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 let name = match &head_val {
                     Value::Variant {
                         type_decl_id,
@@ -1529,7 +1696,7 @@ pub(crate) fn builtin_signal_channel(
                         crate::type_tags::ctor_display_name(*type_decl_id, *ctor_index, tycon_env)
                     }
                     _ => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "type mismatch: expected {}, got {}",
@@ -1537,20 +1704,18 @@ pub(crate) fn builtin_signal_channel(
                                 ctx.type_display_name(head_val.type_decl_id_of())
                             ),
                             call_span,
-                        )
-                        .into())
+                        )).with_diagnostics(_dr_diags)
                     }
                 };
                 sig_names.push(name);
             }
 
             if sig_names.is_empty() {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "signal-channel: requires at least one signal".to_string(),
                     call_span,
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
 
             let capacity = sig_names.len();
@@ -1565,21 +1730,21 @@ pub(crate) fn builtin_signal_channel(
                     "SIGUSR1" => SignalKind::user_defined1(),
                     "SIGUSR2" => SignalKind::user_defined2(),
                     other => {
-                        return Err(Diagnostic::error(KIND, 
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             format!("signal-channel: unknown signal {other:?}; supported: SIGINT SIGTERM SIGHUP SIGQUIT SIGUSR1 SIGUSR2"),
                             call_span,
-                        )
-                        .into())
+                        )).with_diagnostics(_dr_diags)
                     }
                 };
 
-                let mut sig_stream = signal(kind).map_err(|e| {
-                    Diagnostic::error(
+                let mut sig_stream = match signal(kind) {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("signal-channel: failed to register signal handler: {e}"),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                };
 
                 let tx_clone = tx.clone();
                 let cancel_token = ctx.cancel.clone();
@@ -1632,18 +1797,18 @@ pub(crate) fn builtin_signal_channel(
                     )),
                 },
                 call_span,
-            )
+            ).with_diagnostics(_dr_diags)
         }
 
         #[cfg(not(unix))]
         {
             let BuiltinArgs { call_span, .. } = ctx_arg;
-            Err(Diagnostic::error(
+            let _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "signal-channel is only supported on Unix platforms".to_string(),
                 call_span,
-            )
-            .into())
+            )).with_diagnostics(_dr_diags)
         }
     })
 }
@@ -1658,7 +1823,7 @@ pub(crate) fn builtin_signal_channel(
 /// builds up an unbounded backlog.
 pub(crate) fn builtin_timer_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1667,20 +1832,31 @@ pub(crate) fn builtin_timer_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (clock_thunk, interval_thunk) = take_two_thunks(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks(
             "timer-channel",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let (clock_thunk, interval_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk.require_value()?.clone();
+        let (result, diags) = clock_thunk.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let clock_val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         let clock_inner: ClockCapInner = match &clock_val {
             Value::ClockCap { inner, .. } => inner.as_ref().clone(),
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -1688,26 +1864,29 @@ pub(crate) fn builtin_timer_channel(
                         ctx.type_display_name(clock_val.type_decl_id_of())
                     ),
                     call_span.clone(),
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
-        let interval_val = materialize(&interval_thunk, Some(&call_span), &ctx).await?;
+        let (result, diags) = materialize(&interval_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let interval_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let interval_ms = match interval_val {
             // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("timer-channel: interval must be ≥ 1 ms, got {} ns", nanos),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -1715,8 +1894,7 @@ pub(crate) fn builtin_timer_channel(
                         ctx.type_display_name(interval_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1788,7 +1966,7 @@ pub(crate) fn builtin_timer_channel(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1816,7 +1994,7 @@ pub(crate) fn builtin_timer_channel(
 /// FSEvents, etc.), but this polling approach has no external dependencies.
 pub(crate) fn builtin_watch_channel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -1825,21 +2003,37 @@ pub(crate) fn builtin_watch_channel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (dir_cap_thunk, path_thunk) = take_two_thunks(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks(
             "watch-channel",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let dir_cap_val = materialize(&dir_cap_thunk, Some(&call_span), &ctx).await?;
-        let path_val = materialize(&path_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let (dir_cap_thunk, path_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&dir_cap_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let dir_cap_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&path_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract DirCap
         let dir = match dir_cap_val {
             Value::DirCap { dir, .. } => dir,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -1847,8 +2041,7 @@ pub(crate) fn builtin_watch_channel(
                         ctx.type_display_name(dir_cap_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1858,7 +2051,7 @@ pub(crate) fn builtin_watch_channel(
                 source, start, end, ..
             } => source[start..end].to_string(),
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -1866,8 +2059,7 @@ pub(crate) fn builtin_watch_channel(
                         ctx.type_display_name(path_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2014,7 +2206,7 @@ pub(crate) fn builtin_watch_channel(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2034,7 +2226,7 @@ pub(crate) fn builtin_watch_channel(
 /// `[context]` gives user code access to a fresh independent root context.
 pub(crate) fn builtin_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2043,21 +2235,20 @@ pub(crate) fn builtin_context(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("context expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "context does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let token = tokio_util::sync::CancellationToken::new();
         ok_val(
@@ -2068,7 +2259,7 @@ pub(crate) fn builtin_context(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2087,7 +2278,7 @@ pub(crate) fn builtin_context(
 /// Per async-eval.md: `[child-ctx: child  cancel: cancel-ctx]: [with-cancel ctx]`
 pub(crate) fn builtin_with_cancel(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2096,19 +2287,30 @@ pub(crate) fn builtin_with_cancel(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let parent_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "with-cancel",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let parent_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&parent_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let parent_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2116,8 +2318,7 @@ pub(crate) fn builtin_with_cancel(
                         ctx.type_display_name(parent_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2173,7 +2374,7 @@ pub(crate) fn builtin_with_cancel(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2190,7 +2391,7 @@ pub(crate) fn builtin_with_cancel(
 /// Per async-eval.md: `timed-ctx: [with-timeout %clock ctx [duration 5 "s"]]`
 pub(crate) fn builtin_with_timeout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2199,18 +2400,29 @@ pub(crate) fn builtin_with_timeout(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (clock_thunk, parent_thunk, ms_thunk) = take_three_thunks(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_three_thunks(
             "with-timeout",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let (clock_thunk, parent_thunk, ms_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk.require_value()?.clone();
+        let (result, diags) = clock_thunk.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let clock_val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -2218,17 +2430,26 @@ pub(crate) fn builtin_with_timeout(
                     ctx.type_display_name(clock_val.type_decl_id_of())
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
-        let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
-        let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
+        let (result, diags) = materialize(&parent_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let parent_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&ms_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let ms_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2236,8 +2457,7 @@ pub(crate) fn builtin_with_timeout(
                         ctx.type_display_name(parent_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2245,15 +2465,14 @@ pub(crate) fn builtin_with_timeout(
             // Duration is stored as nanoseconds (i64) -- divide by 1_000_000 to get milliseconds
             Value::Duration { nanos, .. } if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
             Value::Duration { nanos, .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("with-timeout: duration must be >= 0, got {} ns", nanos),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2261,8 +2480,7 @@ pub(crate) fn builtin_with_timeout(
                         ctx.type_display_name(ms_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2289,7 +2507,7 @@ pub(crate) fn builtin_with_timeout(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2306,7 +2524,7 @@ pub(crate) fn builtin_with_timeout(
 /// Per async-eval.md: `dead-ctx: [with-deadline %clock ctx ts]`
 pub(crate) fn builtin_with_deadline(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2315,18 +2533,29 @@ pub(crate) fn builtin_with_deadline(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (clock_thunk, parent_thunk, ts_thunk) = take_three_thunks(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_three_thunks(
             "with-deadline",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let (clock_thunk, parent_thunk, ts_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
-        let clock_val = clock_thunk.require_value()?.clone();
+        let (result, diags) = clock_thunk.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let clock_val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         if !matches!(clock_val, Value::ClockCap { .. }) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -2334,17 +2563,26 @@ pub(crate) fn builtin_with_deadline(
                     ctx.type_display_name(clock_val.type_decl_id_of())
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
-        let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
-        let ts_val = materialize(&ts_thunk, Some(&call_span), &ctx).await?;
+        let (result, diags) = materialize(&parent_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let parent_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&ts_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let ts_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let parent_token = match parent_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2352,8 +2590,7 @@ pub(crate) fn builtin_with_deadline(
                         ctx.type_display_name(parent_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2365,7 +2602,7 @@ pub(crate) fn builtin_with_deadline(
             }
             Value::Timestamp { ts, .. } => ts.as_nanosecond() as i64,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2373,8 +2610,7 @@ pub(crate) fn builtin_with_deadline(
                         ctx.type_display_name(ts_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2384,16 +2620,15 @@ pub(crate) fn builtin_with_deadline(
         // Compute delay: deadline_unix_ns - now_unix_ns.
         // Note: We use real wall-clock time via SystemTime::now() regardless of ClockCapInner.
         // The ClockCap gate is for authorization, not for deterministic deadline behavior.
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!("system clock is before Unix epoch: {e}"),
-                    call_span.clone(),
-                )
-            })?
-            .as_nanos() as i64;
+        let now_ns = match std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_nanos() as i64,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!("system clock is before Unix epoch: {e}"),
+                call_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        };
         let delay_ns = (deadline_unix_ns - now_ns).max(0) as u64;
 
         // All captured types are Send (CancellationToken, u64)
@@ -2413,7 +2648,7 @@ pub(crate) fn builtin_with_deadline(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2427,7 +2662,7 @@ pub(crate) fn builtin_with_deadline(
 /// Per async-eval.md: `[if [cancelled? ctx] [cleanup] [continue]]`
 pub(crate) fn builtin_cancelled_q(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2436,9 +2671,19 @@ pub(crate) fn builtin_cancelled_q(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk =
-            take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let ctx_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&ctx_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let ctx_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match ctx_val {
             Value::Context { token, .. } => ok_val(
@@ -2449,8 +2694,8 @@ pub(crate) fn builtin_cancelled_q(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -2458,8 +2703,7 @@ pub(crate) fn builtin_cancelled_q(
                     ctx.type_display_name(ctx_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2474,7 +2718,7 @@ pub(crate) fn builtin_cancelled_q(
 /// Per async-eval.md: `[cancel-fn]` — the cancel field from `[with-cancel ctx]` is passed here.
 pub(crate) fn builtin_cancel_task(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2483,14 +2727,25 @@ pub(crate) fn builtin_cancel_task(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "cancel-task",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
-        let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let ctx_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&ctx_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let ctx_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match ctx_val {
             Value::Context { token, .. } => {
@@ -2504,9 +2759,9 @@ pub(crate) fn builtin_cancel_task(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -2514,8 +2769,7 @@ pub(crate) fn builtin_cancel_task(
                     ctx.type_display_name(ctx_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2534,7 +2788,7 @@ pub(crate) fn builtin_cancel_task(
 /// Per async-eval.md: NOT capability-gated. Security = OS process isolation (tinct run boundary).
 pub(crate) fn builtin_cancel_root(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2543,21 +2797,20 @@ pub(crate) fn builtin_cancel_root(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("cancel-root expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "cancel-root does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         ctx.cancel.cancel();
@@ -2570,7 +2823,7 @@ pub(crate) fn builtin_cancel_root(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2590,7 +2843,7 @@ pub(crate) fn builtin_cancel_root(
 /// each registered handle as a fallback — tasks are terminated abruptly at the next `.await`
 /// point, which may leave resources in an inconsistent state.
 ///
-/// Design note: user-spawned tasks (via `task`) store their JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>
+/// Design note: user-spawned tasks (via `task`) store their JoinHandle<DiagnosticResult<Value>>
 /// inside Value::Task so that `await` can retrieve the typed result. Background tasks store
 /// JoinHandle<()> in task_registry. These are different types, so task registry cannot hold
 /// both without architectural changes.
@@ -2598,7 +2851,7 @@ pub(crate) fn builtin_cancel_root(
 /// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
 pub(crate) fn builtin_drain(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2607,21 +2860,20 @@ pub(crate) fn builtin_drain(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("drain expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "drain does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // Take all registered background tasks and await them
@@ -2642,12 +2894,11 @@ pub(crate) fn builtin_drain(
                 Err(e) if e.is_cancelled() => {} // expected: abort() was called
                 Err(e) => {
                     // Task panicked — this is a bug; propagate as an internal error.
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("async background task panicked during drain: {e}"),
                         call_span,
-                    )
-                    .into());
+                    )).with_diagnostics(_dr_diags);
                 }
             }
         }
@@ -2661,7 +2912,7 @@ pub(crate) fn builtin_drain(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2676,7 +2927,7 @@ pub(crate) fn builtin_drain(
 /// cancel-root and drain.
 pub(crate) fn builtin_exit_now(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2685,30 +2936,34 @@ pub(crate) fn builtin_exit_now(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("exit-now expects 1 argument, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "exit-now does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let code_thunk = Arc::clone(&args[0]);
-        let code_val = materialize(&code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
+        let (result, diags) = materialize(&code_thunk, Some(&call_span), &ctx).await.into_parts(); // H1: exit code must be known to terminate process
+        _dr_diags.extend(diags);
+        let code_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let exit_code = match code_val {
             Value::Int { n, .. } => n.clamp(0, 255) as i32,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2716,8 +2971,7 @@ pub(crate) fn builtin_exit_now(
                         ctx.type_display_name(code_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2739,7 +2993,7 @@ pub(crate) fn builtin_exit_now(
 /// runs to completion even if the caller's context is cancelled.
 pub(crate) fn builtin_non_cancellable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2748,21 +3002,20 @@ pub(crate) fn builtin_non_cancellable(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("non-cancellable expects 0 arguments, got {}", args.len()),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "non-cancellable does not accept named arguments".to_string(),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let token = tokio_util::sync::CancellationToken::new();
         ok_val(
@@ -2773,7 +3026,7 @@ pub(crate) fn builtin_non_cancellable(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2793,7 +3046,7 @@ pub(crate) fn builtin_non_cancellable(
 /// evaluation-local state that should differ between parent and child evaluation contexts.
 pub(crate) fn builtin_with_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2802,20 +3055,31 @@ pub(crate) fn builtin_with_context(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (context_thunk, expr_thunk) = take_two_thunks(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks(
             "with-context",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let (context_thunk, expr_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
-        let context_val = context_thunk.require_value()?.clone();
+        let (result, diags) = context_thunk.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let context_val = match result {
+            Ok(v) => v.clone(),
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let new_cancel = match context_val {
             Value::Context { token, .. } => token,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2823,8 +3087,7 @@ pub(crate) fn builtin_with_context(
                         ctx.type_display_name(context_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -2844,8 +3107,13 @@ pub(crate) fn builtin_with_context(
         let thunk_to_eval = expr_thunk
             .with_replaced_ctx(Arc::clone(&new_ctx))
             .unwrap_or_else(|| Arc::clone(&expr_thunk));
-        let result = materialize(&thunk_to_eval, Some(&call_span), &new_ctx).await?;
-        ok_val(result, call_span)
+        let (result, diags) = materialize(&thunk_to_eval, Some(&call_span), &new_ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let mat_result = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        ok_val(mat_result, call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2865,7 +3133,7 @@ pub(crate) fn builtin_with_context(
 /// watch sender has a concrete `Value` to hold.
 pub(crate) fn builtin_reactive_cell(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2874,15 +3142,26 @@ pub(crate) fn builtin_reactive_cell(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let initial_thunk = take_one_thunk(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk(
             "reactive-cell",
             &args,
             named.as_ref(),
             call_span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let initial_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         // Materialize the initial value — the watch sender must hold a concrete Value.
-        let initial_val = materialize(&initial_thunk, Some(&call_span), &ctx).await?;
+        let (result, diags) = materialize(&initial_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let initial_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let (tx, rx) = tokio::sync::watch::channel(initial_val);
         let cell_inner = crate::value::ReactiveCellInner {
@@ -2897,7 +3176,7 @@ pub(crate) fn builtin_reactive_cell(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2909,7 +3188,7 @@ pub(crate) fn builtin_reactive_cell(
 /// returns the most recently written value immediately.
 pub(crate) fn builtin_cell_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2918,9 +3197,19 @@ pub(crate) fn builtin_cell_get(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let cell_thunk =
-            take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let cell_thunk = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&cell_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let cell_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match cell_val {
             Value::ReactiveCell {
@@ -2928,9 +3217,9 @@ pub(crate) fn builtin_cell_get(
             } => {
                 // borrow() returns a reference to the current value; clone it to get ownership.
                 let current = cell_inner.receiver.borrow().clone();
-                ok_val(current, call_span)
+                ok_val(current, call_span).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -2938,8 +3227,7 @@ pub(crate) fn builtin_cell_get(
                     ctx.type_display_name(cell_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2956,7 +3244,7 @@ pub(crate) fn builtin_cell_get(
 /// holds a concrete `Value` (not a lazy thunk that could be freed after the call).
 pub(crate) fn builtin_cell_set(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -2965,28 +3253,44 @@ pub(crate) fn builtin_cell_set(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let (val_thunk, cell_thunk) =
-            take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone(), &ctx)?;
-        let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let (val_thunk, cell_thunk) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(&cell_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let cell_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match cell_val {
             Value::ReactiveCell {
                 inner: cell_inner, ..
             } => {
                 // Materialize the new value before acquiring the sender lock.
-                let new_val = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) = materialize(&val_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let new_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 // Lock the sender and send. `watch::Sender::send` fails only when all
                 // receivers have been dropped — which cannot happen here because we hold
                 // a Receiver in ReactiveCellInner for the lifetime of the cell.
                 let tx = cell_inner.sender.lock().await;
-                tx.send(new_val).map_err(|_| {
-                    Diagnostic::error(
+                match tx.send(new_val) {
+                    Ok(_) => {}
+                    Err(_) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "cell-set: reactive cell has been dropped (no receivers)".to_string(),
                         call_span.clone(),
-                    )
-                })?;
+                    )).with_diagnostics(_dr_diags),
+                }
 
                 ok_val(
                     Value::Dict {
@@ -2997,9 +3301,9 @@ pub(crate) fn builtin_cell_set(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -3007,8 +3311,7 @@ pub(crate) fn builtin_cell_set(
                     ctx.type_display_name(cell_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }

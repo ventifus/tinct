@@ -176,7 +176,7 @@ pub fn make_typevalue_var(name: &str) -> TypeValue {
 ///
 /// `params`: list of `(param_name_opt, TypeValue)` pairs for fixed parameters.
 /// `ret`: the return TypeValue.
-pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValue) -> TypeValue {
+pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue, crate::ast::Span)>, ret: TypeValue) -> TypeValue {
     make_typevalue_fn_with_flags(params, ret, None, false, Vec::new())
 }
 
@@ -191,7 +191,7 @@ pub fn make_typevalue_fn(params: Vec<(Option<String>, TypeValue)>, ret: TypeValu
 ///   for typed variadic buckets (e.g. `...xs@Seq[Integer]`); absent if empty
 /// - `return`: the return type
 pub fn make_typevalue_fn_with_flags(
-    params: Vec<(Option<String>, TypeValue)>,
+    params: Vec<(Option<String>, TypeValue, crate::ast::Span)>,
     ret: TypeValue,
     required_count: Option<usize>,
     variadic: bool,
@@ -201,12 +201,12 @@ pub fn make_typevalue_fn_with_flags(
     // Build params dict: { 0: TypeValue, 1: TypeValue, ... }
     let mut params_entries = indexmap::IndexMap::new();
     let mut names_entries = indexmap::IndexMap::new();
-    for (i, (name, param_tv)) in params.iter().enumerate() {
+    for (i, (name, param_tv, param_span)) in params.iter().enumerate() {
         params_entries.insert(
             HashableValue::Int(i as i64),
             Arc::new(crate::value::Thunk::value(
                 param_tv.as_ref().clone(),
-                crate::rust_span!(),
+                param_span.clone(),
             )),
         );
         if let Some(ref n) = name {
@@ -928,6 +928,47 @@ pub fn typevalue_fn_params_and_ret(tv: &TypeValue) -> Option<(Vec<TypeValue>, Ty
     }
 }
 
+pub fn typevalue_fn_param_spans(tv: &TypeValue, count: usize) -> Vec<crate::ast::Span> {
+    use crate::value::HashableValue;
+    let payload_thunk = match tv.as_ref() {
+        crate::value::Value::Variant {
+            ctor_index,
+            payload: Some(thunk),
+            ..
+        } if *ctor_index == TV_FN => thunk,
+        _ => panic!("typevalue_fn_param_spans called on non-Fn TypeValue"),
+    };
+    let payload = payload_thunk
+        .peek_result()
+        .expect("typevalue_fn_param_spans: Fn payload unsettled")
+        .expect("typevalue_fn_param_spans: Fn payload is error");
+    let entries = match &payload {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => panic!("typevalue_fn_param_spans: Fn payload is not a Dict"),
+    };
+    let params_key = HashableValue::Str(Arc::from(FIELD_PARAMS));
+    let params_thunk = entries
+        .get(&params_key)
+        .expect("typevalue_fn_param_spans: Fn payload missing 'params' key");
+    let params_val = params_thunk
+        .peek_result()
+        .expect("typevalue_fn_param_spans: params thunk unsettled")
+        .expect("typevalue_fn_param_spans: params thunk is error");
+    let params_entries = match &params_val {
+        crate::value::Value::Dict { entries, .. } => entries,
+        _ => panic!("typevalue_fn_param_spans: params is not a Dict"),
+    };
+    let mut result = Vec::new();
+    for i in 0..count {
+        let key = HashableValue::Int(i as i64);
+        let thunk = params_entries
+            .get(&key)
+            .unwrap_or_else(|| panic!("typevalue_fn_param_spans: no param at index {}", i));
+        result.push(thunk.definition_span());
+    }
+    result
+}
+
 /// Public version of `typevalue_extract_list_members` for use by typecheck_cek.rs.
 /// Extracts the members list from a TypeValue.Union or TypeValue.Inter payload.
 pub fn typevalue_extract_members_pub(tv: &TypeValue) -> Option<Vec<TypeValue>> {
@@ -1523,6 +1564,7 @@ pub struct InferenceContext {
     /// Optional: callers that don't need TyCon variance can leave this empty.
     pub tycon_env: HashMap<u64, Arc<crate::type_def::TyConDef>>,
     pub type_display_names: HashMap<u64, String>,
+    pub type_definition_spans: HashMap<u64, crate::ast::Span>,
     /// Deferred equality pairs for non-injective resolver FDs.
     ///
     /// Added by `unify()` when two `TV_APP(F, ...)` nodes with non-injective F are compared.
@@ -1604,6 +1646,7 @@ impl InferenceContext {
             gensym_counter: 0,
             tycon_env: HashMap::new(),
             type_display_names: HashMap::new(),
+            type_definition_spans: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
@@ -1626,6 +1669,7 @@ impl InferenceContext {
             gensym_counter: 0,
             tycon_env,
             type_display_names: HashMap::new(),
+            type_definition_spans: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),
@@ -1656,6 +1700,7 @@ impl InferenceContext {
             gensym_counter: 0,
             tycon_env,
             type_display_names: HashMap::new(),
+            type_definition_spans: HashMap::new(),
             resolver_deferred: Vec::new(),
             lower_bounds: HashMap::new(),
             upper_bounds: HashMap::new(),

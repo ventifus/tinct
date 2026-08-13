@@ -13,6 +13,7 @@ use crate::ast::Span;
 /// which pushes all diagnostics to the EvalContext. This makes it
 /// impossible to forget diagnostic propagation.
 #[must_use]
+#[derive(Debug)]
 pub struct DiagnosticResult<T, E = Diagnostic> {
     result: Result<T, E>,
     diagnostics: Vec<Diagnostic>,
@@ -48,10 +49,43 @@ impl<T, E> DiagnosticResult<T, E> {
         self.result
     }
 
-    /// Destructure for test assertions. Not available in production code.
-    #[cfg(test)]
     pub fn into_parts(self) -> (Result<T, E>, Vec<Diagnostic>) {
         (self.result, self.diagnostics)
+    }
+
+    #[track_caller]
+    pub fn unwrap(self) -> T
+    where
+        E: std::fmt::Debug,
+    {
+        assert!(self.diagnostics.is_empty(), "DiagnosticResult::unwrap called with {} pending diagnostics", self.diagnostics.len());
+        self.result.unwrap()
+    }
+
+    #[track_caller]
+    pub fn expect(self, msg: &str) -> T
+    where
+        E: std::fmt::Debug,
+    {
+        assert!(self.diagnostics.is_empty(), "DiagnosticResult::expect called with {} pending diagnostics: {}", self.diagnostics.len(), msg);
+        self.result.expect(msg)
+    }
+
+    #[track_caller]
+    pub fn unwrap_err(self) -> E
+    where
+        T: std::fmt::Debug,
+    {
+        assert!(self.diagnostics.is_empty(), "DiagnosticResult::unwrap_err called with {} pending diagnostics", self.diagnostics.len());
+        self.result.unwrap_err()
+    }
+
+    /// Transform the error value, carrying diagnostics forward.
+    pub fn map_err<F>(self, f: impl FnOnce(E) -> F) -> DiagnosticResult<T, F> {
+        DiagnosticResult {
+            result: self.result.map_err(f),
+            diagnostics: self.diagnostics,
+        }
     }
 
     /// Transform the success value, carrying diagnostics forward.
@@ -59,6 +93,15 @@ impl<T, E> DiagnosticResult<T, E> {
         DiagnosticResult {
             result: self.result.map(f),
             diagnostics: self.diagnostics,
+        }
+    }
+}
+
+impl<T: Clone, E: Clone> Clone for DiagnosticResult<T, E> {
+    fn clone(&self) -> Self {
+        Self {
+            result: self.result.clone(),
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }

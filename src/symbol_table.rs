@@ -17,7 +17,7 @@ pub struct SymbolEntry {
     pub type_scheme: OnceLock<Arc<Value>>,
     pub value: OnceLock<Arc<Thunk>>,
     pub referenced: AtomicBool,
-    pub definition_span: Option<Span>,
+    pub definition_span: Span,
 }
 
 pub struct SymbolTable {
@@ -53,7 +53,7 @@ impl SymbolTable {
         vec![Self::empty()]
     }
 
-    pub fn insert(&mut self, name: String, slot: u32, def_span: Option<Span>) {
+    pub fn insert(&mut self, name: String, slot: u32, def_span: Span) {
         self.entries.insert(
             name,
             SymbolEntry {
@@ -71,8 +71,12 @@ impl SymbolTable {
         depth: u32,
         slot: u32,
     ) -> Option<&SymbolEntry> {
+        let len = chain.len();
+        if (depth as usize) >= len {
+            return None;
+        }
         chain
-            .get(depth as usize)
+            .get(len - 1 - depth as usize)
             .and_then(|frame| frame.entries.get_index(slot as usize).map(|(_, e)| e))
     }
 
@@ -80,7 +84,7 @@ impl SymbolTable {
         chain: &'a [Arc<SymbolTable>],
         name: &str,
     ) -> Option<(u32, &'a SymbolEntry)> {
-        for (depth, frame) in chain.iter().enumerate() {
+        for (depth, frame) in chain.iter().rev().enumerate() {
             if let Some(entry) = frame.entries.get(name) {
                 return Some((depth as u32, entry));
             }
@@ -92,7 +96,7 @@ impl SymbolTable {
         chain: &[Arc<SymbolTable>],
         class_decl_id: u64,
     ) -> Option<&EvidenceEntry> {
-        for frame in chain {
+        for frame in chain.iter().rev() {
             if let Some(evidence) = frame.evidence.get() {
                 if let Some(entry) = evidence.get(&class_decl_id) {
                     return Some(entry);
@@ -110,7 +114,7 @@ impl SymbolTable {
         chain: &[Arc<SymbolTable>],
     ) -> Option<HashMap<u64, EvidenceEntry>> {
         let mut collected = HashMap::new();
-        for frame in chain {
+        for frame in chain.iter().rev() {
             if let Some(evidence) = frame.evidence.get() {
                 for (&k, v) in evidence {
                     collected.entry(k).or_insert_with(|| EvidenceEntry {
@@ -162,7 +166,7 @@ impl SymbolTable {
     pub fn definition_span(&self, slot: u32) -> Option<&Span> {
         self.entries
             .get_index(slot as usize)
-            .and_then(|(_, e)| e.definition_span.as_ref())
+            .map(|(_, e)| &e.definition_span)
     }
 
     pub fn entry_name(&self, slot: u32) -> Option<&str> {
@@ -185,12 +189,13 @@ impl SymbolTable {
     ) -> ScopeChain {
         let mut entries = IndexMap::new();
         for (slot, (name, thunk)) in named_entries.into_iter().enumerate() {
+            let def_span = thunk.definition_span();
             let entry = SymbolEntry {
                 slot: slot as u32,
                 type_scheme: OnceLock::new(),
                 value: OnceLock::new(),
                 referenced: AtomicBool::new(false),
-                definition_span: None,
+                definition_span: def_span,
             };
             entry
                 .value
@@ -204,17 +209,56 @@ impl SymbolTable {
             type_instantiation: None,
         });
         let mut new_chain = chain.clone();
-        new_chain.insert(0, new_frame);
+        new_chain.push(new_frame);
         new_chain
     }
 
-    pub fn get_in_chain(chain: &[Arc<SymbolTable>], name: &str) -> Option<Arc<Thunk>> {
-        for frame in chain {
+    pub fn scope_chain_notes(chain: &[Arc<SymbolTable>], target_depth: Option<u32>) -> Vec<String> {
+        let mut notes = Vec::new();
+        notes.push(format!("scope chain: {} frames", chain.len()));
+        for (depth, frame) in chain.iter().rev().enumerate() {
+            let prefix = if target_depth == Some(depth as u32) {
+                "--> "
+            } else {
+                "    "
+            };
+            let names: Vec<&str> = frame.entries.keys().map(|s| s.as_str()).take(5).collect();
+            notes.push(format!(
+                "{}scope[{}]: {} entries [{}{}]",
+                prefix,
+                depth,
+                frame.len(),
+                names.join(", "),
+                if frame.len() > 5 { " ..." } else { "" },
+            ));
+        }
+        notes
+    }
+
+    pub fn get_in_chain(
+        chain: &[Arc<SymbolTable>],
+        name: &str,
+    ) -> crate::error::DiagnosticResult<Option<Arc<Thunk>>> {
+        for frame in chain.iter().rev() {
             if let Some(entry) = frame.entries.get(name) {
-                return entry.value.get().cloned();
+                return match entry.value.get() {
+                    Some(thunk) => crate::error::DiagnosticResult::ok(Some(thunk.clone())),
+                    None => {
+                        crate::error::DiagnosticResult::err(
+                            crate::error::Diagnostic::error(
+                                "scope",
+                                format!(
+                                    "entry '{}' exists at slot {} but its value has not been written",
+                                    name, entry.slot
+                                ),
+                                entry.definition_span.clone(),
+                            ),
+                        )
+                    }
+                };
             }
         }
-        None
+        crate::error::DiagnosticResult::ok(None)
     }
 }
 

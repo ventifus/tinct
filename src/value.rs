@@ -63,7 +63,7 @@ pub struct BuiltinArgs {
 pub type BuiltinFn = fn(
     BuiltinArgs,
 ) -> Pin<
-    Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>,
+    Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>,
 >;
 
 /// Strictness annotation for builtin argument demand (Wadler & Hughes 1987).
@@ -1244,8 +1244,8 @@ impl Clone for Value {
 
 /// State of an async task spawned via `task` builtin.
 pub enum TaskState {
-    Pending(tokio::task::JoinHandle<Result<Value, Box<crate::error::Diagnostic>>>),
-    Done(Result<Value, Box<crate::error::Diagnostic>>),
+    Pending(tokio::task::JoinHandle<crate::error::DiagnosticResult<Value>>),
+    Done(crate::error::DiagnosticResult<Value>),
 }
 
 /// Inner state for a channel created via `channel` builtin.
@@ -2334,13 +2334,17 @@ impl Thunk {
     /// - `Ok(&value)` — thunk settled successfully
     /// - `Err(Box<Diagnostic>)` — thunk settled with an evaluation error (propagated)
     /// - Panics if the thunk is not yet settled (invariant violation)
-    pub fn require_value(&self) -> Result<&Value, Box<crate::error::Diagnostic>> {
+    pub fn require_value(&self) -> crate::error::DiagnosticResult<&Value> {
         match self.peek_result() {
-            Some(Ok(v)) => Ok(v),
-            Some(Err(e)) => Err(Box::new((**e).clone())),
-            None => {
-                panic!("require_value called on unsettled thunk — expected pre-materialized thunk")
-            }
+            Some(Ok(v)) => crate::error::DiagnosticResult::ok(v),
+            Some(Err(e)) => crate::error::DiagnosticResult::err((**e).clone()),
+            None => crate::error::DiagnosticResult::err(
+                crate::error::Diagnostic::error(
+                    "eval",
+                    "require_value called on unsettled thunk".to_string(),
+                    crate::rust_span!(),
+                ),
+            ),
         }
     }
 

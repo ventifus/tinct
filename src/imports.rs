@@ -17,15 +17,18 @@ const KIND: &str = "import";
 ///
 /// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
 /// needed.
-pub async fn build_builtin_core_envs() -> Result<
-    (
-        crate::type_def::TyConEnv,
-        std::collections::HashMap<String, u64>,
-    ),
-    Box<crate::error::Diagnostic>,
-> {
-    let (tycon_env, _, type_name_to_id) = build_builtin_core_envs_inner().await?;
-    Ok((tycon_env, type_name_to_id))
+pub async fn build_builtin_core_envs() -> crate::error::DiagnosticResult<(
+    crate::type_def::TyConEnv,
+    std::collections::HashMap<String, u64>,
+)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (result, diags) = build_builtin_core_envs_inner().await.into_parts();
+    _dr_diags.extend(diags);
+    let (tycon_env, _, type_name_to_id) = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    crate::error::DiagnosticResult::ok((tycon_env, type_name_to_id)).with_diagnostics(_dr_diags)
 }
 
 /// Evaluate the type-stage section of `stdlib/builtin_core.llt` and return the resulting
@@ -35,17 +38,29 @@ pub async fn build_builtin_core_envs() -> Result<
 /// This is the authoritative source of the type-stage scope; no Rust code should manually
 /// construct this mapping by hardcoding tinct-side type names.
 pub async fn get_builtin_core_type_stage_scope(
-) -> Result<crate::type_infer::TypeStageData, Box<crate::error::Diagnostic>> {
-    let (_, data, _) = build_builtin_core_envs_inner().await?;
-    Ok(data)
+) -> crate::error::DiagnosticResult<crate::type_infer::TypeStageData> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (result, diags) = build_builtin_core_envs_inner().await.into_parts();
+    _dr_diags.extend(diags);
+    let (_, data, _) = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    crate::error::DiagnosticResult::ok(data).with_diagnostics(_dr_diags)
 }
 
 /// Type-check `stdlib/builtin_core.llt` and return the resulting `TyConEnv` containing
 /// opaque type definitions (e.g. `BuilderHandle`, `DirCap`).
 pub async fn get_builtin_core_tycon_env(
-) -> Result<crate::type_def::TyConEnv, Box<crate::error::Diagnostic>> {
-    let (tycon_env, _, _) = build_builtin_core_envs_inner().await?;
-    Ok(tycon_env)
+) -> crate::error::DiagnosticResult<crate::type_def::TyConEnv> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let (result, diags) = build_builtin_core_envs_inner().await.into_parts();
+    _dr_diags.extend(diags);
+    let (tycon_env, _, _) = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+    crate::error::DiagnosticResult::ok(tycon_env).with_diagnostics(_dr_diags)
 }
 
 /// Classify a single materialized type-stage value.
@@ -73,50 +88,64 @@ pub(crate) async fn classify_type_stage_entry(
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
     scope_so_far: &[std::collections::HashMap<String, crate::type_infer::TypeValue>],
     type_name_to_id: &std::collections::HashMap<String, u64>,
-) -> Result<
+) -> crate::error::DiagnosticResult<
     Option<(
         crate::type_infer::TypeValue,
         Option<std::sync::Arc<crate::value::Thunk>>,
         Option<String>,
     )>,
-    Box<crate::error::Diagnostic>,
 > {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     // For Variant values: call typenode_value_to_type (full recursive converter that reads
     // payload fields for structural types like Span, Diagnostic, Dict, Union, etc.).
     // typenode_value_to_type returns Ok(None) for non-TypeNode variants, so calling it
     // unconditionally is correct — no Rust code here needs to know the TypeNode tycon name.
     if matches!(val, crate::value::Value::Variant { .. }) {
-        if let Some(ty) = crate::typecheck::typecheck_annot::typenode_value_to_type(
+        let (tv_result, tv_diags) = crate::typecheck::typecheck_annot::typenode_value_to_type(
             val,
             ctx,
             scope_so_far,
             type_name_to_id,
         )
-        .await?
-        {
-            return Ok(Some((ty, None, None)));
+        .await
+        .into_parts();
+        _dr_diags.extend(tv_diags);
+        let maybe_ty = match tv_result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        if let Some(ty) = maybe_ty {
+            return crate::error::DiagnosticResult::ok(Some((ty, None, None)))
+                .with_diagnostics(_dr_diags);
         }
         // typenode_value_to_type returned None — this Variant is not representable as a static
         // TypeValue at this scope depth (e.g., not a TypeNode variant, or references type-stage
         // functions that haven't been called yet, or opaque types that need parameterization).
-        return Ok(None);
+        return crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags);
     }
-    if let Some(kind) =
-        crate::type_normalize::typenode_typevar_kind(val).map_err(|e| Box::new((*e).clone()))?
-    {
+    let maybe_kind = match crate::type_normalize::typenode_typevar_kind(val) {
+        Ok(v) => v,
+        Err(e) => {
+            return crate::error::DiagnosticResult::err((*e).clone())
+                .with_diagnostics(_dr_diags)
+        }
+    };
+    if let Some(kind) = maybe_kind {
         let tv = crate::type_infer::make_typevalue_nominal(
             type_name_to_id.get(name).copied().unwrap_or(0),
         );
-        return Ok(Some((tv, None, Some(kind))));
+        return crate::error::DiagnosticResult::ok(Some((tv, None, Some(kind))))
+            .with_diagnostics(_dr_diags);
     }
     if matches!(val, crate::value::Value::Function { .. }) {
         let tv = crate::type_infer::make_typevalue_nominal(
             type_name_to_id.get(name).copied().unwrap_or(0),
         );
-        return Ok(Some((tv, Some(std::sync::Arc::clone(thunk)), None)));
+        return crate::error::DiagnosticResult::ok(Some((tv, Some(std::sync::Arc::clone(thunk)), None)))
+            .with_diagnostics(_dr_diags);
     }
     // Not a recognized Variant, TypeVar sentinel, or Function — not a type-stage entry.
-    Ok(None)
+    crate::error::DiagnosticResult::ok(None).with_diagnostics(_dr_diags)
 }
 
 /// Inner implementation of `build_builtin_core_envs`.
@@ -125,27 +154,28 @@ pub(crate) async fn classify_type_stage_entry(
 /// runs the full pipeline (desugar → resolve → typecheck), and returns the
 /// resulting `TyConEnv` and the evaluated type-stage scope
 /// (used to seed `InferState::type_stage_scope`).
-async fn build_builtin_core_envs_inner() -> Result<
-    (
-        crate::type_def::TyConEnv,
-        crate::type_infer::TypeStageData,
-        std::collections::HashMap<String, u64>,
-    ),
-    Box<crate::error::Diagnostic>,
-> {
+async fn build_builtin_core_envs_inner() -> crate::error::DiagnosticResult<(
+    crate::type_def::TyConEnv,
+    crate::type_infer::TypeStageData,
+    std::collections::HashMap<String, u64>,
+)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let source = include_str!("../stdlib/builtin_core.llt");
     let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
 
     let program = crate::desugar::desugar_program_full(
-        &crate::parser::parse(source, sf)
-            .map_err(|e| {
-                Box::new(crate::error::Diagnostic::error(
+        &match crate::parser::parse(source, sf) {
+            Ok(v) => v,
+            Err(e) => {
+                return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
                     KIND,
                     format!("builtin_core.llt parse failed: {e}"),
                     crate::rust_span!(),
                 ))
-            })?
-            .program,
+                .with_diagnostics(_dr_diags)
+            }
+        }
+        .program,
     );
     let program = crate::expand::expand_program(&program);
 
@@ -153,12 +183,20 @@ async fn build_builtin_core_envs_inner() -> Result<
     let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
 
     for doc in &program.documents {
-        crate::pipeline::process_pipeline_document(doc, &mut state, &ctx).await?;
+        let (result, diags) = crate::pipeline::process_pipeline_document(doc, &mut state, &ctx)
+            .await
+            .into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {}
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     }
 
-    Ok((
+    crate::error::DiagnosticResult::ok((
         state.infer_state.tycon_env,
         state.infer_state.type_stage_data,
         state.infer_state.type_name_to_id,
     ))
+    .with_diagnostics(_dr_diags)
 }

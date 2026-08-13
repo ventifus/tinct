@@ -61,12 +61,12 @@ pub async fn format_source_tinct(
     // Build the scope for the formatter. FORMATTER_INPUT_VAR ("input-ast") is the
     // formatter's own input variable name (not the loader's % convention). It is
     // inserted into the scope so Field.resolution is always populated by the resolver.
-    let scope = SymbolTable::empty();
+    let scope = SymbolTable::empty_chain();
 
     // Resolve the formatter program against the scope.
     let mut resolve_diags: Vec<crate::error::Diagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let result = resolve::resolve_document(&doc_spanned.node, &scope);
+        let result = resolve::resolve_document(&doc_spanned.node, &scope, &Vec::new());
         resolve_diags.extend(result.diagnostics);
     }
     let resolve_errors: Vec<_> = resolve_diags
@@ -86,6 +86,7 @@ pub async fn format_source_tinct(
     for doc in &formatter_program.documents {
         crate::pipeline::process_pipeline_document(doc, &mut pipeline_state, &ctx)
             .await
+            .take(&ctx.runtime_diagnostics)
             .map_err(|e| format!("formatter typecheck error: {e}"))?;
     }
 
@@ -104,19 +105,25 @@ pub async fn format_source_tinct(
         }
     };
     let ast_thunk =
-        surface_program_to_dict(&parse_output.program, &opts, &ctx).map_err(|e| format!("{e}"))?;
+        surface_program_to_dict(&parse_output.program, &opts, &ctx).take(&ctx.runtime_diagnostics).map_err(|e| format!("{e}"))?;
 
     let mut input_scope = indexmap::IndexMap::new();
     input_scope.insert("%".to_string(), ast_thunk);
-    let formatter_thunk = eval::eval_surface_file_with_input(&formatter_program, &ctx, input_scope)
-        .await
-        .map_err(|e| format!("formatter eval error: {e}"))?;
+    let formatter_thunk = {
+        let (result, _diags) = eval::eval_surface_file_with_input(&formatter_program, &ctx, input_scope)
+            .await
+            .into_parts();
+        result.map_err(|e| format!("formatter eval error: {e}"))?
+    };
 
     // Materialize the result — the formatter script must return a bare String.
     // If it raises (calls `raise`), the error propagates as an Diagnostic here.
-    let result_val = eval::materialize(&formatter_thunk, None, &ctx)
-        .await
-        .map_err(|e| format!("formatter error: {e}"))?;
+    let result_val = {
+        let (result, _diags) = eval::materialize(&formatter_thunk, None, &ctx)
+            .await
+            .into_parts();
+        result.map_err(|e| format!("formatter error: {e}"))?
+    };
 
     // Protocol: the formatter script returns a bare String on success.
     // Any other value is a protocol violation — the script should have returned
@@ -130,12 +137,16 @@ pub async fn format_source_tinct(
         } => Ok(source[start..end].to_string()),
 
         _ => {
-            let display_str =
-                crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
-                    .await
-                    .map_err(|e| {
-                        format!("formatter returned non-string value (display failed: {e})")
-                    })?;
+            let display_str = {
+                let (result, diags) = crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
+                    .await.into_parts();
+                if !diags.is_empty() {
+                    ctx.runtime_diagnostics.lock().unwrap().extend(diags);
+                }
+                result.map_err(|e| {
+                    format!("formatter returned non-string value (display failed: {e})")
+                })?
+            };
             Err(format!(
                 "formatter returned non-string value: {display_str}"
             ))

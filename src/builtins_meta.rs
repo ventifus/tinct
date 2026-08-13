@@ -199,7 +199,7 @@ pub(crate) fn make_gensym_name_with_scope(scope: char, prefix: &str, id: u64) ->
 /// (WHNF) — dicts remain dicts with unforced entries, not deep-forced.
 pub(crate) fn builtin_force(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -208,14 +208,20 @@ pub(crate) fn builtin_force(
             ctx,
             ..
         } = ctx_arg;
-        let forced = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "materialize",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
-        ok_val(forced, call_span)
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let forced = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        ok_val(forced, call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -225,7 +231,7 @@ pub(crate) fn builtin_force(
 /// Optional `notes:` field is an integer-keyed dict of Strings appended as notes.
 pub(crate) fn builtin_raise(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -234,20 +240,30 @@ pub(crate) fn builtin_raise(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "raise",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         let arg_span = Arc::clone(&args[0]).span.clone();
-        let map =
-            crate::builtins::require_dict("raise", val, arg_span.clone(), &ctx, call_span.clone())
-                .await?;
+        let (result, diags) = crate::builtins::require_dict("raise", val, arg_span.clone(), &ctx, call_span.clone())
+                .await.into_parts();
+        _dr_diags.extend(diags);
+        let map = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract required `message:` field
-        let message_thunk = map
+        let message_thunk = match map
             .get(&HashableValue::Str("message".into()))
             .ok_or_else(|| {
                 Diagnostic::error(
@@ -255,32 +271,65 @@ pub(crate) fn builtin_raise(
                     "raise: Diagnostic dict missing required `message:` field".to_string(),
                     call_span.clone(),
                 )
-            })?;
-        let message_val = materialize(message_thunk, Some(&call_span), &ctx).await?;
-        let message = require_string("raise", message_val, message_thunk.span.clone(), &ctx)?;
+            }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = materialize(message_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let message_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("raise", message_val, message_thunk.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let message = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let mut err = Diagnostic::error(KIND, message, call_span.clone());
 
         // Extract optional `notes:` field — integer-keyed dict of Strings
         if let Some(notes_thunk) = map.get(&HashableValue::Str("notes".into())) {
-            let notes_val = materialize(notes_thunk, Some(&call_span), &ctx).await?;
-            let notes_map = crate::builtins::require_dict(
+            let (result, diags) = materialize(notes_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let notes_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
+            let (result, diags) = crate::builtins::require_dict(
                 "raise",
                 notes_val,
                 notes_thunk.span.clone(),
                 &ctx,
                 call_span.clone(),
             )
-            .await?;
+            .await.into_parts();
+            _dr_diags.extend(diags);
+            let notes_map = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             // Iterate in insertion order (integer keys 0, 1, 2, ...)
             for (_, note_thunk) in &notes_map {
-                let note_val = materialize(note_thunk, Some(&call_span), &ctx).await?;
-                let note = require_string("raise", note_val, note_thunk.span.clone(), &ctx)?;
+                let (result, diags) = materialize(note_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let note_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = require_string("raise", note_val, note_thunk.span.clone(), &ctx).into_parts();
+                _dr_diags.extend(diags);
+                let note = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 err = err.with_note(note);
             }
         }
 
-        Err(err.into())
+        crate::error::DiagnosticResult::err(err).with_diagnostics(_dr_diags)
     })
 }
 
@@ -291,7 +340,7 @@ pub(crate) fn builtin_raise(
 /// Arg 2 (node) is Strictness::Id (not materialized - stays as thunk).
 pub(crate) fn builtin_macro_error(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -300,13 +349,21 @@ pub(crate) fn builtin_macro_error(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         // Reject named arguments
-        crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         // Expect 1 or 2 arguments
         if args.len() != 1 && args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -314,19 +371,31 @@ pub(crate) fn builtin_macro_error(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Extract message (first argument) - materialized by Strictness::Seq
         let arg0_thunk = Arc::clone(&args[0]);
-        let msg_val = arg0_thunk.require_value()?.clone();
-        let message = require_string(
+        let msg_val = {
+            let (result, diags) = arg0_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let (result, diags) = require_string(
             "builtin-macro-error",
             msg_val,
             arg0_thunk.span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let message = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Determine the span to use for the error
         let error_span = if args.len() == 2 {
@@ -340,7 +409,7 @@ pub(crate) fn builtin_macro_error(
         };
 
         // Create macro error with the determined span
-        Err(Diagnostic::error(KIND, message, error_span).into())
+        crate::error::DiagnosticResult::err(Diagnostic::error(KIND, message, error_span)).with_diagnostics(_dr_diags)
     })
 }
 
@@ -351,7 +420,7 @@ pub(crate) fn builtin_macro_error(
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -360,9 +429,17 @@ pub(crate) fn builtin_try(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("try", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("try", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -370,11 +447,12 @@ pub(crate) fn builtin_try(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         let arg_thunk = Arc::clone(&args[0]);
-        let call_result = materialize(&arg_thunk, Some(&call_span), &ctx).await;
+        let (call_result, diags) = materialize(&arg_thunk, Some(&call_span), &ctx).await.into_parts();
+        _dr_diags.extend(diags);
 
         match call_result {
             Ok(val) => {
@@ -383,7 +461,14 @@ pub(crate) fn builtin_try(
                 let mut map = IndexMap::new();
                 map.insert(
                     HashableValue::Str("ok".into()),
-                    ok_val(val, call_span.clone())?,
+                    {
+                        let (result, diags) = ok_val(val, call_span.clone()).into_parts();
+                        _dr_diags.extend(diags);
+                        match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        }
+                    },
                 );
                 ok_val(
                     Value::Dict {
@@ -395,11 +480,12 @@ pub(crate) fn builtin_try(
                     },
                     call_span,
                 )
+                .with_diagnostics(_dr_diags)
             }
             Err(e) => {
                 // ResourceLimitExceeded is non-catchable: it indicates a system-level limit.
                 if e.message.contains("exceeded") && e.message.contains("limit") {
-                    return Err(e);
+                    return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags);
                 }
                 // Failure: full diagnostic dict matching the unified protocol.
                 // Discriminated by absence of "ok" key (success has "ok", failure does not).
@@ -531,6 +617,7 @@ pub(crate) fn builtin_try(
                     },
                     call_span,
                 )
+                .with_diagnostics(_dr_diags)
             }
         }
     })
@@ -555,7 +642,7 @@ pub(crate) fn builtin_try(
 ///   `gensym-with-scope scope prefix` → explicit scope
 pub(crate) fn builtin_gensym(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -564,30 +651,47 @@ pub(crate) fn builtin_gensym(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        reject_named("builtin-gensym", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-gensym", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-gensym takes exactly 2 arguments (scope, prefix), got {}",
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let get_str = |thunk: Arc<Thunk>,
                        name: &str,
                        span: &Span|
-         -> Result<String, Box<crate::error::Diagnostic>> {
-            match thunk.require_value()?.clone() {
+         -> crate::error::DiagnosticResult<String> {
+            let mut inner_diags: Vec<crate::error::Diagnostic> = Vec::new();
+            let val = {
+                let (result, diags) = thunk.require_value().into_parts();
+                inner_diags.extend(diags);
+                match result {
+                    Ok(v) => v.clone(),
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(inner_diags),
+                }
+            };
+            match val {
                 Value::String {
                     source, start, end, ..
-                } => Ok(source[start..end].to_string()),
-                v => Err(Diagnostic::error(
+                } => crate::error::DiagnosticResult::ok(source[start..end].to_string()).with_diagnostics(inner_diags),
+                v => crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -596,17 +700,26 @@ pub(crate) fn builtin_gensym(
                         ctx.type_display_name(v.type_decl_id_of())
                     ),
                     span.clone(),
-                )
-                .into()),
+                )).with_diagnostics(inner_diags),
             }
         };
 
-        let scope_str = get_str(Arc::clone(&args[0]), "scope", &call_span)?;
-        let prefix = get_str(Arc::clone(&args[1]), "prefix", &call_span)?;
+        let (result, diags) = get_str(Arc::clone(&args[0]), "scope", &call_span).into_parts();
+        _dr_diags.extend(diags);
+        let scope_str = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = get_str(Arc::clone(&args[1]), "prefix", &call_span).into_parts();
+        _dr_diags.extend(diags);
+        let prefix = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let scope = scope_str.chars().next().unwrap_or('ℊ');
         let name = gensym_fresh(scope, &prefix);
-        ok_val(string_val(&name), call_span)
+        ok_val(string_val(&name), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -627,7 +740,7 @@ pub(crate) fn builtin_gensym(
 /// Non-materializing: only inspects the macro_injects_map from EvalConfig.
 pub(crate) fn builtin_macro_injects(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -636,20 +749,31 @@ pub(crate) fn builtin_macro_injects(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        let macro_name_val = crate::builtins::expect_one_arg(
+        let (result, diags) = crate::builtins::expect_one_arg(
             "macro-injects",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
-        let macro_name = require_string(
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let macro_name_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string(
             "macro-injects",
             macro_name_val,
             Arc::clone(&args[0]).span.clone(),
             &ctx,
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let macro_name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Look up the macro in the inject map
         let inject_names: &[String] = match ctx.config.macro_injects_map.get(&macro_name) {
@@ -674,7 +798,7 @@ pub(crate) fn builtin_macro_injects(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -682,7 +806,7 @@ pub(crate) fn builtin_macro_injects(
 /// Returns Value::Decimal. Error on invalid format.
 pub(crate) fn builtin_decimal(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -691,13 +815,21 @@ pub(crate) fn builtin_decimal(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "decimal",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "decimal",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match val {
             Value::String {
                 ref source,
@@ -716,13 +848,12 @@ pub(crate) fn builtin_decimal(
                             )),
                         },
                         call_span,
-                    ),
-                    Err(e) => Err(Diagnostic::error(
+                    ).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("decimal: cannot parse \"{s}\": {e}"),
                         call_span,
-                    )
-                    .into()),
+                    )).with_diagnostics(_dr_diags),
                 }
             }
             Value::Int { n, .. } => ok_val(
@@ -733,8 +864,8 @@ pub(crate) fn builtin_decimal(
                     )),
                 },
                 call_span,
-            ),
-            _ => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -742,8 +873,7 @@ pub(crate) fn builtin_decimal(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -751,7 +881,7 @@ pub(crate) fn builtin_decimal(
 /// `big-int`: Convert an Int or String to a BigInt (arbitrary-precision integer).
 pub(crate) fn builtin_big_int(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -760,13 +890,21 @@ pub(crate) fn builtin_big_int(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "big-int",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "big-int",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match val {
             Value::Int { n, .. } => ok_val(
                 Value::BigInt {
@@ -776,7 +914,7 @@ pub(crate) fn builtin_big_int(
                     )),
                 },
                 call_span,
-            ),
+            ).with_diagnostics(_dr_diags),
             Value::String {
                 ref source,
                 start,
@@ -793,16 +931,15 @@ pub(crate) fn builtin_big_int(
                             )),
                         },
                         call_span,
-                    ),
-                    Err(e) => Err(Diagnostic::error(
+                    ).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("big-int: cannot parse \"{s}\": {e}"),
                         call_span,
-                    )
-                    .into()),
+                    )).with_diagnostics(_dr_diags),
                 }
             }
-            _ => Err(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -810,8 +947,7 @@ pub(crate) fn builtin_big_int(
                     ctx.type_display_name(val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -822,7 +958,7 @@ pub(crate) fn builtin_big_int(
 /// the reserved TYPE_ID_* constant for primitive types.
 pub(crate) fn builtin_type_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -831,16 +967,24 @@ pub(crate) fn builtin_type_of(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "type-of",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "type-of",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let type_id = val.type_decl_id_of();
         let tv = { crate::type_infer::make_typevalue_nominal(type_id) };
-        Ok(Arc::new(Thunk::value(tv.as_ref().clone(), call_span)))
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(tv.as_ref().clone(), call_span))).with_diagnostics(_dr_diags)
     })
 }
 
@@ -851,7 +995,7 @@ pub(crate) fn builtin_type_of(
 /// checking all known primitive type names, which is not future-proof.
 pub(crate) fn builtin_is_variant(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -860,13 +1004,21 @@ pub(crate) fn builtin_is_variant(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "builtin-variant?",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "builtin-variant?",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let mut v = &val;
         while let Value::Annotated { inner, .. } = v {
             v = inner.as_ref();
@@ -880,7 +1032,7 @@ pub(crate) fn builtin_is_variant(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -899,7 +1051,7 @@ pub(crate) fn builtin_is_variant(
 /// - Failed → `{type: "thunk", state: <error-message>}`
 pub(crate) fn builtin_ast_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -909,10 +1061,19 @@ pub(crate) fn builtin_ast_of(
             ..
         } = ctx_arg;
 
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+
         // Reject named args and ensure exactly 1 arg
-        crate::builtins::reject_named("builtin-ast-of", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-ast-of", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -920,8 +1081,7 @@ pub(crate) fn builtin_ast_of(
                     args.len()
                 ),
                 call_span.clone(),
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         let thunk = Arc::clone(&args[0]);
@@ -945,7 +1105,7 @@ pub(crate) fn builtin_ast_of(
                     call_span.clone(),
                 )),
             );
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
@@ -954,7 +1114,7 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Check for PendingCall
@@ -967,7 +1127,7 @@ pub(crate) fn builtin_ast_of(
                     call_span.clone(),
                 )),
             );
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
@@ -976,7 +1136,7 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Check for Guarded
@@ -996,7 +1156,7 @@ pub(crate) fn builtin_ast_of(
                     call_span.clone(),
                 )),
             );
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
@@ -1005,7 +1165,7 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Check for InProgress: result not set AND unevaluated state has been claimed
@@ -1025,7 +1185,7 @@ pub(crate) fn builtin_ast_of(
                     call_span.clone(),
                 )),
             );
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
@@ -1034,7 +1194,7 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Check for Failed
@@ -1061,7 +1221,7 @@ pub(crate) fn builtin_ast_of(
                     call_span.clone(),
                 )),
             );
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::value::Value::Dict {
                     entries,
                     type_decl_id: TYPE_ID_DICT,
@@ -1070,28 +1230,42 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Check for AstNodeField (runtime-v2: return the containing SurfaceNode as Expr.* variant)
         if let Some((node, _field)) = thunk.peek_ast_node_field() {
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 crate::surface_convert::surface_node_to_expr_variant(&node, &ctx),
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // Force the thunk if it is in CoreExpr unevaluated state (the only remaining state after
         // the peek checks above).  This is necessary for Value::Function, which only exists as a
         // materialized value — there is no way to reconstruct function metadata from the CoreExpr
         // body without evaluating it.  For already-materialized thunks this is a no-op (cached).
-        materialize(&thunk, Some(&call_span), &ctx).await?;
+        {
+            let (result, diags) = materialize(&thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Check for Materialized Value::Function — build a metadata dict:
         // {type: "fn", doc: ..., return-ann: ..., params: [...]}
-        // materialize() succeeded above (propagated via ?), so require_value() cannot fail here.
-        // Propagate with ? anyway — an impossible error must not be silently discarded.
-        let val = thunk.require_value()?.clone();
+        // materialize() succeeded above, so require_value() cannot fail here.
+        // Propagate anyway — an impossible error must not be silently discarded.
+        let val = {
+            let (result, diags) = thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         if let crate::value::Value::Function {
             clauses,
             annotation,
@@ -1145,33 +1319,39 @@ pub(crate) fn builtin_ast_of(
                 .first()
                 .map(|c| c.params.as_slice())
                 .unwrap_or_default();
-            let param_arcs: Vec<Arc<Thunk>> = first_clause_params
-                .iter()
-                .map(|p| {
-                    let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-                    param_dict.insert(
-                        HashableValue::Str("name".into()),
-                        Arc::new(crate::value::Thunk::value(
-                            string_val(&p.node.name),
-                            call_span.clone(),
-                        )),
-                    );
-                    if let Some(ann) = &p.node.annotation {
-                        let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
-                        param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
-                    }
-                    Ok(Arc::new(crate::value::Thunk::value(
-                        Value::Dict {
-                            entries: param_dict,
-                            type_decl_id: TYPE_ID_DICT,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                crate::value::TYPE_ID_DICT,
+            let param_arcs: Vec<Arc<Thunk>> = {
+                let collected: Result<Vec<_>, crate::error::Diagnostic> = first_clause_params
+                    .iter()
+                    .map(|p| {
+                        let mut param_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+                        param_dict.insert(
+                            HashableValue::Str("name".into()),
+                            Arc::new(crate::value::Thunk::value(
+                                string_val(&p.node.name),
+                                call_span.clone(),
                             )),
-                        },
-                        call_span.clone(),
-                    )))
-                })
-                .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
+                        );
+                        if let Some(ann) = &p.node.annotation {
+                            let ann_thunk = crate::surface_convert::alloc_annotation(ann, &ctx);
+                            param_dict.insert(HashableValue::Str("annotation".into()), ann_thunk);
+                        }
+                        Ok(Arc::new(crate::value::Thunk::value(
+                            Value::Dict {
+                                entries: param_dict,
+                                type_decl_id: TYPE_ID_DICT,
+                                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                                    crate::value::TYPE_ID_DICT,
+                                )),
+                            },
+                            call_span.clone(),
+                        )))
+                    })
+                    .collect();
+                match collected {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            };
 
             let params_dict: IndexMap<HashableValue, Arc<Thunk>> = param_arcs
                 .into_iter()
@@ -1192,7 +1372,7 @@ pub(crate) fn builtin_ast_of(
                 )),
             );
 
-            return Ok(Arc::new(crate::value::Thunk::value(
+            return crate::error::DiagnosticResult::ok(Arc::new(crate::value::Thunk::value(
                 Value::Dict {
                     entries: dict,
                     type_decl_id: TYPE_ID_DICT,
@@ -1201,13 +1381,13 @@ pub(crate) fn builtin_ast_of(
                     )),
                 },
                 call_span,
-            )));
+            ))).with_diagnostics(_dr_diags);
         }
 
         // ast-of is defined only for unevaluated expressions (AstNodeField) and
         // Value::Function. If the thunk holds any other materialized value, the caller
         // should have passed the unevaluated form instead.
-        Err(Diagnostic::error(
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "type mismatch: expected {}, got {}",
@@ -1215,8 +1395,7 @@ pub(crate) fn builtin_ast_of(
                 ctx.type_display_name(val.type_decl_id_of())
             ),
             call_span,
-        )
-        .into())
+        )).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1225,7 +1404,7 @@ pub(crate) fn builtin_ast_of(
 /// Used by the `-o llt` output formatter.
 pub(crate) fn builtin_llt_repr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1234,24 +1413,37 @@ pub(crate) fn builtin_llt_repr(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "llt-repr",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "llt-repr",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         // value_to_tinct_repr_string produces tinct bracket format: ["key": value  ...]
-        let display_str = crate::value_to_tinct_repr_string(&val, &ctx, call_span.clone())
-            .await
-            .map_err(|e| {
-                Diagnostic::error(
+        let display_str = {
+            let (result, diags) = crate::value_to_tinct_repr_string(&val, &ctx, call_span.clone())
+                .await
+                .into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("llt-repr: {}", e.kind),
                     call_span.clone(),
-                )
-            })?;
-        ok_val(string_val(&display_str), call_span)
+                )).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(&display_str), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1262,7 +1454,7 @@ pub(crate) fn builtin_llt_repr(
 /// Used by test-loader.llt for corpus test output formatting.
 pub(crate) fn builtin_debug_repr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1271,24 +1463,37 @@ pub(crate) fn builtin_debug_repr(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "debug-repr",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "debug-repr",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         // value_to_display_string produces DisplayVisitor format: Int(42), Dict({...}), etc.
-        let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
-            .await
-            .map_err(|e| {
-                Diagnostic::error(
+        let display_str = {
+            let (result, diags) = crate::value_to_display_string(&val, &ctx, call_span.clone())
+                .await
+                .into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("debug-repr: {}", e.kind),
                     call_span.clone(),
-                )
-            })?;
-        ok_val(string_val(&display_str), call_span)
+                )).with_diagnostics(_dr_diags),
+            }
+        };
+        ok_val(string_val(&display_str), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1300,7 +1505,7 @@ pub(crate) fn builtin_debug_repr(
 /// or use pattern matching instead.
 pub(crate) fn builtin_tag_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1309,13 +1514,21 @@ pub(crate) fn builtin_tag_of(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "tag-of",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "tag-of",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         // Peel Value::Annotated wrappers before matching.
         // Unit constructors declared with @[...] annotations evaluate to
         // Value::Annotated { inner: Variant(...), annotation: {...} }.
@@ -1345,9 +1558,9 @@ pub(crate) fn builtin_tag_of(
                         tycon_env,
                     )),
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            _ => Err(Box::new(Diagnostic::error(
+            _ => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -1355,7 +1568,7 @@ pub(crate) fn builtin_tag_of(
                     ctx.type_display_name(peeled.type_decl_id_of())
                 ),
                 call_span,
-            ))),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1386,7 +1599,7 @@ pub(crate) fn builtin_tag_of(
 /// Used for precise error reporting in macros.
 pub(crate) fn builtin_span_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1395,13 +1608,21 @@ pub(crate) fn builtin_span_of(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "span-of",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "span-of",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract span from Expr.* variant payload.
         if let Value::Variant {
@@ -1414,7 +1635,7 @@ pub(crate) fn builtin_span_of(
                 let payload_thunk = Arc::clone(&payload_id);
                 let payload_val = match payload_thunk.peek_result() {
                     Some(Ok(v)) => Some(v.clone()),
-                    Some(Err(e)) => return Err(Box::new((**e).clone())),
+                    Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()).with_diagnostics(_dr_diags),
                     None => None,
                 };
                 if let Some(Value::Dict {
@@ -1425,7 +1646,7 @@ pub(crate) fn builtin_span_of(
                     if let Some(span_thunk) = payload_dict.get(&HashableValue::Str("span".into())) {
                         let span_val = match span_thunk.peek_result() {
                             Some(Ok(v)) => Some(v.clone()),
-                            Some(Err(e)) => return Err(Box::new((**e).clone())),
+                            Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()).with_diagnostics(_dr_diags),
                             None => None,
                         };
                         if let Some(Value::Dict {
@@ -1435,57 +1656,68 @@ pub(crate) fn builtin_span_of(
                             // Extract {start: {line, col}, end: {line, col}}
                             // Returns Ok(Some(...)) on success, Ok(None) for missing/wrong-type,
                             // Err(...) when a span thunk settled with an evaluation error.
-                            let get_pos = |key: &str| -> Result<
+                            let get_pos = |key: &str| -> crate::error::DiagnosticResult<
                                 Option<(i64, i64)>,
-                                Box<crate::error::Diagnostic>,
                             > {
                                 let pos_thunk = match span_dict.get(&HashableValue::Str(key.into()))
                                 {
                                     Some(t) => t,
-                                    None => return Ok(None),
+                                    None => return crate::error::DiagnosticResult::ok(None),
                                 };
                                 let pos_val = match pos_thunk.peek_result() {
                                     Some(Ok(v)) => v.clone(),
-                                    Some(Err(e)) => return Err(Box::new((**e).clone())),
-                                    None => return Ok(None),
+                                    Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()),
+                                    None => return crate::error::DiagnosticResult::ok(None),
                                 };
                                 let Value::Dict {
                                     entries: pos_dict, ..
                                 } = pos_val
                                 else {
-                                    return Ok(None);
+                                    return crate::error::DiagnosticResult::ok(None);
                                 };
                                 let line_thunk =
                                     match pos_dict.get(&HashableValue::Str("line".into())) {
                                         Some(t) => t,
-                                        None => return Ok(None),
+                                        None => return crate::error::DiagnosticResult::ok(None),
                                     };
                                 let line = match line_thunk.peek_result() {
                                     Some(Ok(v)) => v.clone(),
-                                    Some(Err(e)) => return Err(Box::new((**e).clone())),
-                                    None => return Ok(None),
+                                    Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()),
+                                    None => return crate::error::DiagnosticResult::ok(None),
                                 };
                                 let col_thunk =
                                     match pos_dict.get(&HashableValue::Str("col".into())) {
                                         Some(t) => t,
-                                        None => return Ok(None),
+                                        None => return crate::error::DiagnosticResult::ok(None),
                                     };
                                 let col = match col_thunk.peek_result() {
                                     Some(Ok(v)) => v.clone(),
-                                    Some(Err(e)) => return Err(Box::new((**e).clone())),
-                                    None => return Ok(None),
+                                    Some(Err(e)) => return crate::error::DiagnosticResult::err((**e).clone()),
+                                    None => return crate::error::DiagnosticResult::ok(None),
                                 };
                                 if let (Value::Int { n: l, .. }, Value::Int { n: c, .. }) =
                                     (line, col)
                                 {
-                                    Ok(Some((l, c)))
+                                    crate::error::DiagnosticResult::ok(Some((l, c)))
                                 } else {
-                                    Ok(None)
+                                    crate::error::DiagnosticResult::ok(None)
                                 }
                             };
 
+                            let (result, diags) = get_pos("start").into_parts();
+                            _dr_diags.extend(diags);
+                            let start_pos = match result {
+                                Ok(v) => v,
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            };
+                            let (result, diags) = get_pos("end").into_parts();
+                            _dr_diags.extend(diags);
+                            let end_pos = match result {
+                                Ok(v) => v,
+                                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                            };
                             if let (Some((sl, sc)), Some((el, ec))) =
-                                (get_pos("start")?, get_pos("end")?)
+                                (start_pos, end_pos)
                             {
                                 // Get the file from the thunk wrapping the Expr value.
                                 let expr_thunk = Arc::clone(&args[0]);
@@ -1550,7 +1782,7 @@ pub(crate) fn builtin_span_of(
                                         )),
                                     },
                                     call_span,
-                                );
+                                ).with_diagnostics(_dr_diags);
                             }
                         }
                     }
@@ -1568,7 +1800,7 @@ pub(crate) fn builtin_span_of(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1581,7 +1813,7 @@ pub(crate) fn builtin_span_of(
 /// Used to inspect resolver output from tinct code.
 pub(crate) fn builtin_var_resolution(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1590,9 +1822,17 @@ pub(crate) fn builtin_var_resolution(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-var-resolution", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-var-resolution", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1600,17 +1840,23 @@ pub(crate) fn builtin_var_resolution(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
         let arg2_thunk = Arc::clone(&args[2]);
-        let line_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
+        let line_val = {
+            let (result, diags) = materialize(&arg0_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let cursor_line = match line_val {
             Value::Int { n, .. } => n as u32,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1619,15 +1865,21 @@ pub(crate) fn builtin_var_resolution(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
-        let col_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
+        let col_val = {
+            let (result, diags) = materialize(&arg1_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let cursor_col = match col_val {
             Value::Int { n, .. } => n as u32,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1636,15 +1888,21 @@ pub(crate) fn builtin_var_resolution(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
-        let prog_val = materialize(&arg2_thunk, Some(&call_span), &ctx).await?;
+        let prog_val = {
+            let (result, diags) = materialize(&arg2_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let program_arc = match prog_val {
             Value::Program { program, .. } => program,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1653,8 +1911,7 @@ pub(crate) fn builtin_var_resolution(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
@@ -1740,13 +1997,9 @@ pub(crate) fn builtin_var_resolution(
         let found: Option<crate::ast::VarAddr> = {
             let mut found = None;
             'outer: for doc_spanned in &program_arc.documents {
-                for item in &doc_spanned.node.items {
-                    if let crate::ast::SurfaceItem::Expr(node) = item {
-                        if let Some(coords) = find_in_node(node, cursor_line, cursor_col) {
-                            found = coords;
-                            break 'outer;
-                        }
-                    }
+                if let Some(coords) = find_in_node(&doc_spanned.node.body, cursor_line, cursor_col) {
+                    found = coords;
+                    break 'outer;
                 }
             }
             found
@@ -1763,7 +2016,7 @@ pub(crate) fn builtin_var_resolution(
                     )),
                 },
                 call_span,
-            ),
+            ).with_diagnostics(_dr_diags),
             Some(addr) => {
                 use crate::ast::VarAddr;
                 let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
@@ -1793,7 +2046,7 @@ pub(crate) fn builtin_var_resolution(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
         }
     })
@@ -1812,7 +2065,7 @@ pub(crate) fn builtin_var_resolution(
 /// The annotation dict is available after WHNF without further forcing.
 pub(crate) fn builtin_annotation_of(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1821,13 +2074,21 @@ pub(crate) fn builtin_annotation_of(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "annotation-of",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "annotation-of",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match val {
             Value::Function { annotation, .. } => {
@@ -1879,12 +2140,12 @@ pub(crate) fn builtin_annotation_of(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             Value::Annotated { annotation, .. } => {
                 // Return the annotation value directly — no materialization needed,
                 // it was stored materialized at annotation construction time.
-                ok_val(*annotation, call_span)
+                ok_val(*annotation, call_span).with_diagnostics(_dr_diags)
             }
             _ => {
                 // All other values have no annotation — return empty dict.
@@ -1897,7 +2158,7 @@ pub(crate) fn builtin_annotation_of(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
         }
     })
@@ -1915,7 +2176,7 @@ pub(crate) fn builtin_annotation_of(
 /// Both arguments are pre-materialized by `pos_strictness = [Seq, Seq]`.
 pub(crate) fn builtin_make_annotated(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1924,10 +2185,18 @@ pub(crate) fn builtin_make_annotated(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1935,16 +2204,30 @@ pub(crate) fn builtin_make_annotated(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let inner_val = args[0].require_value()?.clone();
-        let ann_val = args[1].require_value()?.clone();
+        let inner_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let ann_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // annotation must be a Dict
         if !matches!(ann_val, Value::Dict { .. }) {
-            return Err(Box::new(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type mismatch: expected {}, got {}",
@@ -1952,7 +2235,7 @@ pub(crate) fn builtin_make_annotated(
                     ctx.type_display_name(ann_val.type_decl_id_of())
                 ),
                 call_span,
-            )));
+            )).with_diagnostics(_dr_diags);
         }
 
         ok_val(
@@ -1962,7 +2245,7 @@ pub(crate) fn builtin_make_annotated(
                 type_val: None,
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1981,7 +2264,7 @@ pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
 /// Example: `[blake3 "hello"]` → `"ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"`
 pub(crate) fn builtin_blake3(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -1990,16 +2273,31 @@ pub(crate) fn builtin_blake3(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "blake3",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-        let s = require_string("blake3", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "blake3",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let s = {
+            let (result, diags) = require_string("blake3", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let hex = blake3_hex(s.as_bytes());
-        ok_val(string_val(hex.as_str()), call_span)
+        ok_val(string_val(hex.as_str()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2013,7 +2311,7 @@ pub(crate) fn builtin_blake3(
 /// cache key: `blake3(cap-identity + "|" + source)`.
 pub(crate) fn builtin_cap_identity(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2022,29 +2320,37 @@ pub(crate) fn builtin_cap_identity(
             ctx,
             ..
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "cap-identity",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "cap-identity",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let dir = match &val {
             Value::DirCap { dir, .. } => dir.try_clone().expect("dir try_clone"),
             Value::RevocableDirCap { inner, revoked, .. } => {
                 if revoked.load(std::sync::atomic::Ordering::Acquire) {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         "cap-identity: capability has been revoked".to_string(),
                         call_span.clone(),
-                    )
-                    .into());
+                    ))
+                    .with_diagnostics(_dr_diags);
                 }
                 inner.try_clone().expect("dir try_clone")
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -2052,8 +2358,8 @@ pub(crate) fn builtin_cap_identity(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     Arc::clone(&args[0]).span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2063,13 +2369,14 @@ pub(crate) fn builtin_cap_identity(
         #[cfg(unix)]
         let identity = {
             use cap_std::fs::MetadataExt;
-            let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
-                Diagnostic::error(
+            let meta = match dir.open(".").and_then(|f| f.metadata()) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("cap-identity: failed to stat directory: {e}"),
                     call_span.clone(),
-                )
-            })?;
+                )).with_diagnostics(_dr_diags),
+            };
             format!("{}:{}", meta.dev(), meta.ino())
         };
 
@@ -2082,7 +2389,7 @@ pub(crate) fn builtin_cap_identity(
             format!("0:{}", hash.to_hex())
         };
 
-        ok_val(string_val(identity.as_str()), call_span)
+        ok_val(string_val(identity.as_str()), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2105,7 +2412,7 @@ pub(crate) fn builtin_cap_identity(
 /// This is Stage 1 of the 4-stage pipeline: parse → resolve → typecheck → eval.
 pub(crate) fn builtin_parse(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2114,9 +2421,17 @@ pub(crate) fn builtin_parse(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2124,20 +2439,26 @@ pub(crate) fn builtin_parse(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // First arg: Bytes (the source file contents)
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
-        let bytes_val = arg0_thunk.require_value()?.clone();
+        let bytes_val = {
+            let (result, diags) = arg0_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let source_bytes = match bytes_val {
             Value::Bytes {
                 source, start, end, ..
             } => source[start..end].to_vec(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2146,28 +2467,41 @@ pub(crate) fn builtin_parse(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Second arg: String (the path hint for error messages)
-        let path_val = arg1_thunk.require_value()?.clone();
-        let path_str = require_string("builtin-parse", path_val, arg1_thunk.span.clone(), &ctx)?;
+        let path_val = {
+            let (result, diags) = arg1_thunk.require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let path_str = {
+            let (result, diags) = require_string("builtin-parse", path_val, arg1_thunk.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Decode bytes as UTF-8 source text
-        let source = std::str::from_utf8(&source_bytes)
-            .map_err(|e| {
-                Diagnostic::error(
-                    KIND,
-                    format!(
-                        "builtin-parse: UTF-8 decode error in \"{}\": {}",
-                        path_str, e
-                    ),
-                    call_span.clone(),
-                )
-            })?
-            .to_string();
+        let source = match std::str::from_utf8(&source_bytes) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                KIND,
+                format!(
+                    "builtin-parse: UTF-8 decode error in \"{}\": {}",
+                    path_str, e
+                ),
+                call_span.clone(),
+            )).with_diagnostics(_dr_diags),
+        }
+        .to_string();
 
         // Parse — spans carry the path for error messages.
         // Fatal parse errors (lexer failure, unclosed brackets) are captured in the
@@ -2231,7 +2565,7 @@ pub(crate) fn builtin_parse(
                 )),
             }),
         );
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::Dict {
                 entries: result,
                 type_decl_id: TYPE_ID_DICT,
@@ -2240,7 +2574,7 @@ pub(crate) fn builtin_parse(
                 )),
             },
             call_span,
-        )))
+        ))).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2250,16 +2584,9 @@ pub(crate) fn builtin_parse(
 /// then to `call_span` (the builtin call site). Never returns a rust_span.
 fn compute_doc_span(
     doc: &crate::ast::SurfaceDocument,
-    call_span: &crate::ast::Span,
+    _call_span: &crate::ast::Span,
 ) -> crate::ast::Span {
-    doc.items
-        .iter()
-        .find_map(|item| match item {
-            crate::ast::SurfaceItem::Expr(n) => Some(n.span.clone()),
-            crate::ast::SurfaceItem::Decl(_) => None,
-        })
-        .or_else(|| doc.header.values().next().map(|n| n.span.clone()))
-        .unwrap_or_else(|| call_span.clone())
+    doc.body.span.clone()
 }
 
 /// `builtin-resolve`: Resolve a single `Value::Document` in-place.
@@ -2279,7 +2606,7 @@ fn compute_doc_span(
 /// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2288,9 +2615,17 @@ pub(crate) fn builtin_resolve(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-resolve", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2298,32 +2633,44 @@ pub(crate) fn builtin_resolve(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // arg0: Document — TypeAssert on the parameter enforces this at the call boundary.
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let doc_arc = if let Value::Document { doc: d, .. } = doc_val {
             d
         } else {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "expected Document, got {}",
                     ctx.type_display_name(doc_val.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         };
 
         // arg1: Value::SymbolTable — scope with name-to-slot mapping.
-        let scope_val = args[1].require_value()?.clone();
+        let scope_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2332,13 +2679,12 @@ pub(crate) fn builtin_resolve(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
         };
 
         // Resolve the document using the SymbolTable scope.
-        let resolve_result = crate::resolve::resolve_document(&doc_arc, &vec![table]);
+        let resolve_result = crate::resolve::resolve_document(&doc_arc, &vec![table], &Vec::new());
         let resolve_diagnostics = resolve_result.diagnostics;
         let unreferenced_names = resolve_result.unreferenced;
 
@@ -2422,7 +2768,7 @@ pub(crate) fn builtin_resolve(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2443,7 +2789,7 @@ pub(crate) fn builtin_resolve(
 /// The returned dict is a flat list of diagnostics (empty when no warnings).
 pub(crate) fn builtin_lint_pipeline_docs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2452,8 +2798,9 @@ pub(crate) fn builtin_lint_pipeline_docs(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2461,50 +2808,64 @@ pub(crate) fn builtin_lint_pipeline_docs(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
 
         // Extract required named arg: pipeline-input (String)
         let pipeline_input_name = match named.as_ref().and_then(|n| n.get("pipeline-input")) {
             Some(thunk) => {
-                let val = crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
-                crate::builtins::require_string(
+                let (result, diags) = crate::eval::materialize(thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+                let (result, diags) = crate::builtins::require_string(
                     "builtin-lint-pipeline-docs (pipeline-input:)",
                     val,
                     call_span.clone(),
                     &ctx,
-                )?
+                ).into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
             }
             None => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-lint-pipeline-docs: required named arg 'pipeline-input' missing"
                         .to_string(),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
-        let docs_val = args[0].require_value()?.clone();
+        let docs_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let docs_dict = match docs_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-lint-pipeline-docs: expected Dict, got {}",
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                )).with_diagnostics(_dr_diags)
             }
         };
 
         // Sort document entries by integer key to get them in pipeline order.
-        let mut doc_entries: Vec<(i64, Arc<Thunk>)> = docs_dict
+        let collected = docs_dict
             .iter()
             .map(|(k, v)| match k {
                 HashableValue::Int(i) => Ok((*i, Arc::clone(v))),
@@ -2515,28 +2876,35 @@ pub(crate) fn builtin_lint_pipeline_docs(
                         other
                     ),
                     call_span.clone(),
-                )
-                .into()),
+                )),
             })
-            .collect::<Result<Vec<_>, Box<crate::error::Diagnostic>>>()?;
+            .collect::<Result<Vec<_>, crate::error::Diagnostic>>();
+        let mut doc_entries: Vec<(i64, Arc<Thunk>)> = match collected {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         doc_entries.sort_by_key(|(i, _)| *i);
 
         // Collect SurfaceDocument arcs from the thunks.
         let mut doc_arcs: Vec<std::sync::Arc<crate::ast::SurfaceDocument>> = Vec::new();
         for (_, thunk) in &doc_entries {
-            let val = crate::eval::materialize(thunk, Some(&call_span), &ctx).await?;
+            let (result, diags) = crate::eval::materialize(thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Document { doc: d, .. } = val {
                 doc_arcs.push(d);
             } else {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-lint-pipeline-docs: entry is not a Document: {}",
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
         }
 
@@ -2581,7 +2949,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2597,7 +2965,7 @@ pub(crate) fn builtin_lint_pipeline_docs(
 /// Returns Value::Document (same Arc — type annotations written inline).
 pub(crate) fn builtin_typecheck_doc(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2606,24 +2974,39 @@ pub(crate) fn builtin_typecheck_doc(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-typecheck-doc", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 3 {
-            return Err(Box::new(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-typecheck-doc: expected 3 arguments, got {}",
                     args.len()
                 ),
                 call_span,
-            )));
+            )).with_diagnostics(_dr_diags);
         }
 
         // arg0: Value::Document — extract doc_arc.
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2632,30 +3015,48 @@ pub(crate) fn builtin_typecheck_doc(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     args[0].span.clone(),
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
         };
 
         // arg1: Value::TypeContext
-        let tc_val = args[1].require_value()?.clone();
-        let tc_arc =
-            require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone(), &ctx)?;
+        let tc_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let tc_arc = {
+            let (result, diags) = require_type_context("builtin-typecheck-doc", tc_val, args[1].span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // arg2: Value::Dict — the doc-env (validated for type but value not retained here;
         // the doc_arc already holds the parsed document form).
         {
-            let env_val = args[2].require_value()?.clone();
+            let env_val = {
+                let (result, diags) = args[2].require_value().into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v.clone(),
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            };
             if !matches!(env_val, Value::Dict { .. }) {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "builtin-typecheck-doc arg2 (doc-env) is not a Dict: {}",
                         ctx.type_display_name(env_val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                )).with_diagnostics(_dr_diags);
             }
         }
 
@@ -2710,7 +3111,7 @@ pub(crate) fn builtin_typecheck_doc(
                 .flat_map(|m| m.iter())
                 .enumerate()
             {
-                outermost.insert(name.clone(), slot as u32, None);
+                outermost.insert(name.clone(), slot as u32, crate::rust_span!());
                 outermost.set_type_scheme(slot as u32, Arc::clone(tv));
             }
             state.current_scope.push(std::sync::Arc::new(outermost));
@@ -2834,7 +3235,7 @@ pub(crate) fn builtin_typecheck_doc(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2849,7 +3250,7 @@ pub(crate) fn builtin_typecheck_doc(
 /// Signature: `[builtin-get-type-context]`
 pub(crate) fn builtin_get_type_context(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2858,13 +3259,21 @@ pub(crate) fn builtin_get_type_context(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-get-type-context",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named(
+                "builtin-get-type-context",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2872,8 +3281,8 @@ pub(crate) fn builtin_get_type_context(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         // Return the real TypeContext handle from EvalContext.
         // Errors if builtin-make-type-ctx has not yet been called to initialize it.
@@ -2894,18 +3303,19 @@ pub(crate) fn builtin_get_type_context(
                     },
                     call_span,
                 )
+                .with_diagnostics(_dr_diags)
             }
             None => {
                 drop(tc_guard);
                 // TypeContext must be initialized by main.rs before any tinct code runs.
-                Err(Diagnostic::error(
+                crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-get-type-context: TypeContext not initialized — \
                      this is a Rust bootstrap error, not a tinct error"
                         .to_string(),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         }
     })
@@ -2929,7 +3339,7 @@ pub(crate) fn builtin_get_type_context(
 /// Signature: `[builtin-make-type-ctx]`
 pub(crate) fn builtin_make_type_ctx(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -2938,9 +3348,17 @@ pub(crate) fn builtin_make_type_ctx(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-make-type-ctx", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-make-type-ctx", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2948,8 +3366,8 @@ pub(crate) fn builtin_make_type_ctx(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         // Fresh TypeContext seeded with the builtin_core type env AND type-stage scope.
         //
@@ -2963,7 +3381,12 @@ pub(crate) fn builtin_make_type_ctx(
         // @Dict annotations then incorrectly resolve to Op("Dict") or worse, to whatever type
         // was produced by an unrelated type_stage_scope[0] entry that happened to win the
         // or_insert ordering contest.
-        let type_stage_data = crate::imports::get_builtin_core_type_stage_scope().await?;
+        let (result, diags) = crate::imports::get_builtin_core_type_stage_scope().await.into_parts();
+        _dr_diags.extend(diags);
+        let type_stage_data = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         let tc = TypeContextData {
             tycon_env: std::collections::HashMap::new(),
             type_stage_scope: type_stage_data.scope,
@@ -2987,6 +3410,7 @@ pub(crate) fn builtin_make_type_ctx(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -2999,7 +3423,7 @@ pub(crate) fn builtin_make_type_ctx(
 /// Signature: `[builtin-fork-type-ctx parent-ctx]`
 pub(crate) fn builtin_fork_type_ctx(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3008,9 +3432,17 @@ pub(crate) fn builtin_fork_type_ctx(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3018,10 +3450,17 @@ pub(crate) fn builtin_fork_type_ctx(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        let parent_val = args[0].require_value()?.clone();
+        let parent_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match parent_val {
             Value::TypeContext {
                 ctx: parent_arc, ..
@@ -3039,8 +3478,9 @@ pub(crate) fn builtin_fork_type_ctx(
                     },
                     call_span,
                 )
+                .with_diagnostics(_dr_diags)
             }
-            other => Err(Diagnostic::error(
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -3049,8 +3489,8 @@ pub(crate) fn builtin_fork_type_ctx(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -3079,7 +3519,7 @@ pub(crate) fn builtin_fork_type_ctx(
 /// Populates the TypeContext type-stage scope chain from the accumulated env dict.
 pub(crate) fn builtin_tc_update_type_stage_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3088,13 +3528,21 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-tc-update-type-stage-env",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named(
+                "builtin-tc-update-type-stage-env",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3102,15 +3550,22 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Extract TypeContext — same pattern as builtin_typecheck_doc
-        let tc_arc = match args[0].require_value()?.clone() {
+        let tc_arc = match {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        } {
             Value::TypeContext { ctx: arc, .. } => arc,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3119,16 +3574,23 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Extract Dict
-        let dict_entries = match args[1].require_value()?.clone() {
+        let dict_entries = match {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        } {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3137,8 +3599,8 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -3176,8 +3638,13 @@ pub(crate) fn builtin_tc_update_type_stage_env(
         let mut new_type_vars: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for (name, thunk) in to_process {
-            let val = materialize(&thunk, None, &ctx).await?;
-            let classified = match crate::imports::classify_type_stage_entry(
+            let (result, diags) = materialize(&thunk, None, &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
+            let (result, diags) = crate::imports::classify_type_stage_entry(
                 &name,
                 &thunk,
                 &val,
@@ -3185,8 +3652,14 @@ pub(crate) fn builtin_tc_update_type_stage_env(
                 &existing_scope,
                 &existing_name_to_id,
             )
-            .await?
-            {
+            .await
+            .into_parts();
+            _dr_diags.extend(diags);
+            let classified_opt = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
+            let classified = match classified_opt {
                 Some(c) => c,
                 None => continue, // not a type-stage value — skip
             };
@@ -3223,6 +3696,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3241,7 +3715,7 @@ pub(crate) fn builtin_tc_update_type_stage_env(
 /// ```
 pub(crate) fn builtin_program(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3250,9 +3724,17 @@ pub(crate) fn builtin_program(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-program", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-program", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3260,11 +3742,18 @@ pub(crate) fn builtin_program(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let val = args[0].require_value()?.clone();
+        let val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Extract documents from the input collection (Seq or Dict)
         let mut documents = Vec::new();
@@ -3273,7 +3762,12 @@ pub(crate) fn builtin_program(
             Value::Dict { entries: map, .. } => {
                 // Iterate through dict entries in insertion order
                 for (_key, thunk) in map.into_iter() {
-                    let doc_val = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
+                    let (result, diags) = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let doc_val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
                     match doc_val {
                         Value::Document {
                             doc: surface_doc, ..
@@ -3287,7 +3781,7 @@ pub(crate) fn builtin_program(
                             });
                         }
                         _ => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!(
                                     "{}: expected {}, got {}",
@@ -3296,14 +3790,14 @@ pub(crate) fn builtin_program(
                                     ctx.type_display_name(doc_val.type_decl_id_of())
                                 ),
                                 call_span,
-                            )
-                            .into());
+                            ))
+                            .with_diagnostics(_dr_diags);
                         }
                     }
                 }
             }
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3312,8 +3806,8 @@ pub(crate) fn builtin_program(
                         ctx.type_display_name(val.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         }
 
@@ -3331,6 +3825,7 @@ pub(crate) fn builtin_program(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3340,7 +3835,7 @@ pub(crate) fn builtin_program(
 /// Returns a new Value::Program with desugaring applied.
 pub(crate) fn builtin_desugar(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3349,9 +3844,17 @@ pub(crate) fn builtin_desugar(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-desugar", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3359,11 +3862,18 @@ pub(crate) fn builtin_desugar(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let program_val = args[0].require_value()?.clone();
+        let program_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (program, resolutions) = match program_val {
             Value::Program {
                 program,
@@ -3371,7 +3881,7 @@ pub(crate) fn builtin_desugar(
                 ..
             } => (program, resolutions),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3380,8 +3890,8 @@ pub(crate) fn builtin_desugar(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -3397,6 +3907,7 @@ pub(crate) fn builtin_desugar(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3406,7 +3917,7 @@ pub(crate) fn builtin_desugar(
 /// Returns a new Value::Program with declaration expansion applied.
 pub(crate) fn builtin_expand(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3415,9 +3926,17 @@ pub(crate) fn builtin_expand(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-expand", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-expand", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3425,11 +3944,18 @@ pub(crate) fn builtin_expand(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let program_val = args[0].require_value()?.clone();
+        let program_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (program, resolutions) = match program_val {
             Value::Program {
                 program,
@@ -3437,7 +3963,7 @@ pub(crate) fn builtin_expand(
                 ..
             } => (program, resolutions),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3446,8 +3972,8 @@ pub(crate) fn builtin_expand(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -3463,6 +3989,7 @@ pub(crate) fn builtin_expand(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3472,7 +3999,7 @@ pub(crate) fn builtin_expand(
 /// Returns auto-indexed Dict of Value::Document values (Arc::clone each doc).
 pub(crate) fn builtin_program_docs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3481,9 +4008,17 @@ pub(crate) fn builtin_program_docs(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-program-docs", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3491,15 +4026,22 @@ pub(crate) fn builtin_program_docs(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let program_val = args[0].require_value()?.clone();
+        let program_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let program_arc = match program_val {
             Value::Program { program, .. } => program,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3508,8 +4050,8 @@ pub(crate) fn builtin_program_docs(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -3543,6 +4085,7 @@ pub(crate) fn builtin_program_docs(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3550,8 +4093,8 @@ pub(crate) fn builtin_program_docs(
 ///
 /// Takes 1 arg: Value::Document.
 ///
-/// Returns an auto-indexed Dict of Expr-variant values, one per SurfaceItem::Expr
-/// in the document. SurfaceItem::Decl items are skipped. The Expr-variant format
+/// Returns an auto-indexed Dict of Expr-variant values, one per expression
+/// in the document body's Sequential. The Expr-variant format
 /// is the same as produced by `surface_node_to_expr_variant`, which is what
 /// `json-expression` in json.llt consumes.
 ///
@@ -3559,7 +4102,7 @@ pub(crate) fn builtin_program_docs(
 /// deleted from builtins_dict.rs (T-1605 follow-up, S-926 R4).
 pub(crate) fn builtin_doc_expressions(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3568,13 +4111,21 @@ pub(crate) fn builtin_doc_expressions(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-doc-expressions",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named(
+                "builtin-doc-expressions",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3582,15 +4133,22 @@ pub(crate) fn builtin_doc_expressions(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3599,20 +4157,20 @@ pub(crate) fn builtin_doc_expressions(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        let mut i = 0usize;
-        for item in &doc_arc.items {
-            if let crate::ast::SurfaceItem::Expr(node) = item {
-                let expr_val = crate::surface_convert::surface_node_to_expr_variant(node, &ctx);
-                let thunk = Arc::new(Thunk::value(expr_val, call_span.clone()));
-                result.insert(HashableValue::Int(i as i64), thunk);
-                i += 1;
-            }
+        let exprs = match &doc_arc.body.expr {
+            crate::ast::SurfaceExpression::Sequential(exprs) => exprs.as_slice(),
+            _ => std::slice::from_ref(&doc_arc.body),
+        };
+        for (i, node) in exprs.iter().enumerate() {
+            let expr_val = crate::surface_convert::surface_node_to_expr_variant(node, &ctx);
+            let thunk = Arc::new(Thunk::value(expr_val, call_span.clone()));
+            result.insert(HashableValue::Int(i as i64), thunk);
         }
         ok_val(
             Value::Dict {
@@ -3624,6 +4182,7 @@ pub(crate) fn builtin_doc_expressions(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3640,7 +4199,7 @@ pub(crate) fn builtin_doc_expressions(
 /// Returns empty Dict if header is empty.
 pub(crate) fn builtin_doc_meta(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3649,9 +4208,17 @@ pub(crate) fn builtin_doc_meta(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-doc-meta", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-doc-meta", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3659,15 +4226,22 @@ pub(crate) fn builtin_doc_meta(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3676,8 +4250,8 @@ pub(crate) fn builtin_doc_meta(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -3689,15 +4263,17 @@ pub(crate) fn builtin_doc_meta(
             let core_spanned = crate::lower::lower(node_arc, &display_names)
                 .take(&ctx.runtime_diagnostics)
                 .expect("lowering always succeeds");
-            let core_entries = vec![Arc::new(core_spanned)];
-            let (table, _diags) = crate::eval::eval_document(
-                &core_entries[..],
-                &ctx,
-                crate::symbol_table::SymbolTable::empty_chain(),
-            )
-            .await;
-            if let Some(thunk) = crate::symbol_table::SymbolTable::get_in_chain(&table, "%") {
-                result.insert(HashableValue::Str(key.clone().into()), thunk);
+            let core_entry = Arc::new(core_spanned);
+            let (eval_result, eval_diags) =
+                crate::eval_core::eval_core_expr(&core_entry, &crate::symbol_table::SymbolTable::empty_chain(), &ctx)
+                    .await
+                    .into_parts();
+            _dr_diags.extend(eval_diags);
+            match eval_result {
+                Ok(thunk) => {
+                    result.insert(HashableValue::Str(key.clone().into()), thunk);
+                }
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         }
         ok_val(
@@ -3710,6 +4286,7 @@ pub(crate) fn builtin_doc_meta(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -3722,7 +4299,7 @@ pub(crate) fn builtin_doc_meta(
 /// Available modules: "core", "datetime", "net"
 pub(crate) fn builtin_builtin_module(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3731,16 +4308,31 @@ pub(crate) fn builtin_builtin_module(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        let name_val = crate::builtins::expect_one_arg(
-            "builtin-module",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        let name_val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "builtin-module",
+                &args,
+                named.as_ref(),
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let name = require_string("builtin-module", name_val, call_span.clone(), &ctx)?;
+        let name = {
+            let (result, diags) = require_string("builtin-module", name_val, call_span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         match crate::builtins::builtin_module(&name) {
             Some(defs) => {
@@ -3768,14 +4360,13 @@ pub(crate) fn builtin_builtin_module(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            None => Err(Diagnostic::error(
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("unknown native module: {:?}", name),
                 call_span,
-            )
-            .into()),
+            )).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -3783,7 +4374,7 @@ pub(crate) fn builtin_builtin_module(
 /// `builtin-empty-scope`: Return an empty `Value::SymbolTable` with no entries.
 pub(crate) fn builtin_empty_symbol_table(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3792,9 +4383,17 @@ pub(crate) fn builtin_empty_symbol_table(
             ctx: _,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-empty-scope", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-empty-scope", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if !args.is_empty() {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3802,10 +4401,10 @@ pub(crate) fn builtin_empty_symbol_table(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::SymbolTable {
                 table: crate::symbol_table::SymbolTable::empty(),
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -3813,7 +4412,7 @@ pub(crate) fn builtin_empty_symbol_table(
                 )),
             },
             call_span,
-        )))
+        ))).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3826,7 +4425,7 @@ pub(crate) fn builtin_empty_symbol_table(
 /// Returns a new `Value::SymbolTable` with the merged entries.
 pub(crate) fn builtin_symbol_table_extend(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3835,9 +4434,17 @@ pub(crate) fn builtin_symbol_table_extend(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-scope-extend", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-scope-extend", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3845,16 +4452,23 @@ pub(crate) fn builtin_symbol_table_extend(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // arg0: Value::SymbolTable
-        let scope_val = args[0].require_value()?.clone();
+        let scope_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3863,17 +4477,24 @@ pub(crate) fn builtin_symbol_table_extend(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         // arg1: Value::Dict — additions
-        let additions_val = args[1].require_value()?.clone();
+        let additions_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let additions_map = match additions_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3882,8 +4503,8 @@ pub(crate) fn builtin_symbol_table_extend(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -3909,12 +4530,12 @@ pub(crate) fn builtin_symbol_table_extend(
         let base_slot = table.len() as u32;
         for (i, (name, thunk)) in str_additions.into_iter().enumerate() {
             let slot = base_slot + i as u32;
-            merged.insert(name, slot, None);
+            merged.insert(name, slot, crate::rust_span!());
             let _ = merged.set_value(slot, thunk);
         }
         let new_table = Arc::new(merged);
 
-        Ok(Arc::new(Thunk::value(
+        crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(
             Value::SymbolTable {
                 table: new_table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -3922,7 +4543,7 @@ pub(crate) fn builtin_symbol_table_extend(
                 )),
             },
             call_span,
-        )))
+        ))).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3935,7 +4556,7 @@ pub(crate) fn builtin_symbol_table_extend(
 /// Returns the thunk's value if found, or the empty dict `[]` (null) if not present.
 pub(crate) fn builtin_symbol_table_get(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -3944,13 +4565,21 @@ pub(crate) fn builtin_symbol_table_get(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named(
-            "builtin-symbol-table-get",
-            named.as_ref(),
-            call_span.clone(),
-        )?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named(
+                "builtin-symbol-table-get",
+                named.as_ref(),
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3958,25 +4587,46 @@ pub(crate) fn builtin_symbol_table_get(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // arg0: String — the name to look up
-        let name_val = args[0].require_value()?.clone();
-        let name = crate::builtins::require_string(
-            "builtin-symbol-table-get",
-            name_val,
-            args[0].span.clone(),
-            &ctx,
-        )?;
+        let name_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let name = {
+            let (result, diags) = crate::builtins::require_string(
+                "builtin-symbol-table-get",
+                name_val,
+                args[0].span.clone(),
+                &ctx,
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // arg1: Value::SymbolTable
-        let scope_val = args[1].require_value()?.clone();
+        let scope_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let table = match scope_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3985,13 +4635,21 @@ pub(crate) fn builtin_symbol_table_get(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
-        match crate::symbol_table::SymbolTable::get_in_chain(&[table], &name) {
-            Some(thunk) => Ok(thunk),
+        let get_result = {
+            let (result, diags) = crate::symbol_table::SymbolTable::get_in_chain(&[table], &name).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        match get_result {
+            Some(thunk) => crate::error::DiagnosticResult::ok(thunk).with_diagnostics(_dr_diags),
             None => ok_val(
                 Value::Dict {
                     entries: IndexMap::new(),
@@ -4001,7 +4659,7 @@ pub(crate) fn builtin_symbol_table_get(
                     )),
                 },
                 call_span,
-            ),
+            ).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -4016,7 +4674,7 @@ pub(crate) fn builtin_symbol_table_get(
 /// Returns `{table: Value::SymbolTable, diagnostics: Dict}`.
 pub(crate) fn builtin_eval(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4025,9 +4683,17 @@ pub(crate) fn builtin_eval(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-eval", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-eval", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -4035,24 +4701,31 @@ pub(crate) fn builtin_eval(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // arg0: Value::CoreDocument — reject Value::Document with a descriptive type error.
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let (core_entries, _doc_span) = match doc_val {
             Value::CoreDocument { entries, span, .. } => (entries, span),
             Value::Document { .. } => {
-                return Err(Diagnostic::error(KIND,
+                return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                     format!("{}: expected {}, got {}", "builtin-eval: expected CoreDocument (output of builtin-lower), got Document; \
                      call builtin-lower before builtin-eval", "CoreDocument", "Document"),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -4061,17 +4734,24 @@ pub(crate) fn builtin_eval(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         // arg1: Value::SymbolTable — env scope.
-        let env_val = args[1].require_value()?.clone();
+        let env_val = {
+            let (result, diags) = args[1].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let table = match env_val {
             Value::SymbolTable { table, .. } => table,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -4080,26 +4760,38 @@ pub(crate) fn builtin_eval(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         // Evaluate the document with the SymbolTable scope.
-        // core_entries is Vec<(String, Arc<Spanned<CoreExpr>>)>; eval_document expects &[Arc<Spanned<CoreExpr>>].
-        let core_exprs: Vec<std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> =
-            core_entries
-                .iter()
-                .map(|(_, expr)| Arc::clone(expr))
-                .collect();
-        let (result_table, diagnostics) =
-            crate::eval::eval_document(&core_exprs[..], &ctx, vec![table]).await;
+        // core_entries is Vec<(String, Arc<Spanned<CoreExpr>>)>.
+        let scope_chain = vec![table.clone()];
+        let mut eval_diagnostics = Vec::new();
+        for (_, expr) in core_entries.iter() {
+            let (eval_result, eval_diags) =
+                crate::eval_core::eval_core_expr(expr, &scope_chain, &ctx)
+                    .await
+                    .into_parts();
+            eval_diagnostics.extend(eval_diags);
+            match eval_result {
+                Ok(thunk) => {
+                    let (mat_result, mat_diags) =
+                        crate::eval::materialize(&thunk, None, &ctx).await.into_parts();
+                    eval_diagnostics.extend(mat_diags);
+                    if let Err(e) = mat_result {
+                        eval_diagnostics.push(e);
+                    }
+                }
+                Err(e) => eval_diagnostics.push(e),
+            }
+        }
 
-        // Build result: {table: SymbolTable, diagnostics: Dict}
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
 
         let mut diagnostics_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
-        for (i, diag) in diagnostics.iter().enumerate() {
+        for (i, diag) in eval_diagnostics.iter().enumerate() {
             let w = serialize_diagnostic(diag, &call_span);
             diagnostics_dict.insert(
                 HashableValue::Int(i as i64),
@@ -4117,10 +4809,7 @@ pub(crate) fn builtin_eval(
         result_dict.insert(
             HashableValue::Str("table".into()),
             mk(Value::SymbolTable {
-                table: result_table
-                    .into_iter()
-                    .next()
-                    .expect("eval_document must return a non-empty scope chain"),
+                table: table,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_SCOPE,
                 )),
@@ -4146,7 +4835,7 @@ pub(crate) fn builtin_eval(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -4156,7 +4845,7 @@ pub(crate) fn builtin_eval(
 /// fails when the payload is a non-dict value like String).
 pub(crate) fn builtin_variant_payload(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4165,9 +4854,17 @@ pub(crate) fn builtin_variant_payload(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("variant-payload", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("variant-payload", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -4175,18 +4872,32 @@ pub(crate) fn builtin_variant_payload(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        let val = args[0].require_value()?.clone();
+        let val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         match val {
             Value::Variant {
                 payload: Some(payload_id),
                 ..
             } => {
                 let payload_thunk = Arc::clone(&payload_id);
-                let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
-                ok_val(payload_val, call_span)
+                let payload_val = {
+                    let (result, diags) = materialize(&payload_thunk, Some(&call_span), &ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    }
+                };
+                ok_val(payload_val, call_span).with_diagnostics(_dr_diags)
             }
             Value::Variant { payload: None, .. } => ok_val(
                 Value::Dict {
@@ -4197,8 +4908,8 @@ pub(crate) fn builtin_variant_payload(
                     )),
                 },
                 call_span,
-            ),
-            other => Err(Diagnostic::error(
+            ).with_diagnostics(_dr_diags),
+            other => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -4207,8 +4918,8 @@ pub(crate) fn builtin_variant_payload(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -4221,11 +4932,11 @@ pub(crate) fn builtin_variant_payload(
 ///   1. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
 ///   2. Wrap in a single-expression `SurfaceProgram`
 ///   3. Desugar + expand + resolve with empty SymbolTable
-///   4. Lower to CoreExpr and evaluate via `eval_document`
+///   4. Lower to CoreExpr and evaluate via `eval_core_expr` + `materialize`
 ///   5. Return the result thunk
 pub(crate) fn builtin_eval_macro_ast(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4234,9 +4945,10 @@ pub(crate) fn builtin_eval_macro_ast(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -4244,29 +4956,36 @@ pub(crate) fn builtin_eval_macro_ast(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Convert Expr.* variant to SurfaceNode
-        let expr_val = args[0].require_value()?.clone();
+        let expr_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let expr_node = match expr_val {
             Value::Variant {
                 ref type_decl_id, ..
             } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
-                crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
-                    |e| {
-                        Diagnostic::error(
-                            KIND,
-                            format!("eval-macro-ast: Expr.* conversion failed: {}", e),
-                            call_span.clone(),
-                        )
-                    },
-                )?
+                match crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx) {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                        KIND,
+                        format!("eval-macro-ast: Expr.* conversion failed: {}", e),
+                        call_span.clone(),
+                    ))
+                    .with_diagnostics(_dr_diags),
+                }
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -4275,15 +4994,18 @@ pub(crate) fn builtin_eval_macro_ast(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Wrap in a single-expression SurfaceProgram
         let document = crate::ast::SurfaceDocument {
             header: indexmap::IndexMap::new(),
-            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
+            body: Arc::new(crate::ast::SurfaceNode::new(
+                crate::ast::SurfaceExpression::Sequential(vec![expr_node]),
+                call_span.clone(),
+            )),
         };
         let program = crate::desugar::desugar_program_full(&crate::ast::SurfaceProgram {
             documents: vec![crate::ast::Spanned::new(
@@ -4295,38 +5017,48 @@ pub(crate) fn builtin_eval_macro_ast(
         // Desugar + expand + resolve with empty SymbolTable
         let program = crate::expand::expand_program(&program);
         let empty_chain = crate::symbol_table::SymbolTable::empty_chain();
-        crate::resolve::resolve_program(&program, &empty_chain);
+        crate::resolve::resolve_program(&program, &empty_chain, &Vec::new());
 
         // Lower each document's expressions to CoreExpr and evaluate
         let display_names = ctx.type_display_names_snapshot();
         let mut core_entries: Vec<Arc<crate::ast::Spanned<crate::ast::CoreExpr>>> = Vec::new();
         for doc_spanned in &program.documents {
-            for item in &doc_spanned.node.items {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    let core_spanned = crate::lower::lower(node, &display_names)
-                        .take(&ctx.runtime_diagnostics)
-                        .expect("lowering always succeeds");
-                    core_entries.push(Arc::new(core_spanned));
+            let core_spanned = crate::lower::lower(&doc_spanned.node.body, &display_names)
+                .take(&ctx.runtime_diagnostics)
+                .expect("lowering always succeeds");
+            core_entries.push(Arc::new(core_spanned));
+        }
+
+        let scope_chain = crate::symbol_table::SymbolTable::empty_chain();
+        let mut last_thunk: Option<Arc<crate::value::Thunk>> = None;
+        for core_entry in &core_entries {
+            let (eval_result, eval_diags) =
+                crate::eval_core::eval_core_expr(core_entry, &scope_chain, &ctx)
+                    .await
+                    .into_parts();
+            _dr_diags.extend(eval_diags);
+            match eval_result {
+                Ok(thunk) => {
+                    let (mat_result, mat_diags) =
+                        crate::eval::materialize(&thunk, None, &ctx).await.into_parts();
+                    _dr_diags.extend(mat_diags);
+                    if let Err(e) = mat_result {
+                        return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags);
+                    }
+                    last_thunk = Some(thunk);
                 }
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
             }
         }
 
-        let (result_table, _diagnostics) = crate::eval::eval_document(
-            &core_entries[..],
-            &ctx,
-            crate::symbol_table::SymbolTable::empty_chain(),
-        )
-        .await;
-
-        // Get the result from the table
-        match crate::symbol_table::SymbolTable::get_in_chain(&result_table, "%") {
-            Some(thunk) => Ok(thunk),
-            None => Err(Diagnostic::error(
+        match last_thunk {
+            Some(thunk) => crate::error::DiagnosticResult::ok(thunk).with_diagnostics(_dr_diags),
+            None => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "eval-macro-ast: no result in evaluated document".to_string(),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -4349,7 +5081,7 @@ pub(crate) fn builtin_eval_macro_ast(
 /// Returns the data value unchanged on success, throws SchemaViolation with all violations on failure.
 pub(crate) fn builtin_validate(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4358,15 +5090,21 @@ pub(crate) fn builtin_validate(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         // Expect exactly 2 args: schema, data
-        let (schema, data) = expect_two_args("validate", &args, named.as_ref(), call_span.clone())?;
+        let (result, diags) = expect_two_args("validate", &args, named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (schema, data) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Schema must be a Dict
         let schema_dict = match schema {
             Value::Dict { entries: d, .. } => d,
             _ => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "type mismatch: expected {}, got {}",
@@ -4374,27 +5112,32 @@ pub(crate) fn builtin_validate(
                         ctx.type_display_name(schema.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
         // Collect violations. validate_value is async-recursive via Box::pin.
-        let violations = validate_value(
+        let (result, diags) = validate_value(
             schema_dict,
             data.clone(),
             String::new(),
             Arc::clone(&ctx),
             call_span.clone(),
         )
-        .await?;
+        .await.into_parts();
+        _dr_diags.extend(diags);
+        let violations = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         if violations.is_empty() {
             // Success: return data unchanged
-            Ok(Arc::new(Thunk::value(data, call_span)))
+            crate::error::DiagnosticResult::ok(Arc::new(Thunk::value(data, call_span))).with_diagnostics(_dr_diags)
         } else {
             // Failure: throw SchemaViolation with all violations
-            Err({
+            crate::error::DiagnosticResult::err({
                 let mut diag = Diagnostic::error(
                     KIND,
                     format!(
@@ -4407,8 +5150,8 @@ pub(crate) fn builtin_validate(
                     diag.add_note(format!("{field}: {msg}"));
                 }
                 diag
-            }
-            .into())
+            })
+            .with_diagnostics(_dr_diags)
         }
     })
 }
@@ -4419,9 +5162,11 @@ fn expect_two_args(
     args: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-) -> Result<(Value, Value), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(Value, Value)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+
     if args.len() != 2 {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "arity mismatch: expected {}, got {}",
@@ -4429,29 +5174,40 @@ fn expect_two_args(
                 args.len()
             ),
             call_span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
     if named.is_some() && !named.unwrap().is_empty() {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("{} does not accept named arguments", name),
             call_span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
 
-    let val1 = args[0].require_value()?.clone();
-    let val2 = args[1].require_value()?.clone();
+    let (result, diags) = args[0].require_value().into_parts();
+    _dr_diags.extend(diags);
+    let val1 = match result {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
 
-    Ok((val1, val2))
+    let (result, diags) = args[1].require_value().into_parts();
+    _dr_diags.extend(diags);
+    let val2 = match result {
+        Ok(v) => v.clone(),
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+
+    crate::error::DiagnosticResult::ok((val1, val2)).with_diagnostics(_dr_diags)
 }
 
 /// Return type alias for async-recursive `validate_value`.
 type ValidationFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<Vec<(String, String)>, Box<crate::error::Diagnostic>>,
+                Output = crate::error::DiagnosticResult<Vec<(String, String)>>,
             > + Send,
     >,
 >;
@@ -4469,11 +5225,17 @@ fn validate_value(
 ) -> ValidationFuture {
     Box::pin(async move {
         use crate::value::HashableValue;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let mut violations: Vec<(String, String)> = Vec::new();
 
         // Check `type` constraint
         if let Some(type_thunk) = schema.get(&HashableValue::Str("type".into())) {
-            let type_val = materialize(type_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(type_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let type_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::String {
                 source, start, end, ..
             } = type_val
@@ -4491,7 +5253,12 @@ fn validate_value(
 
         // Check numeric range constraints (min, max)
         if let Some(min_thunk) = schema.get(&HashableValue::Str("min".into())) {
-            let min_val = materialize(min_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(min_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let min_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             match (&data, &min_val) {
                 (Value::Int { n, .. }, Value::Int { n: min, .. }) if n < min => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
@@ -4510,7 +5277,12 @@ fn validate_value(
         }
 
         if let Some(max_thunk) = schema.get(&HashableValue::Str("max".into())) {
-            let max_val = materialize(max_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(max_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let max_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             match (&data, &max_val) {
                 (Value::Int { n, .. }, Value::Int { n: max, .. }) if n > max => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
@@ -4530,7 +5302,12 @@ fn validate_value(
 
         // Check string/sequence length constraints
         if let Some(min_len_thunk) = schema.get(&HashableValue::Str("min-length".into())) {
-            let min_len_val = materialize(min_len_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(min_len_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let min_len_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Int { n: min_len, .. } = min_len_val {
                 let actual_len = match &data {
                     Value::String {
@@ -4551,7 +5328,12 @@ fn validate_value(
         }
 
         if let Some(max_len_thunk) = schema.get(&HashableValue::Str("max-length".into())) {
-            let max_len_val = materialize(max_len_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(max_len_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let max_len_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Int { n: max_len, .. } = max_len_val {
                 let actual_len = match &data {
                     Value::String {
@@ -4573,7 +5355,12 @@ fn validate_value(
 
         // Check pattern constraint (for strings)
         if let Some(pattern_thunk) = schema.get(&HashableValue::Str("pattern".into())) {
-            let pattern_val = materialize(pattern_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(pattern_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let pattern_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::String {
                 ref source,
                 start,
@@ -4607,7 +5394,12 @@ fn validate_value(
         // Uses primitive_eq — only primitive types (Int, Float, String, unit Variant)
         // are compared. Dict/payload-Variant are not structurally compared.
         if let Some(enum_thunk) = schema.get(&HashableValue::Str("enum".into())) {
-            let enum_val = materialize(enum_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(enum_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let enum_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Dict {
                 entries: enum_dict, ..
             } = enum_val
@@ -4615,7 +5407,13 @@ fn validate_value(
                 // Pre-materialize all enum values, then check membership via primitive equality.
                 let mut allowed_values = Vec::with_capacity(enum_dict.len());
                 for (_key, val_thunk) in enum_dict.iter() {
-                    allowed_values.push(materialize(val_thunk, Some(&span), &ctx).await?);
+                    let (result, diags) = materialize(val_thunk, Some(&span), &ctx).await.into_parts();
+                    _dr_diags.extend(diags);
+                    let val = match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    };
+                    allowed_values.push(val);
                 }
 
                 let mut found = false;
@@ -4633,7 +5431,12 @@ fn validate_value(
 
         // Check fields constraint (for dicts)
         if let Some(fields_thunk) = schema.get(&HashableValue::Str("fields".into())) {
-            let fields_val = materialize(fields_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(fields_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let fields_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Dict {
                 entries: fields_schema,
                 ..
@@ -4646,8 +5449,12 @@ fn validate_value(
                 {
                     // Validate each field in the schema
                     for (field_key, field_schema_thunk) in &fields_schema {
-                        let field_schema_val =
-                            materialize(field_schema_thunk, Some(&span), &ctx).await?;
+                        let (result, diags) = materialize(field_schema_thunk, Some(&span), &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let field_schema_val = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         if let Value::Dict {
                             entries: field_schema,
                             ..
@@ -4665,23 +5472,38 @@ fn validate_value(
                             let is_required = if let Some(req_thunk) =
                                 field_schema.get(&HashableValue::Str("required".into()))
                             {
-                                let req_val = materialize(req_thunk, Some(&span), &ctx).await?;
+                                let (result, diags) = materialize(req_thunk, Some(&span), &ctx).await.into_parts();
+                                _dr_diags.extend(diags);
+                                let req_val = match result {
+                                    Ok(v) => v,
+                                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                };
                                 matches!(&req_val, Value::Int { n, .. } if *n != 0)
                             } else {
                                 false
                             };
 
                             if let Some(field_value_thunk) = data_dict.get(field_key) {
-                                let field_value =
-                                    materialize(field_value_thunk, Some(&span), &ctx).await?;
-                                let sub_violations = validate_value(
+                                let (result, diags) = materialize(field_value_thunk, Some(&span), &ctx).await.into_parts();
+                                _dr_diags.extend(diags);
+                                let field_value = match result {
+                                    Ok(v) => v,
+                                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                };
+
+                                let (result, diags) = validate_value(
                                     field_schema,
                                     field_value,
                                     field_path,
                                     Arc::clone(&ctx),
                                     span.clone(),
                                 )
-                                .await?;
+                                .await.into_parts();
+                                _dr_diags.extend(diags);
+                                let sub_violations = match result {
+                                    Ok(v) => v,
+                                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                                };
                                 violations.extend(sub_violations);
                             } else if is_required {
                                 violations
@@ -4695,7 +5517,12 @@ fn validate_value(
 
         // Check items constraint (for sequences/dicts with uniform element schema)
         if let Some(items_thunk) = schema.get(&HashableValue::Str("items".into())) {
-            let items_val = materialize(items_thunk, Some(&span), &ctx).await?;
+            let (result, diags) = materialize(items_thunk, Some(&span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let items_val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::Dict {
                 entries: items_schema,
                 ..
@@ -4706,27 +5533,39 @@ fn validate_value(
                 } = data
                 {
                     for (idx, (_key, val_thunk)) in data_dict.iter().enumerate() {
-                        let val = materialize(val_thunk, Some(&span), &ctx).await?;
+                        let (result, diags) = materialize(val_thunk, Some(&span), &ctx).await.into_parts();
+                        _dr_diags.extend(diags);
+                        let val = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
+
                         let item_path = if path.is_empty() {
                             format!("[{}]", idx)
                         } else {
                             format!("{}[{}]", path, idx)
                         };
-                        let sub_violations = validate_value(
+
+                        let (result, diags) = validate_value(
                             items_schema.clone(),
                             val,
                             item_path,
                             Arc::clone(&ctx),
                             span.clone(),
                         )
-                        .await?;
+                        .await.into_parts();
+                        _dr_diags.extend(diags);
+                        let sub_violations = match result {
+                            Ok(v) => v,
+                            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                        };
                         violations.extend(sub_violations);
                     }
                 }
             }
         }
 
-        Ok(violations)
+        crate::error::DiagnosticResult::ok(violations).with_diagnostics(_dr_diags)
     })
 }
 
@@ -4759,7 +5598,7 @@ fn validate_value(
 // S-860: equirecursive-types-core
 pub(crate) fn builtin_is_contractive(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4768,19 +5607,39 @@ pub(crate) fn builtin_is_contractive(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
-        reject_named("builtin-is-contractive", named.as_ref(), call_span.clone())?;
+        {
+            let (result, diags) = reject_named("builtin-is-contractive", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
 
-        let body_val = crate::builtins::expect_one_arg(
-            "builtin-is-contractive",
-            &args,
-            // named already checked above; pass None so expect_one_arg doesn't re-check
-            None,
-            &ctx,
-            call_span.clone(),
-        )?;
+        let body_val = {
+            let (result, diags) = crate::builtins::expect_one_arg(
+                "builtin-is-contractive",
+                &args,
+                // named already checked above; pass None so expect_one_arg doesn't re-check
+                None,
+                &ctx,
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let result = is_contractive_value(&body_val, &ctx).await?;
+        let (res, diags) = is_contractive_value(&body_val, &ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        let result = match res {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         ok_val(
             Value::Int {
                 n: if result { 1 } else { 0 },
@@ -4789,7 +5648,7 @@ pub(crate) fn builtin_is_contractive(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -4807,9 +5666,11 @@ fn is_contractive_value<'a>(
     val: &'a Value,
     ctx: &'a Arc<crate::eval::EvalContext>,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<bool, Box<crate::error::Diagnostic>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = crate::error::DiagnosticResult<bool>> + Send + 'a>,
 > {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+
         // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
         let val = match val {
             Value::Annotated { inner, .. } => inner.as_ref(),
@@ -4821,7 +5682,7 @@ fn is_contractive_value<'a>(
             Value::Variant { ctor_index, .. }
                 if *ctor_index == crate::type_tags::TV_RECURSIVE_REF =>
             {
-                Ok(false)
+                crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags)
             }
 
             // Case 3: Union and Intersect are non-guarding — recurse into all children.
@@ -4834,23 +5695,33 @@ fn is_contractive_value<'a>(
             {
                 let payload_thunk = match payload {
                     Some(id) => id.clone(),
-                    None => return Ok(true),
+                    None => return crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags),
                 };
-                let payload_val = materialize(&payload_thunk, None, ctx).await?;
+                let (result, diags) = materialize(&payload_thunk, None, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let payload_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
                 let types_thunk = match &payload_val {
                     Value::Dict { entries: d, .. } => {
                         match d.get(&crate::value::HashableValue::Str("types".into())) {
                             Some(t) => Arc::clone(t),
-                            None => return Ok(true),
+                            None => return crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags),
                         }
                     }
-                    _ => return Ok(true),
+                    _ => return crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags),
                 };
-                is_contractive_seq(types_thunk, ctx).await
+                let (result, diags) = is_contractive_seq(types_thunk, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+                    Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
             }
 
             // Case 2: all other constructors are guarding.
-            _ => Ok(true),
+            _ => crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags),
         }
     })
 }
@@ -4864,19 +5735,40 @@ fn is_contractive_value<'a>(
 async fn is_contractive_seq(
     types_thunk: Arc<crate::value::Thunk>,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<bool, Box<crate::error::Diagnostic>> {
-    let val = materialize(&types_thunk, None, ctx).await?;
+) -> crate::error::DiagnosticResult<bool> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+
+    let (result, diags) = materialize(&types_thunk, None, ctx).await.into_parts();
+    _dr_diags.extend(diags);
+    let val = match result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+    };
+
     match &val {
         Value::Dict { entries: d, .. } => {
             for (_k, v_thunk) in d {
-                let v_val = materialize(v_thunk, None, ctx).await?;
-                if !is_contractive_value(&v_val, ctx).await? {
-                    return Ok(false);
+                let (result, diags) = materialize(v_thunk, None, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let v_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+
+                let (result, diags) = is_contractive_value(&v_val, ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let is_contractive = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
+
+                if !is_contractive {
+                    return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags);
                 }
             }
-            Ok(true)
+            crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags)
         }
-        _ => Ok(true), // Not a Dict — no children to check.
+        _ => crate::error::DiagnosticResult::ok(true).with_diagnostics(_dr_diags), // Not a Dict — no children to check.
     }
 }
 
@@ -4895,7 +5787,7 @@ async fn is_contractive_seq(
 /// Returns: `Value::Variant { tag: "Expr.Sequential", payload: Some({exprs: dict}) }`.
 pub(crate) fn builtin_sequential(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4904,9 +5796,17 @@ pub(crate) fn builtin_sequential(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("sequential", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("sequential", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -4914,17 +5814,24 @@ pub(crate) fn builtin_sequential(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
         // Materialize the expressions dict
         let arg0_thunk = Arc::clone(&args[0]);
-        let exprs_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
+        let exprs_val = {
+            let (result, diags) = materialize(&arg0_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         // Extract each entry in insertion order as Expr.* variant, converting to SurfaceNode
         let exprs_dict = match &exprs_val {
             Value::Dict { entries: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -4933,30 +5840,38 @@ pub(crate) fn builtin_sequential(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
         let mut exprs: Vec<Arc<crate::ast::SurfaceNode>> = Vec::new();
         // Iterate in insertion order (integer-keyed dict entries are in index order)
         for (_key, thunk) in exprs_dict.iter() {
-            let val = materialize(thunk, Some(&call_span), &ctx).await?;
+            let val = {
+                let (result, diags) = materialize(thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                }
+            };
             match val {
                 Value::Variant {
                     ref type_decl_id, ..
                 } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
-                    let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
-                        .map_err(|e| {
-                            Diagnostic::error(
-                                KIND,
-                                format!("builtin-sequential: Expr.* conversion failed: {}", e),
-                                call_span.clone(),
-                            )
-                        })?;
+                    let node = match crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx) {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
+                            KIND,
+                            format!("builtin-sequential: Expr.* conversion failed: {}", e),
+                            call_span.clone(),
+                        ))
+                        .with_diagnostics(_dr_diags),
+                    };
                     exprs.push(node);
                 }
                 other => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "{}: expected {}, got {}",
@@ -4965,8 +5880,8 @@ pub(crate) fn builtin_sequential(
                             ctx.type_display_name(other.type_decl_id_of())
                         ),
                         call_span,
-                    )
-                    .into())
+                    ))
+                    .with_diagnostics(_dr_diags)
                 }
             }
         }
@@ -4977,7 +5892,7 @@ pub(crate) fn builtin_sequential(
         ok_val(
             crate::surface_convert::surface_node_to_expr_variant(&node, &ctx),
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -4985,11 +5900,11 @@ pub(crate) fn builtin_sequential(
 ///
 /// Takes 1 positional arg (Expr.* variant) and 1 named arg (call-site-span: span dict).
 /// Converts the Expr.* AST node back to a SurfaceNode, wraps it in a single-expression
-/// SurfaceProgram with one SurfaceDocument containing one SurfaceItem::Expr.
+/// SurfaceProgram with one SurfaceDocument containing one expression.
 /// Returns Value::Program.
 pub(crate) fn builtin_ast_to_program(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -4998,9 +5913,10 @@ pub(crate) fn builtin_ast_to_program(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -5008,26 +5924,26 @@ pub(crate) fn builtin_ast_to_program(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Extract mandatory call-site-span: named arg
         let call_site_span_thunk_id = if let Some(ref named_map) = named {
             for key in named_map.keys() {
                 if key != "call-site-span" {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("{} does not accept named arguments", "ast-to-program"),
                         call_span,
-                    )
-                    .into());
+                    ))
+                    .with_diagnostics(_dr_diags);
                 }
             }
             match named_map.get("call-site-span").cloned() {
                 Some(t) => t,
                 None => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "{}: expected {}, got {}",
@@ -5036,12 +5952,12 @@ pub(crate) fn builtin_ast_to_program(
                             "absent"
                         ),
                         call_span,
-                    )
-                    .into())
+                    ))
+                    .with_diagnostics(_dr_diags)
                 }
             }
         } else {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -5050,18 +5966,26 @@ pub(crate) fn builtin_ast_to_program(
                     "absent"
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         };
 
         // Materialize call-site-span: — must be a span dict
         let call_site_span_thunk = call_site_span_thunk_id;
-        let call_site_span_val = materialize(&call_site_span_thunk, Some(&call_span), &ctx).await?;
+        let call_site_span_val = {
+            let (result, diags) = materialize(&call_site_span_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let call_site_span_actual = match &call_site_span_val {
             Value::Dict { entries: dict, .. } => {
                 // Extract span from the dict using extract_span
-                crate::surface_convert::extract_span(dict, &ctx).ok_or_else(|| {
-                    Diagnostic::error(
+                match crate::surface_convert::extract_span(dict, &ctx) {
+                    Some(v) => v,
+                    None => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!(
                             "{}: expected {}, got {}",
@@ -5070,11 +5994,12 @@ pub(crate) fn builtin_ast_to_program(
                             "invalid span dict"
                         ),
                         call_span.clone(),
-                    )
-                })?
+                    ))
+                    .with_diagnostics(_dr_diags),
+                }
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -5083,34 +6008,42 @@ pub(crate) fn builtin_ast_to_program(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // arg[0]: Expr.* Value::Variant
-        let expr_val = args[0].require_value()?.clone();
+        let expr_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         // Convert Expr.* Variant to SurfaceNode
         let expr_node = match expr_val {
             Value::Variant {
                 ref type_decl_id, ..
             } if *type_decl_id == crate::value::TYPE_ID_EXPR => {
-                crate::surface_convert::dict_to_surface_node(
+                match crate::surface_convert::dict_to_surface_node(
                     &expr_val,
                     &call_site_span_actual,
                     &ctx,
-                )
-                .map_err(|e| {
-                    Diagnostic::error(
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("ast-to-program: Expr.* conversion failed: {}", e),
                         call_span.clone(),
-                    )
-                })?
+                    ))
+                    .with_diagnostics(_dr_diags),
+                }
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -5119,15 +6052,18 @@ pub(crate) fn builtin_ast_to_program(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Wrap in a SurfaceProgram: one document, one item (Expr)
         let document = crate::ast::SurfaceDocument {
             header: indexmap::IndexMap::new(),
-            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
+            body: Arc::new(crate::ast::SurfaceNode::new(
+                crate::ast::SurfaceExpression::Sequential(vec![expr_node]),
+                call_span.clone(),
+            )),
         };
 
         let program = crate::ast::SurfaceProgram {
@@ -5147,7 +6083,7 @@ pub(crate) fn builtin_ast_to_program(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -5161,7 +6097,7 @@ pub(crate) fn builtin_ast_to_program(
 /// without validation. Used by tinct-side expects validation (T-1506).
 pub(crate) fn builtin_check_type(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -5170,9 +6106,17 @@ pub(crate) fn builtin_check_type(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("check-type", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("check-type", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -5180,16 +6124,37 @@ pub(crate) fn builtin_check_type(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
-        let type_name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let type_name = require_string("check-type", type_name_val, arg0_thunk.span.clone(), &ctx)?;
+        let type_name_val = {
+            let (result, diags) = materialize(&arg0_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let type_name = {
+            let (result, diags) = require_string("check-type", type_name_val, arg0_thunk.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let value = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
+        let value = {
+            let (result, diags) = materialize(&arg1_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
         let passes = match type_name.as_str() {
             "String" => matches!(value, Value::String { .. }),
@@ -5203,9 +6168,9 @@ pub(crate) fn builtin_check_type(
         };
 
         if passes {
-            ok_val(value, call_span)
+            ok_val(value, call_span).with_diagnostics(_dr_diags)
         } else {
-            Err(Diagnostic::error(
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -5214,8 +6179,8 @@ pub(crate) fn builtin_check_type(
                     ctx.type_display_name(value.type_decl_id_of())
                 ),
                 call_span,
-            )
-            .into())
+            ))
+            .with_diagnostics(_dr_diags)
         }
     })
 }
@@ -5233,7 +6198,7 @@ pub(crate) fn builtin_check_type(
 /// to validate declared caps against the accumulated env dict.
 pub(crate) fn builtin_cap_env_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -5242,9 +6207,17 @@ pub(crate) fn builtin_cap_env_has(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("cap-env-has?", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = reject_named("cap-env-has?", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -5252,23 +6225,44 @@ pub(crate) fn builtin_cap_env_has(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         let arg0_thunk = Arc::clone(&args[0]);
         let arg1_thunk = Arc::clone(&args[1]);
-        let name_val = materialize(&arg0_thunk, Some(&call_span), &ctx).await?;
-        let name = require_string("cap-env-has?", name_val, arg0_thunk.span.clone(), &ctx)?;
+        let name_val = {
+            let (result, diags) = materialize(&arg0_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
+        let name = {
+            let (result, diags) = require_string("cap-env-has?", name_val, arg0_thunk.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
 
-        let env_val = materialize(&arg1_thunk, Some(&call_span), &ctx).await?;
+        let env_val = {
+            let (result, diags) = materialize(&arg1_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         // Check whether name is a key in the env-dict (env-dict protocol, T-1775).
         let found = match &env_val {
             Value::Dict { entries: d, .. } => {
                 d.contains_key(&HashableValue::Str(Arc::from(name.as_str())))
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -5277,8 +6271,8 @@ pub(crate) fn builtin_cap_env_has(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -5292,7 +6286,7 @@ pub(crate) fn builtin_cap_env_has(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -5313,7 +6307,7 @@ pub(crate) fn builtin_cap_env_has(
 /// named, explicit pipeline step: parse → resolve → typecheck-doc → lower → eval.
 pub(crate) fn builtin_lower(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -5322,9 +6316,17 @@ pub(crate) fn builtin_lower(
             ctx,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-lower", named.as_ref(), call_span.clone())?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        {
+            let (result, diags) = crate::builtins::reject_named("builtin-lower", named.as_ref(), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(()) => {}
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        }
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -5332,16 +6334,23 @@ pub(crate) fn builtin_lower(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // arg0: Value::Document
-        let doc_val = args[0].require_value()?.clone();
+        let doc_val = {
+            let (result, diags) = args[0].require_value().into_parts();
+            _dr_diags.extend(diags);
+            match result {
+                Ok(v) => v.clone(),
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            }
+        };
         let doc_arc = match doc_val {
             Value::Document { doc: d, .. } => d,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -5350,8 +6359,8 @@ pub(crate) fn builtin_lower(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -5359,32 +6368,13 @@ pub(crate) fn builtin_lower(
             String,
             std::sync::Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
         )> = Vec::new();
-        let mut expr_idx: usize = 0;
-        for item in doc_arc.items.iter() {
-            let node = match item {
-                crate::ast::SurfaceItem::Expr(node) => node,
-                crate::ast::SurfaceItem::Decl(_) => continue,
-            };
-            let display_names = ctx.type_display_names_snapshot();
-            let core_spanned = crate::lower::lower(node, &display_names)
-                .take(&ctx.runtime_diagnostics)
-                .expect("lowering always succeeds");
-            let key = format!("{expr_idx}");
-            entries.push((key, std::sync::Arc::new(core_spanned)));
-            expr_idx += 1;
-        }
+        let display_names = ctx.type_display_names_snapshot();
+        let core_spanned = crate::lower::lower(&doc_arc.body, &display_names)
+            .take(&ctx.runtime_diagnostics)
+            .expect("lowering always succeeds");
+        entries.push(("0".to_string(), std::sync::Arc::new(core_spanned)));
 
-        let span = doc_arc
-            .items
-            .first()
-            .and_then(|item| {
-                if let crate::ast::SurfaceItem::Expr(node) = item {
-                    Some(node.span.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| call_span.clone());
+        let span = doc_arc.body.span.clone();
 
         ok_val(
             Value::CoreDocument {
@@ -5395,7 +6385,7 @@ pub(crate) fn builtin_lower(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -5666,21 +6656,23 @@ mod tests {
     }
 
     async fn run(
-        f: impl std::future::Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-        f.await
+        f: impl std::future::Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>>,
+    ) -> Result<Arc<Thunk>, crate::error::Diagnostic> {
+        let (result, _diags) = f.await.into_parts();
+        result
     }
 
     async fn materialize_sync(
         t: &Arc<Thunk>,
         ctx: &Arc<crate::eval::EvalContext>,
-    ) -> Result<Value, Box<crate::error::Diagnostic>> {
-        crate::eval::materialize(t, None, ctx).await
+    ) -> Result<Value, crate::error::Diagnostic> {
+        let (result, _diags) = crate::eval::materialize(t, None, ctx).await.into_parts();
+        result
     }
 
     /// `builtin_tag_of` returns the tag of a bare `Value::Variant`.
     #[tokio::test]
-    async fn tag_of_bare_variant() -> Result<(), Box<crate::error::Diagnostic>> {
+    async fn tag_of_bare_variant() -> Result<(), crate::error::Diagnostic> {
         let variant = Value::Variant {
             type_decl_id: TEST_ID_COLOR,
             ctor_index: 0,
@@ -5705,7 +6697,7 @@ mod tests {
     /// `builtin_tag_of` peels a single `Value::Annotated` wrapper and returns the
     /// inner variant's tag. This is the primary regression case for B-441.
     #[tokio::test]
-    async fn tag_of_annotated_variant_single_wrap() -> Result<(), Box<crate::error::Diagnostic>> {
+    async fn tag_of_annotated_variant_single_wrap() -> Result<(), crate::error::Diagnostic> {
         let variant = Value::Variant {
             type_decl_id: TEST_ID_SIMPLE_TYPE,
             ctor_index: 0,
@@ -5744,7 +6736,7 @@ mod tests {
     /// `builtin_tag_of` peels multiple nested `Value::Annotated` wrappers (the `while let`
     /// loop handles more than one layer of annotation).
     #[tokio::test]
-    async fn tag_of_annotated_variant_double_wrap() -> Result<(), Box<crate::error::Diagnostic>> {
+    async fn tag_of_annotated_variant_double_wrap() -> Result<(), crate::error::Diagnostic> {
         let variant = Value::Variant {
             type_decl_id: TEST_ID_SHAPE,
             ctor_index: 0,

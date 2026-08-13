@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Span, Spanned, SurfaceNode, SurfaceProgram};
+use crate::ast::{Span, Spanned, SurfaceProgram};
 use crate::error::Diagnostic;
 use crate::rust_span;
 use crate::type_tags::*;
@@ -73,31 +73,8 @@ thread_local! {
 /// For each entry, creates a thunk in the scope. Returns the extended scope
 /// and collected diagnostics. Named entries from each dict are extracted and
 /// the returned scope.
-pub async fn eval_document(
-    entries: &[Arc<Spanned<crate::ast::CoreExpr>>],
-    ctx: &Arc<EvalContext>,
-    scope: ScopeChain,
-) -> (ScopeChain, Vec<Diagnostic>) {
-    let current_scope = scope;
-    let mut diagnostics = Vec::new();
-
-    if entries.is_empty() {
-        return (current_scope, diagnostics);
-    }
-
-    for core_spanned in entries.iter() {
-        // Evaluate each expression lazily — creates thunks without forcing.
-        // The resolver's SymbolTable scope (on the AST node) is populated by
-        // eval_dict during thunk creation. No materialization needed here.
-        if let Err(e) = crate::eval_core::eval_core_expr(core_spanned, &current_scope, ctx).await {
-            diagnostics.push(*e);
-        }
-    }
-
-    (current_scope, diagnostics)
-}
-
-// eval_core_document_exprs deleted — replaced by eval_document above.
+// eval_document deleted — the pipeline and builtins use eval_core_expr + materialize directly.
+// The CEK machine handles Sequential evaluation correctly via LetrecChainStep.
 
 /// Evaluate a SurfaceProgram: one or more documents separated by `---`.
 ///
@@ -111,12 +88,12 @@ pub async fn eval_document(
 ///
 /// # Document sequencing
 ///
-/// Documents are evaluated sequentially using `eval_document` with a SymbolTable scope.
+/// Documents are evaluated sequentially using `eval_core_expr` + `materialize`.
 /// Each document's exported names extend the scope for subsequent documents.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     eval_surface_file_with_scope(program, ctx, ctx.current_scope.clone()).await
 }
 
@@ -130,7 +107,7 @@ pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     extra_scope: indexmap::IndexMap<String, Arc<Thunk>>,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     let mut scope = ctx.current_scope.clone();
     if !extra_scope.is_empty() {
         scope = SymbolTable::extend_chain(&scope, extra_scope);
@@ -144,27 +121,27 @@ async fn eval_surface_file_with_scope(
     program: &SurfaceProgram,
     ctx: &Arc<EvalContext>,
     scope: ScopeChain,
-) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     let current_scope = scope;
     let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
 
     for surface_doc in &program.documents {
-        let expr_nodes: Vec<Arc<SurfaceNode>> = surface_doc.node.expressions().cloned().collect();
+        let body = &surface_doc.node.body;
         let display_names = ctx.type_display_names_snapshot();
-
-        for node in &expr_nodes {
-            let core_spanned = Arc::new(
-                crate::lower::lower(node, &display_names)
-                    .take(&ctx.runtime_diagnostics)
-                    .expect("lowering always succeeds"),
-            );
-            match crate::eval_core::eval_core_expr(&core_spanned, &current_scope, ctx).await {
-                Ok(thunk) => last = thunk,
-                Err(e) => return Err(e),
-            }
+        let core_spanned = Arc::new(
+            crate::lower::lower(body, &display_names)
+                .take(&ctx.runtime_diagnostics)
+                .expect("lowering always succeeds"),
+        );
+        let (result, diags) = crate::eval_core::eval_core_expr(&core_spanned, &current_scope, ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(thunk) => last = thunk,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
         }
     }
-    Ok(last)
+    crate::error::DiagnosticResult::ok(last).with_diagnostics(_dr_diags)
 }
 
 // ============================================================================
@@ -1390,17 +1367,12 @@ pub(crate) fn format_type_with_names(
                                                     let kt_str = kt.as_deref().unwrap_or("?");
                                                     let vt_str = vt.as_deref().unwrap_or("?");
                                                     if !parts.is_empty() {
-                                                        let dict_name = display_names.get(&crate::value::TYPE_ID_DICT).map(|s| s.as_str()).unwrap_or("Record");
                                                         return Ok(format!(
-                                                            "[{} {} {}  {}  ...]",
-                                                            dict_name, kt_str, vt_str, parts.join("  ")
+                                                            "[{}  {}: {} ...]",
+                                                            parts.join("  "), kt_str, vt_str
                                                         ));
                                                     }
-                                                    let dict_name = display_names.get(&crate::value::TYPE_ID_DICT).map(|s| s.as_str()).unwrap_or("Record");
-                                                    if kt_str == "Top" && vt_str == "Top" {
-                                                        return Ok(dict_name.to_string());
-                                                    }
-                                                    return Ok(format!("[{} {} {}]", dict_name, kt_str, vt_str));
+                                                    return Ok(format!("[{}: {} ...]", kt_str, vt_str));
                                                 }
                                                 Err("  ...".to_string())
                                             }
@@ -1442,10 +1414,7 @@ pub(crate) fn format_type_with_names(
                             }
                         }
                     }
-                    display_names
-                        .get(&crate::value::TYPE_ID_DICT)
-                        .cloned()
-                        .unwrap_or_else(|| "Record".to_string())
+                    panic!("format_type_with_names: TV_RECORD payload missing or malformed")
                 }
                 TV_FN => {
                     // TypeValue.Fn: format as "Fn@RetType [ParamType ...]".
@@ -1662,7 +1631,7 @@ pub(crate) fn validate_and_wrap_record(
     data_span: Span,
     default: Option<GuardDefault>,
     blame_label: Option<crate::error::BlameLabel>,
-) -> Result<IndexMap<HashableValue, Arc<Thunk>>, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<IndexMap<HashableValue, Arc<Thunk>>> {
     // Shape check: verify all required fields exist.
     // Per doc/07:117, try HashableValue::Str first, then HashableValue::Int fallback.
     for field_name in fields.keys() {
@@ -1707,7 +1676,7 @@ pub(crate) fn validate_and_wrap_record(
                 field_path_prefix, actual_fields
             );
 
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "type assertion failed: expected {}record with field \"{}\", got {}record without field \"{}\"",
@@ -1718,8 +1687,7 @@ pub(crate) fn validate_and_wrap_record(
                 data_span,
             )
             .with_note(expected_note)
-            .with_note(actual_note)
-            .into());
+            .with_note(actual_note));
         }
     }
 
@@ -1762,7 +1730,7 @@ pub(crate) fn validate_and_wrap_record(
         }
     }
 
-    Ok(new_entries)
+    crate::error::DiagnosticResult::ok(new_entries)
 }
 
 /// Check if an identifier starts with an uppercase letter.
@@ -1817,18 +1785,23 @@ async fn call_to_match_by_name(
     ctx: &Arc<EvalContext>,
     span: &Span,
     _scope: ScopeChain,
-) -> Result<bool, Box<crate::error::Diagnostic>> {
-    // Step 1: get the init accumulated group snapshot.
+) -> crate::error::DiagnosticResult<bool> {
     let Some(acc_group) = ctx.get_init_accumulated_group() else {
-        return Ok(false);
+        return crate::error::DiagnosticResult::ok(false);
     };
-    // Step 2: find `name` in the accumulated scope.
-    let Some(fn_thunk) = SymbolTable::get_in_chain(acc_group, name) else {
-        return Ok(false);
+    let lookup = SymbolTable::get_in_chain(acc_group, name);
+    let (lookup_result, mut lookup_diags) = lookup.into_parts();
+    let fn_thunk = match lookup_result {
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(lookup_diags),
+        Ok(None) => return crate::error::DiagnosticResult::ok(false).with_diagnostics(lookup_diags),
+        Ok(Some(t)) => t,
     };
-    // Step 3: materialize the thunk to get the to-match function value.
-    let fn_val = materialize(&fn_thunk, Some(span), ctx).await?;
-    // Step 5: destructure as a user-defined function.
+    let (fn_val_result, mat_diags) = materialize(&fn_thunk, Some(span), ctx).await.into_parts();
+    lookup_diags.extend(mat_diags);
+    let fn_val = match fn_val_result {
+        Ok(v) => v,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(lookup_diags),
+    };
     let (clauses, definition_scope) = match fn_val {
         Value::Function {
             clauses,
@@ -1836,20 +1809,17 @@ async fn call_to_match_by_name(
             ..
         } => (clauses, definition_scope),
         other => {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "call_to_match_by_name({name}): expected Function, got {}",
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 span.clone(),
-            )
-            .into());
+            )).with_diagnostics(lookup_diags);
         }
     };
-    // Step 6: wrap val as a pre-materialized thunk (already a concrete value — no eval needed).
     let val_thunk = Arc::new(Thunk::value(val.clone(), span.clone()));
-    // Step 7: invoke the function with val as the sole positional argument.
     let call_ctx = CallContext {
         clauses: &clauses,
         definition_scope,
@@ -1860,19 +1830,25 @@ async fn call_to_match_by_name(
         ctx,
         type_instantiation: std::collections::HashMap::new(),
     };
-    let result_thunk = invoke_function(&call_ctx).await?;
-    // Step 8: materialize the call result and check if it is a nonzero Int.
-    match materialize(&result_thunk, Some(span), ctx).await? {
-        Value::Int { n, .. } => Ok(n != 0),
-        other => Err(Diagnostic::error(
+    let (result, diags) = invoke_function(&call_ctx).await.into_parts();
+    lookup_diags.extend(diags);
+    let result_thunk = match result {
+        Ok(t) => t,
+        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(lookup_diags),
+    };
+    let (mat_result, mat_diags2) = materialize(&result_thunk, Some(span), ctx).await.into_parts();
+    lookup_diags.extend(mat_diags2);
+    match mat_result {
+        Ok(Value::Int { n, .. }) => crate::error::DiagnosticResult::ok(n != 0).with_diagnostics(lookup_diags),
+        Ok(other) => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "call_to_match_by_name({name}) result: expected Int, got {}",
                 ctx.type_display_name(other.type_decl_id_of())
             ),
             span.clone(),
-        )
-        .into()),
+        )).with_diagnostics(lookup_diags),
+        Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(lookup_diags),
     }
 }
 
@@ -1908,7 +1884,7 @@ pub async fn call_to_match(
     ctx: &Arc<EvalContext>,
     span: &Span,
     scope: ScopeChain,
-) -> Result<bool, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<bool> {
     call_to_match_by_name("to-match", val, ctx, span, scope).await
 }
 
@@ -1931,7 +1907,7 @@ pub async fn call_to_match_resolved(
     ctx: &Arc<EvalContext>,
     span: &Span,
     scope: ScopeChain,
-) -> Result<bool, Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<bool> {
     call_to_match_by_name(binding_name, val, ctx, span, scope).await
 }
 
@@ -1986,14 +1962,15 @@ pub fn materialize<'a>(
     mat_span: Option<&'a Span>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Value, Box<crate::error::Diagnostic>>> + Send + 'a>,
+    Box<dyn std::future::Future<Output = crate::error::DiagnosticResult<Value>> + Send + 'a>,
 > {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         loop {
             // Check terminal states first (result is set).
             if let Some(result) = thunk.inner.result.get() {
                 match result {
-                    Ok(v) => return Ok(v.clone()),
+                    Ok(v) => return crate::error::DiagnosticResult::ok(v.clone()).with_diagnostics(_dr_diags),
                     Err(e) => {
                         let mut cloned = (**e).clone();
                         if let Some(span) = mat_span {
@@ -2006,7 +1983,7 @@ pub fn materialize<'a>(
                                 cloned.push_frame("materialized".to_string(), span.clone());
                             }
                         }
-                        return Err(Box::new(cloned));
+                        return crate::error::DiagnosticResult::err(cloned).with_diagnostics(_dr_diags);
                     }
                 }
             }
@@ -2014,8 +1991,10 @@ pub fn materialize<'a>(
             // Not settled — try to claim (Unevaluated → InProgress).
             if let Some(state) = thunk.try_claim() {
                 let guard = crate::value::ThunkPanicGuard(Some(Arc::clone(thunk)));
-                let result = crate::eval_materialize::run_owned(state, thunk, ctx).await;
-                guard.settle(result.map_err(|e| Arc::new(*e)));
+                let dr = crate::eval_materialize::run_owned(state, thunk, ctx).await;
+                let (result, diags) = dr.into_parts();
+                _dr_diags.extend(diags);
+                guard.settle(result.map_err(Arc::new));
             } else if thunk.inner.result.get().is_some() {
                 // Settled between our check and try_claim — loop to read result.
                 continue;
@@ -2045,7 +2024,7 @@ pub fn materialize<'a>(
                         e
                     };
                     thunk.settle(Err(Arc::new(err.clone())));
-                    return Err(Box::new(err));
+                    return crate::error::DiagnosticResult::err(err).with_diagnostics(_dr_diags);
                 }
                 thunk.settled().await;
             }
@@ -2183,12 +2162,18 @@ mod tests {
     async fn eval_for_test(
         node: Arc<SurfaceNode>,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let display_names = ctx.type_display_names_snapshot();
         let core_spanned = crate::lower::lower(&node, &display_names)
             .take(&ctx.runtime_diagnostics)
             .expect("lowering always succeeds");
-        crate::eval_core::eval_core_expr(&core_spanned, &SymbolTable::empty_chain(), ctx).await
+        let (result, diags) = crate::eval_core::eval_core_expr(&core_spanned, &SymbolTable::empty_chain(), ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     }
 
     /// Test-only: evaluate a SurfaceNode after running the resolver against the root env.
@@ -2196,17 +2181,20 @@ mod tests {
     async fn eval_for_test_resolved(
         node: Arc<SurfaceNode>,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
         let doc = SurfaceDocument {
             header: indexmap::IndexMap::new(),
-            items: vec![SurfaceItem::Expr(Arc::clone(&node))],
+            body: Arc::new(SurfaceNode::new(
+                SurfaceExpression::Sequential(vec![Arc::clone(&node)]),
+                node.span.clone(),
+            )),
         };
         let program = crate::desugar::desugar_program_full(&SurfaceProgram {
             documents: vec![Spanned::new(Arc::new(doc), node.span.clone())],
         });
         let program = crate::expand::expand_program(&program);
         let _result =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -2232,8 +2220,14 @@ mod tests {
     async fn eval_core_for_test(
         expr: Spanned<CoreExpr>,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
-        crate::eval_core::eval_core_expr(&expr, &SymbolTable::empty_chain(), ctx).await
+    ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::eval_core::eval_core_expr(&expr, &SymbolTable::empty_chain(), ctx).await.into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(_dr_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }
     }
 
     /// Parse a surface expression from text and evaluate it.
@@ -2242,7 +2236,7 @@ mod tests {
     async fn eval_str(
         src: &str,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Arc<Thunk>, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
         let node = crate::parser::parse_surface_expression(src)
             .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
         eval_for_test_resolved(node, ctx).await
@@ -2260,7 +2254,7 @@ mod tests {
         thunk: &Arc<Thunk>,
         mat_span: Option<&Span>,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Value, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Value> {
         super::materialize(thunk, mat_span, ctx).await
     }
 
@@ -2268,7 +2262,7 @@ mod tests {
     async fn mat_id(
         thunk: &Arc<Thunk>,
         ctx: &Arc<EvalContext>,
-    ) -> Result<Value, Box<crate::error::Diagnostic>> {
+    ) -> crate::error::DiagnosticResult<Value> {
         materialize(thunk, None, ctx).await
     }
 
@@ -4952,7 +4946,7 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(
+        let (result, _diags) = validate_and_wrap_record(
             &entries,
             &fields,
             &mut field_path,
@@ -4960,7 +4954,8 @@ mod tests {
             data_span.clone(),
             None,
             None,
-        );
+        )
+        .into_parts();
 
         // Should error with field path prefix in the message
         assert!(result.is_err(), "Expected error for missing field");
@@ -5036,7 +5031,7 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(
+        let (result, _diags) = validate_and_wrap_record(
             &entries,
             &fields,
             &mut field_path,
@@ -5044,7 +5039,8 @@ mod tests {
             data_span,
             None,
             None,
-        );
+        )
+        .into_parts();
 
         // BAS: should SUCCEED — extra fields accepted under width subtyping
         assert!(
@@ -5075,7 +5071,7 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(
+        let (result, _diags) = validate_and_wrap_record(
             &entries,
             &fields,
             &mut field_path,
@@ -5083,7 +5079,8 @@ mod tests {
             data_span.clone(),
             None,
             None,
-        );
+        )
+        .into_parts();
 
         assert!(result.is_err(), "Expected error for missing field");
         let err = result.unwrap_err();
@@ -5141,7 +5138,7 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(
+        let (result, _diags) = validate_and_wrap_record(
             &entries,
             &fields,
             &mut field_path,
@@ -5149,7 +5146,8 @@ mod tests {
             data_span,
             None,
             None,
-        );
+        )
+        .into_parts();
 
         // BAS: should SUCCEED — extra int-keyed fields accepted under width subtyping
         assert!(
@@ -5185,7 +5183,7 @@ mod tests {
         let guard_span = test_span(1, 1, 1, 10);
         let data_span = test_span(2, 1, 2, 5);
 
-        let result = validate_and_wrap_record(
+        let (result, _diags) = validate_and_wrap_record(
             &entries,
             &fields,
             &mut field_path,
@@ -5193,7 +5191,8 @@ mod tests {
             data_span,
             None,
             None,
-        );
+        )
+        .into_parts();
 
         // Should succeed: open records allow extra fields (including integer-keyed ones)
         assert!(
@@ -5221,7 +5220,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Materialize at high depth (CEK continuation stack) should succeed
-        let result = materialize(&thunk, None, &ctx).await;
+        let (result, _diags) = materialize(&thunk, None, &ctx).await.into_parts();
         assert!(
             result.is_ok(),
             "Expected success for cached thunk at high depth, got error: {:?}",
@@ -5275,7 +5274,7 @@ mod tests {
         }
 
         // First materialization: triggers guard, validates Int(42) against TypeValue.Repr("Value::Int") → pass.
-        let result1 = materialize(&guarded, None, &ctx).await;
+        let (result1, _diags) = materialize(&guarded, None, &ctx).await.into_parts();
         assert!(result1.is_ok(), "first materialization should succeed");
         assert_eq!(
             result1.unwrap(),
@@ -5304,7 +5303,7 @@ mod tests {
         );
 
         // Second materialization: must return cached value, not re-run the guard.
-        let result2 = materialize(&guarded, None, &ctx).await;
+        let (result2, _diags) = materialize(&guarded, None, &ctx).await.into_parts();
         assert!(
             result2.is_ok(),
             "second materialization should succeed (cached)"
@@ -5360,7 +5359,7 @@ mod tests {
         ));
 
         // First materialization: triggers guard, validates String against TypeValue.Repr("Value::Int") → fail.
-        let result1 = materialize(&guarded, None, &ctx).await;
+        let (result1, _diags) = materialize(&guarded, None, &ctx).await.into_parts();
         assert!(
             result1.is_err(),
             "materialization should fail: String does not satisfy Int guard"
@@ -5379,7 +5378,7 @@ mod tests {
         );
 
         // Second materialization: returns the cached error, not re-runs the guard.
-        let result2 = materialize(&guarded, None, &ctx).await;
+        let (result2, _diags) = materialize(&guarded, None, &ctx).await.into_parts();
         assert!(
             result2.is_err(),
             "second materialization should also fail (cached)"
@@ -5430,7 +5429,7 @@ mod tests {
         ));
 
         // Materialize - should fail type assertion
-        let result = materialize(&guarded, None, &ctx).await;
+        let (result, _diags) = materialize(&guarded, None, &ctx).await.into_parts();
         assert!(result.is_err(), "Expected type assertion failure");
 
         let error = result.unwrap_err();
@@ -5471,6 +5470,7 @@ mod tests {
         let _table = crate::resolve::resolve_program(
             &surface_program,
             &crate::symbol_table::SymbolTable::empty_chain(),
+            &Vec::new(),
         );
 
         {
@@ -5673,7 +5673,7 @@ mod tests {
 
         // Materialize via the recursive path. If force_count pre-materialization is
         // missing, this panics inside `builtin_keys` at the `require_value()` call.
-        let result = materialize(&outer, None, &ctx).await;
+        let (result, _diags) = materialize(&outer, None, &ctx).await.into_parts();
         assert!(
             result.is_ok(),
             "PendingBuiltin bypass path must pre-materialize force_count args; got: {:?}",
@@ -5703,7 +5703,7 @@ mod tests {
         let thunk = eval_str("[match [a: 1  b: 2]  [a: x  b: x]: \"body\"]", &test_ctx())
             .await
             .expect("eval_str must succeed (arm simply doesn't match, body never reached)");
-        let result = materialize(&thunk, None, &test_ctx()).await;
+        let (result, _diags) = materialize(&thunk, None, &test_ctx()).await.into_parts();
         assert!(
             result.is_err(),
             "undefined-pin dict-pattern arm must produce MatchExhaustion when forced; got: {:?}",
@@ -5746,7 +5746,7 @@ mod tests {
         let thunk = eval_str("[match 42  x: 1  x: 2]", &test_ctx())
             .await
             .expect("Eval must not error before thunk is forced");
-        let result = materialize(&thunk, None, &test_ctx()).await;
+        let (result, _diags) = materialize(&thunk, None, &test_ctx()).await.into_parts();
         assert!(
             result.is_err(),
             "Undefined VarRef arms must produce MatchExhaustion when forced; got: {:?}",
@@ -5860,12 +5860,12 @@ mod tests {
         let program = crate::expand::expand_program(&program);
 
         // Seed resolver with % in scope for tests.
-        let mut seed_scope = crate::symbol_table::SymbolTable::new();
-        seed_scope.insert("%".to_string(), 0, None);
-        let seed_scope = vec![Arc::new(seed_scope)];
-        let _result = crate::resolve::resolve_program(&program, &seed_scope);
+        let mut seed_table = crate::symbol_table::SymbolTable::new();
+        seed_table.insert("%".to_string(), 0, None);
+        let seed_table = Arc::new(seed_table);
+        let seed_scope = vec![Arc::clone(&seed_table)];
+        let _result = crate::resolve::resolve_program(&program, &seed_scope, &Vec::new());
 
-        // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
             let _env = crate::builtins::build_core_env();
             let mut infer_state = crate::type_infer::InferState::new();
@@ -5881,7 +5881,6 @@ mod tests {
             }
         }
 
-        // Build a thunk for initial_input: Int(777).
         let input_thunk = Arc::new(Thunk::value(
             Value::Int {
                 n: 777,
@@ -5892,9 +5891,8 @@ mod tests {
             rust_span!(),
         ));
 
-        // Write % value into the resolver's scope so the eval scope matches.
-        seed_scope.set_value(0, Arc::clone(&input_thunk));
-        let result_thunk = super::eval_surface_file_with_scope(&program, &ctx, vec![seed_scope])
+        seed_table.set_value(0, Arc::clone(&input_thunk));
+        let result_thunk = super::eval_surface_file_with_scope(&program, &ctx, vec![Arc::clone(&seed_table)])
             .await
             .expect("eval_surface_file must succeed");
         let val = super::materialize(&result_thunk, None, &ctx)
@@ -5990,7 +5988,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6049,7 +6047,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver with builtins in scope (test expression uses builtin-int-add).
         let seed_scope = build_test_scope_with_builtins();
-        let _result = crate::resolve::resolve_program(&program, &seed_scope);
+        let _result = crate::resolve::resolve_program(&program, &seed_scope, &Vec::new());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6105,7 +6103,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {

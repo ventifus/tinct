@@ -61,9 +61,10 @@ pub(crate) fn extract_dir_cap<'a>(
     val: &'a Value,
     builtin_name: &str,
     span: Span,
-) -> Result<(&'a cap_std::fs::Dir, &'a DirPerms), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<(&'a cap_std::fs::Dir, &'a DirPerms)> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     match val {
-        Value::DirCap { dir, perms, .. } => Ok((dir, perms)),
+        Value::DirCap { dir, perms, .. } => crate::error::DiagnosticResult::ok((dir, perms)).with_diagnostics(_dr_diags),
         Value::RevocableDirCap {
             inner,
             perms,
@@ -71,16 +72,16 @@ pub(crate) fn extract_dir_cap<'a>(
             ..
         } => {
             if revoked.load(Ordering::Acquire) {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("{builtin_name}: capability has been revoked"),
                     span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
-            Ok((inner, perms))
+            crate::error::DiagnosticResult::ok((inner, perms)).with_diagnostics(_dr_diags)
         }
-        other => Err(Diagnostic::error(
+        other => crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!(
                 "{}: expected {}, got {}",
@@ -89,8 +90,8 @@ pub(crate) fn extract_dir_cap<'a>(
                 ctx.type_display_name(other.type_decl_id_of())
             ),
             span,
-        )
-        .into()),
+        ))
+        .with_diagnostics(_dr_diags),
     }
 }
 
@@ -101,23 +102,24 @@ fn check_perm(
     perm_value: bool,
     _builtin_name: &str,
     span: Span,
-) -> Result<(), Box<crate::error::Diagnostic>> {
+) -> crate::error::DiagnosticResult<()> {
+    let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
     if !perm_value {
-        return Err(Diagnostic::error(
+        return crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             format!("DirCap: operation requires {perm_name} permission"),
             span,
-        )
-        .into());
+        ))
+        .with_diagnostics(_dr_diags);
     }
-    Ok(())
+    crate::error::DiagnosticResult::ok(()).with_diagnostics(_dr_diags)
 }
 
 /// `emit`: Write a string to stdout.
 /// Takes a String argument, writes it to stdout, returns null (empty dict).
 pub(crate) fn builtin_emit(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -126,20 +128,34 @@ pub(crate) fn builtin_emit(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "emit",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
-        let s = require_string("emit", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("emit", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let s = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Write to stdout
         use std::io::Write;
-        std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
+        match std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
             Diagnostic::error(KIND, format!("emit failed: {e}"), call_span.clone())
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Return null (empty dict)
         ok_val(
@@ -151,7 +167,7 @@ pub(crate) fn builtin_emit(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -164,7 +180,7 @@ pub(crate) fn builtin_emit(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -173,9 +189,20 @@ pub(crate) fn builtin_env(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val =
-            crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone())?;
-        let name = require_string("env", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) =
+            crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("env", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Check env_allowed
         // None = unrestricted (all allowed), Some(set) = only those in the set
@@ -185,23 +212,23 @@ pub(crate) fn builtin_env(
         };
 
         if !allowed {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("environment variable not allowed: {name}"),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Read env var
         match std::env::var(&name) {
-            Ok(value) => ok_val(string_val(&value), call_span),
-            Err(_) => Err(Diagnostic::error(
+            Ok(value) => ok_val(string_val(&value), call_span).with_diagnostics(_dr_diags),
+            Err(_) => crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!("environment variable not set: {name}"),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -216,7 +243,7 @@ pub(crate) fn builtin_env(
 /// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env_has(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -225,14 +252,25 @@ pub(crate) fn builtin_env_has(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "env-has?",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
-        let name = require_string("env-has?", val, Arc::clone(&args[0]).span.clone(), &ctx)?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("env-has?", val, Arc::clone(&args[0]).span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Check env_allowed
         let allowed = match &ctx.env_allowed {
@@ -249,7 +287,7 @@ pub(crate) fn builtin_env_has(
                     )),
                 },
                 call_span,
-            );
+            ).with_diagnostics(_dr_diags);
         }
 
         // Check whether the env var is set
@@ -262,7 +300,7 @@ pub(crate) fn builtin_env_has(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -277,7 +315,7 @@ pub(crate) fn builtin_env_has(
 ///     Returns a new DirCap with the narrowed scope or restricted permissions.
 pub(crate) fn builtin_narrow(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -286,9 +324,10 @@ pub(crate) fn builtin_narrow(
         ..
     } = ctx_arg;
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
         if args.len() < 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -296,42 +335,70 @@ pub(crate) fn builtin_narrow(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("narrow", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("narrow", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and current permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "narrow", thunk0.span.clone())?;
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "narrow", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
-        let second_arg_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let second_arg_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         if matches!(second_arg_val, Value::String { .. }) {
             // Subtree narrowing: [narrow cap "path"]
             if args.len() != 2 {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: subtree mode requires exactly 2 arguments (cap, subpath)".to_string(),
                     call_span,
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
 
-            let subpath = require_string("narrow", second_arg_val, thunk1.span.clone(), &ctx)?;
+            let (result, diags) = require_string("narrow", second_arg_val, thunk1.span.clone(), &ctx).into_parts();
+            _dr_diags.extend(diags);
+            let subpath = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             // Open subdirectory (RESOLVE_BENEATH applies to subpath)
-            let narrowed = dir.open_dir(&subpath).map_err(|e| {
+            let narrowed = match dir.open_dir(&subpath).map_err(|e| {
                 Diagnostic::error(
                     KIND,
                     format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             ok_val(
                 Value::DirCap {
@@ -342,7 +409,7 @@ pub(crate) fn builtin_narrow(
                     )),
                 },
                 call_span,
-            )
+            ).with_diagnostics(_dr_diags)
         } else if matches!(second_arg_val, Value::Variant { .. }) {
             // Permission restriction: [narrow cap FlagName...]
             // Parse requested flags from args[1..]
@@ -360,8 +427,13 @@ pub(crate) fn builtin_narrow(
             };
 
             for flag_thunk in &args[1..] {
-                let flag_val =
-                    crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await?;
+                let (result, diags) =
+                    crate::eval::materialize(&flag_thunk, Some(&call_span), &ctx).await.into_parts();
+                _dr_diags.extend(diags);
+                let flag_val = match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                };
 
                 match flag_val {
                     Value::Variant {
@@ -394,19 +466,19 @@ pub(crate) fn builtin_narrow(
                             "PosixPermissions" => requested.posix_permissions = true,
                             "ExtendedAttributes" => requested.extended_attributes = true,
                             other => {
-                                return Err(Diagnostic::error(KIND, 
+                                return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
                             format!(
                                 "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable, Symlinkable, PosixPermissions, ExtendedAttributes)",
                                 other
                             ),
                             call_span.clone(),
-                        )
-                        .into());
+                        ))
+                        .with_diagnostics(_dr_diags);
                             }
                         }
                     }
                     other => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!(
                                 "{}: expected {}, got {}",
@@ -415,8 +487,8 @@ pub(crate) fn builtin_narrow(
                                 ctx.type_display_name(other.type_decl_id_of())
                             ),
                             flag_thunk.span.clone(),
-                        )
-                        .into());
+                        ))
+                        .with_diagnostics(_dr_diags);
                     }
                 }
             }
@@ -437,84 +509,84 @@ pub(crate) fn builtin_narrow(
 
             // Runtime error if a requested flag is not held in the source
             if requested.readable && !perms.readable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Readable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.statable && !perms.statable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Statable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.listable && !perms.listable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Listable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.writable && !perms.writable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Writable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.appendable && !perms.appendable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Appendable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.deletable && !perms.deletable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Deletable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.renameable && !perms.renameable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Renameable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.symlinkable && !perms.symlinkable {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have Symlinkable permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.posix_permissions && !perms.posix_permissions {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have PosixPermissions permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
             if requested.extended_attributes && !perms.extended_attributes {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "narrow: source DirCap does not have ExtendedAttributes permission".to_string(),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
 
             ok_val(
@@ -526,10 +598,10 @@ pub(crate) fn builtin_narrow(
                     )),
                 },
                 call_span,
-            )
+            ).with_diagnostics(_dr_diags)
         } else {
             // Invalid second argument
-            Err(Diagnostic::error(
+            crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -538,8 +610,8 @@ pub(crate) fn builtin_narrow(
                     ctx.type_display_name(second_arg_val.type_decl_id_of())
                 ),
                 thunk1.span.clone(),
-            )
-            .into())
+            ))
+            .with_diagnostics(_dr_diags)
         }
     })
 }
@@ -549,7 +621,7 @@ pub(crate) fn builtin_narrow(
 /// The RevocableDirCap can be revoked later via `revoke-cap`.
 pub(crate) fn builtin_revocable(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -558,13 +630,19 @@ pub(crate) fn builtin_revocable(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "revocable",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract DirCap and preserve permissions
         let (dir, perms) = match val {
@@ -582,7 +660,7 @@ pub(crate) fn builtin_revocable(
                 (inner.try_clone().expect("dir try_clone"), perms.clone())
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -591,8 +669,8 @@ pub(crate) fn builtin_revocable(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     Arc::clone(&args[0]).span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -609,7 +687,7 @@ pub(crate) fn builtin_revocable(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -618,7 +696,7 @@ pub(crate) fn builtin_revocable(
 /// Future operations on the cap will fail.
 pub(crate) fn builtin_revoke_cap(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     let BuiltinArgs {
         args,
         named,
@@ -627,13 +705,19 @@ pub(crate) fn builtin_revoke_cap(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg(
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        let (result, diags) = crate::builtins::expect_one_arg(
             "revoke-cap",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract RevocableDirCap
         match val {
@@ -649,9 +733,9 @@ pub(crate) fn builtin_revoke_cap(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            other => Err(Diagnostic::error(
+            other => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -660,8 +744,8 @@ pub(crate) fn builtin_revoke_cap(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 Arc::clone(&args[0]).span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -676,8 +760,9 @@ pub(crate) fn builtin_revoke_cap(
 /// Writes content to the file at path (creating or truncating), then returns empty dict `{}`.
 pub(crate) fn builtin_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -688,7 +773,7 @@ pub(crate) fn builtin_write(
 
         // Expect 3 args: DirCap, String path, String content
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -696,49 +781,95 @@ pub(crate) fn builtin_write(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("write", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("write", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let content_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let content_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "write", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "write", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Writable",
             perms.writable,
             "write",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("write", path_val, thunk1.span.clone(), &ctx)?;
-        let content = require_string("write", content_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("write", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("write", content_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let content = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Open file for writing (create or truncate)
         use std::io::Write;
-        let mut file = dir.create(&path).map_err(|e| {
+        let mut file = match dir.create(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("write: failed to create file '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Write content
-        file.write_all(content.as_bytes()).map_err(|e| {
+        match file.write_all(content.as_bytes()).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("write: failed to write to '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Return null (empty dict)
         ok_val(
@@ -750,7 +881,7 @@ pub(crate) fn builtin_write(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -760,8 +891,9 @@ pub(crate) fn builtin_write(
 /// This ensures the target file is never partially written.
 pub(crate) fn builtin_write_atomic(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -772,7 +904,7 @@ pub(crate) fn builtin_write_atomic(
 
         // Expect 3 args: DirCap, String path, String content
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -780,35 +912,75 @@ pub(crate) fn builtin_write_atomic(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("write-atomic", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("write-atomic", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let content_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let content_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "write-atomic", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "write-atomic", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Writable",
             perms.writable,
             "write-atomic",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("write-atomic", path_val, thunk1.span.clone(), &ctx)?;
-        let content = require_string("write-atomic", content_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("write-atomic", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("write-atomic", content_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let content = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Generate a unique temp filename in the same directory as the target
         // Use process ID and a random suffix to avoid collisions
         use std::io::Write;
-        let nanos = std::time::SystemTime::now()
+        let nanos = match std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| {
                 Diagnostic::error(
@@ -816,12 +988,14 @@ pub(crate) fn builtin_write_atomic(
                     format!("write-atomic: system clock is before Unix epoch: {e}"),
                     call_span.clone(),
                 )
-            })?
-            .as_nanos();
+            }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.as_nanos();
         let temp_name = format!(".tmp.{}.{}", std::process::id(), nanos);
 
         // Write to temp file
-        let mut temp_file = dir.create(&temp_name).map_err(|e| {
+        let mut temp_file = match dir.create(&temp_name).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -830,9 +1004,12 @@ pub(crate) fn builtin_write_atomic(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        temp_file.write_all(content.as_bytes()).map_err(|e| {
+        match temp_file.write_all(content.as_bytes()).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -841,10 +1018,13 @@ pub(crate) fn builtin_write_atomic(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Ensure data is flushed before rename
-        temp_file.sync_all().map_err(|e| {
+        match temp_file.sync_all().map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -853,13 +1033,16 @@ pub(crate) fn builtin_write_atomic(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Drop the file handle before rename (required on Windows)
         drop(temp_file);
 
         // Atomically rename temp file to target path
-        dir.rename(&temp_name, dir, &path).map_err(|e| {
+        match dir.rename(&temp_name, dir, &path).map_err(|e| {
             // Attempt to clean up temp file on rename failure; include any cleanup error in message.
             let cleanup_note = match dir.remove_file(&temp_name) {
                 Ok(()) => String::new(),
@@ -873,7 +1056,10 @@ pub(crate) fn builtin_write_atomic(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Return null (empty dict)
         ok_val(
@@ -885,7 +1071,7 @@ pub(crate) fn builtin_write_atomic(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -899,7 +1085,7 @@ pub(crate) fn builtin_write_atomic(
 /// Each dict has keys: name, type, size, mtime.
 pub(crate) fn builtin_list_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs {
             args,
@@ -908,10 +1094,11 @@ pub(crate) fn builtin_list_dir(
             ctx,
             ..
         } = ctx_arg;
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -919,56 +1106,94 @@ pub(crate) fn builtin_list_dir(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            )).with_diagnostics(_dr_diags);
         }
-        reject_named("list-dir", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("list-dir", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "list-dir", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "list-dir", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Listable",
             perms.listable,
             "list-dir",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("list-dir", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("list-dir", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Read directory entries
-        let entries = dir.read_dir(&path).map_err(|e| {
+        let entries = match dir.read_dir(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("list-dir: failed to read directory '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Collect entries into a vector
         let mut entry_values = Vec::new();
         for entry in entries {
-            let entry = entry.map_err(|e| {
+            let entry = match entry.map_err(|e| {
                 Diagnostic::error(
                     KIND,
                     format!("list-dir: failed to read directory entry: {}", e),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             let name = entry.file_name().to_string_lossy().to_string();
-            let metadata = entry.metadata().map_err(|e| {
+            let metadata = match entry.metadata().map_err(|e| {
                 Diagnostic::error(
                     KIND,
                     format!("list-dir: failed to read metadata for '{}': {}", name, e),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
 
             // Determine file type
             let file_type = if metadata.is_dir() {
@@ -988,60 +1213,78 @@ pub(crate) fn builtin_list_dir(
                     match t.into_std().duration_since(UNIX_EPOCH) {
                         Ok(d) => Some(d.as_secs() as i64),
                         Err(e) => {
-                            return Err(Diagnostic::error(
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(
                                 KIND,
                                 format!("list-dir: mtime is before Unix epoch: {e}"),
                                 call_span.clone(),
-                            )
-                            .into())
+                            )).with_diagnostics(_dr_diags)
                         }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
                 Err(e) => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("list-dir: failed to read mtime: {e}"),
                         call_span.clone(),
-                    )
-                    .into())
+                    )).with_diagnostics(_dr_diags)
                 }
             };
 
             // Build metadata dict
             let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+            let (result, diags) = ok_val(string_val(&name), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
             dict.insert(
                 HashableValue::Str("name".into()),
-                ok_val(string_val(&name), call_span.clone())?,
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
+            let (result, diags) = ok_val(string_val(file_type), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
             dict.insert(
                 HashableValue::Str("type".into()),
-                ok_val(string_val(file_type), call_span.clone())?,
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: metadata.len() as i64,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
             dict.insert(
                 HashableValue::Str("size".into()),
-                ok_val(
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
+            );
+            if let Some(mtime_secs) = mtime {
+                let (result, diags) = ok_val(
                     Value::Int {
-                        n: metadata.len() as i64,
+                        n: mtime_secs,
                         type_val: Some(crate::type_infer::make_typevalue_nominal(
                             crate::value::TYPE_ID_INT,
                         )),
                     },
                     call_span.clone(),
-                )?,
-            );
-            if let Some(mtime_secs) = mtime {
+                ).into_parts();
+                _dr_diags.extend(diags);
                 dict.insert(
                     HashableValue::Str("mtime".into()),
-                    ok_val(
-                        Value::Int {
-                            n: mtime_secs,
-                            type_val: Some(crate::type_infer::make_typevalue_nominal(
-                                crate::value::TYPE_ID_INT,
-                            )),
-                        },
-                        call_span.clone(),
-                    )?,
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                    },
                 );
             }
 
@@ -1057,9 +1300,14 @@ pub(crate) fn builtin_list_dir(
         // Build an integer-keyed Dict from the collected entries
         let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, entry) in entry_values.into_iter().enumerate() {
+            let (result_inner, diags) = ok_val(entry, call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
             result.insert(
                 HashableValue::Int(i as i64),
-                ok_val(entry, call_span.clone())?,
+                match result_inner {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
         }
         ok_val(
@@ -1071,7 +1319,7 @@ pub(crate) fn builtin_list_dir(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1080,8 +1328,9 @@ pub(crate) fn builtin_list_dir(
 /// Dict has keys: name, type, size, mtime, mode, is-dir, is-file, is-symlink.
 pub(crate) fn builtin_stat(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1092,7 +1341,7 @@ pub(crate) fn builtin_stat(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1100,30 +1349,63 @@ pub(crate) fn builtin_stat(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("stat", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("stat", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "stat", thunk0.span.clone())?;
-        check_perm(perms, "Statable", perms.statable, "stat", call_span.clone())?;
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "stat", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(perms, "Statable", perms.statable, "stat", call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("stat", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("stat", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get metadata
-        let metadata = dir.metadata(&path).map_err(|e| {
+        let metadata = match dir.metadata(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("stat: failed to get metadata for '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Determine file type
         let file_type = if metadata.is_dir() {
@@ -1143,23 +1425,23 @@ pub(crate) fn builtin_stat(
                 match t.into_std().duration_since(UNIX_EPOCH) {
                     Ok(d) => Some(d.as_secs() as i64),
                     Err(e) => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!("stat: mtime is before Unix epoch: {e}"),
                             call_span.clone(),
-                        )
-                        .into())
+                        ))
+                        .with_diagnostics(_dr_diags)
                     }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
             Err(e) => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("stat: failed to read mtime: {e}"),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1174,87 +1456,127 @@ pub(crate) fn builtin_stat(
 
         // Build metadata dict
         let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        let (result, diags) = ok_val(string_val(&path), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("name".into()),
-            ok_val(string_val(&path), call_span.clone())?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(string_val(file_type), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("type".into()),
-            ok_val(string_val(file_type), call_span.clone())?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: metadata.len() as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("size".into()),
-            ok_val(
-                Value::Int {
-                    n: metadata.len() as i64,
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
         if let Some(mtime_secs) = mtime {
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: mtime_secs,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ok_val(
-                    Value::Int {
-                        n: mtime_secs,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(
-                            crate::value::TYPE_ID_INT,
-                        )),
-                    },
-                    call_span.clone(),
-                )?,
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
         }
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: mode,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("mode".into()),
-            ok_val(
-                Value::Int {
-                    n: mode,
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_dir() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_dir() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_file() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_file() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_symlink() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_symlink() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
 
         ok_val(
@@ -1266,7 +1588,7 @@ pub(crate) fn builtin_stat(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1275,8 +1597,9 @@ pub(crate) fn builtin_stat(
 /// Cheaper than try+stat for existence checks.
 pub(crate) fn builtin_exists(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1287,7 +1610,7 @@ pub(crate) fn builtin_exists(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1295,36 +1618,36 @@ pub(crate) fn builtin_exists(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("exists", named.as_ref(), call_span.clone())?;
+        { let (result, diags) = reject_named("exists", named.as_ref(), call_span.clone()).into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) }; }
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let dir_val = { let (result, diags) = thunk0.require_value().into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } }.clone();
+        let path_val = { let (result, diags) = thunk1.require_value().into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "exists", thunk0.span.clone())?;
-        check_perm(
+        let (dir, perms) = { let (result, diags) = extract_dir_cap(&ctx, &dir_val, "exists", thunk0.span.clone()).into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } };
+        { let (result, diags) = check_perm(
             perms,
             "Statable",
             perms.statable,
             "exists",
             call_span.clone(),
-        )?;
+        ).into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) }; }
 
-        let path = require_string("exists", path_val, thunk1.span.clone(), &ctx)?;
+        let path = { let (result, diags) = require_string("exists", path_val, thunk1.span.clone(), &ctx).into_parts(); _dr_diags.extend(diags); match result { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) } };
 
         // Check existence
-        let exists = dir.try_exists(&path).map_err(|e| {
+        let exists = match dir.try_exists(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("exists: failed to check path '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) { Ok(v) => v, Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags) };
 
         ok_val(
             Value::Int {
@@ -1335,6 +1658,7 @@ pub(crate) fn builtin_exists(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -1342,8 +1666,9 @@ pub(crate) fn builtin_exists(
 /// Returns a dict with the same schema as `stat`.
 pub(crate) fn builtin_stat_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1354,7 +1679,7 @@ pub(crate) fn builtin_stat_symlink(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1362,36 +1687,63 @@ pub(crate) fn builtin_stat_symlink(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("stat-symlink", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("stat-symlink", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "stat-symlink", thunk0.span.clone())?;
-        check_perm(
-            perms,
-            "Statable",
-            perms.statable,
-            "stat-symlink",
-            call_span.clone(),
-        )?;
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "stat-symlink", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(perms, "Statable", perms.statable, "stat-symlink", call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("stat-symlink", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("stat-symlink", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get metadata without following symlinks
-        let metadata = dir.symlink_metadata(&path).map_err(|e| {
+        let metadata = match dir.symlink_metadata(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("stat-symlink: failed to get metadata for '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Determine file type
         let file_type = if metadata.is_dir() {
@@ -1411,23 +1763,23 @@ pub(crate) fn builtin_stat_symlink(
                 match t.into_std().duration_since(UNIX_EPOCH) {
                     Ok(d) => Some(d.as_secs() as i64),
                     Err(e) => {
-                        return Err(Diagnostic::error(
+                        return crate::error::DiagnosticResult::err(Diagnostic::error(
                             KIND,
                             format!("stat-symlink: mtime is before Unix epoch: {e}"),
                             call_span.clone(),
-                        )
-                        .into())
+                        ))
+                        .with_diagnostics(_dr_diags)
                     }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => None, // platform has no mtime
             Err(e) => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("stat-symlink: failed to read mtime: {e}"),
                     call_span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
@@ -1442,87 +1794,127 @@ pub(crate) fn builtin_stat_symlink(
 
         // Build metadata dict
         let mut dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        let (result, diags) = ok_val(string_val(&path), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("name".into()),
-            ok_val(string_val(&path), call_span.clone())?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(string_val(file_type), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("type".into()),
-            ok_val(string_val(file_type), call_span.clone())?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: metadata.len() as i64,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("size".into()),
-            ok_val(
-                Value::Int {
-                    n: metadata.len() as i64,
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
         if let Some(mtime_secs) = mtime {
+            let (result, diags) = ok_val(
+                Value::Int {
+                    n: mtime_secs,
+                    type_val: Some(crate::type_infer::make_typevalue_nominal(
+                        crate::value::TYPE_ID_INT,
+                    )),
+                },
+                call_span.clone(),
+            ).into_parts();
+            _dr_diags.extend(diags);
             dict.insert(
                 HashableValue::Str("mtime".into()),
-                ok_val(
-                    Value::Int {
-                        n: mtime_secs,
-                        type_val: Some(crate::type_infer::make_typevalue_nominal(
-                            crate::value::TYPE_ID_INT,
-                        )),
-                    },
-                    call_span.clone(),
-                )?,
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
         }
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: mode,
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("mode".into()),
-            ok_val(
-                Value::Int {
-                    n: mode,
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_dir() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-dir".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_dir() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_file() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-file".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_file() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
+        let (result, diags) = ok_val(
+            Value::Int {
+                n: if metadata.is_symlink() { 1 } else { 0 },
+                type_val: Some(crate::type_infer::make_typevalue_nominal(
+                    crate::value::TYPE_ID_INT,
+                )),
+            },
+            call_span.clone(),
+        ).into_parts();
+        _dr_diags.extend(diags);
         dict.insert(
             HashableValue::Str("is-symlink".into()),
-            ok_val(
-                Value::Int {
-                    n: if metadata.is_symlink() { 1 } else { 0 },
-                    type_val: Some(crate::type_infer::make_typevalue_nominal(
-                        crate::value::TYPE_ID_INT,
-                    )),
-                },
-                call_span.clone(),
-            )?,
+            match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            },
         );
 
         ok_val(
@@ -1535,6 +1927,7 @@ pub(crate) fn builtin_stat_symlink(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -1543,8 +1936,9 @@ pub(crate) fn builtin_stat_symlink(
 /// Returns empty dict on success.
 pub(crate) fn builtin_copy_file(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1555,7 +1949,7 @@ pub(crate) fn builtin_copy_file(
 
         // Expect 4 args: src DirCap, src path, dst DirCap, dst path
         if args.len() != 4 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1563,47 +1957,100 @@ pub(crate) fn builtin_copy_file(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("copy-file", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("copy-file", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
         let thunk3 = Arc::clone(&args[3]);
-        let src_dir_val = thunk0.require_value()?.clone();
-        let src_path_val = thunk1.require_value()?.clone();
-        let dst_dir_val = thunk2.require_value()?.clone();
-        let dst_path_val = thunk3.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let src_dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let src_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dst_dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk3.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dst_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract src DirCap and check permissions
-        let (src_dir, src_perms) =
-            extract_dir_cap(&ctx, &src_dir_val, "copy-file", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &src_dir_val, "copy-file", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (src_dir, src_perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             src_perms,
             "Readable",
             src_perms.readable,
             "copy-file",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract dst DirCap and check permissions
-        let (dst_dir, dst_perms) =
-            extract_dir_cap(&ctx, &dst_dir_val, "copy-file", thunk2.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dst_dir_val, "copy-file", thunk2.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dst_dir, dst_perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             dst_perms,
             "Writable",
             dst_perms.writable,
             "copy-file",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let src_path = require_string("copy-file", src_path_val, thunk1.span.clone(), &ctx)?;
-        let dst_path = require_string("copy-file", dst_path_val, thunk3.span.clone(), &ctx)?;
+        let (result, diags) = require_string("copy-file", src_path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let src_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("copy-file", dst_path_val, thunk3.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let dst_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Copy file using cap-std's efficient kernel-level copy
-        src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
+        match src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -1612,7 +2059,10 @@ pub(crate) fn builtin_copy_file(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -1623,7 +2073,7 @@ pub(crate) fn builtin_copy_file(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1632,8 +2082,9 @@ pub(crate) fn builtin_copy_file(
 /// Returns empty dict on success.
 pub(crate) fn builtin_symlink(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1644,7 +2095,7 @@ pub(crate) fn builtin_symlink(
 
         // Expect 3 args: DirCap, target, link path
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1652,34 +2103,74 @@ pub(crate) fn builtin_symlink(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("symlink", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("symlink", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let target_val = thunk1.require_value()?.clone();
-        let link_path_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let target_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let link_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "symlink", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "symlink", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Symlinkable",
             perms.symlinkable,
             "symlink",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let target = require_string("symlink", target_val, thunk1.span.clone(), &ctx)?;
-        let link_path = require_string("symlink", link_path_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("symlink", target_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let target = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("symlink", link_path_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let link_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Create symlink (platform-specific)
         #[cfg(unix)]
-        dir.symlink(&target, &link_path).map_err(|e| {
+        match dir.symlink(&target, &link_path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -1688,7 +2179,10 @@ pub(crate) fn builtin_symlink(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         #[cfg(windows)]
         {
@@ -1697,15 +2191,15 @@ pub(crate) fn builtin_symlink(
             let is_dir = match dir.metadata(&target) {
                 Ok(m) => m.is_dir(),
                 Err(e) => {
-                    return Err(Diagnostic::error(
+                    return crate::error::DiagnosticResult::err(Diagnostic::error(
                         KIND,
                         format!("symlink: cannot stat target '{}': {}", target, e),
                         call_span.clone(),
-                    )
-                    .into());
+                    ))
+                    .with_diagnostics(_dr_diags);
                 }
             };
-            if is_dir {
+            match if is_dir {
                 dir.symlink_dir(&target, &link_path)
             } else {
                 dir.symlink_file(&target, &link_path)
@@ -1719,17 +2213,20 @@ pub(crate) fn builtin_symlink(
                     ),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
         }
 
         #[cfg(not(any(unix, windows)))]
         {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "symlink: not supported on this platform".to_string(),
                 call_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         ok_val(
@@ -1741,7 +2238,7 @@ pub(crate) fn builtin_symlink(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1751,8 +2248,9 @@ pub(crate) fn builtin_symlink(
 /// Only works on Unix-like systems.
 pub(crate) fn builtin_set_permissions(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1763,7 +2261,7 @@ pub(crate) fn builtin_set_permissions(
 
         // Expect 3 args: DirCap, path, mode
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1771,35 +2269,70 @@ pub(crate) fn builtin_set_permissions(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("set-permissions", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("set-permissions", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(()) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let mode_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let mode_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "set-permissions", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "set-permissions", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "PosixPermissions",
             perms.posix_permissions,
             "set-permissions",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("set-permissions", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("set-permissions", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract mode as Int
         let mode = match mode_val {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -1808,8 +2341,8 @@ pub(crate) fn builtin_set_permissions(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -1819,16 +2352,16 @@ pub(crate) fn builtin_set_permissions(
             use cap_std::fs::{Permissions, PermissionsExt};
 
             if !(0..=0o7777).contains(&mode) {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!("set-permissions: mode {} out of range (0-0o7777)", mode),
                     call_span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
 
             let permissions = Permissions::from_mode(mode as u32);
-            dir.set_permissions(&path, permissions).map_err(|e| {
+            match dir.set_permissions(&path, permissions).map_err(|e| {
                 Diagnostic::error(
                     KIND,
                     format!(
@@ -1837,17 +2370,20 @@ pub(crate) fn builtin_set_permissions(
                     ),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
         }
 
         #[cfg(not(unix))]
         {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 "set-permissions: only supported on Unix-like systems".to_string(),
                 call_span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         ok_val(
@@ -1859,7 +2395,7 @@ pub(crate) fn builtin_set_permissions(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -1870,8 +2406,9 @@ pub(crate) fn builtin_set_permissions(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -1882,7 +2419,7 @@ pub(crate) fn builtin_get_xattr(
 
         // Expect 3 args: DirCap, path, attribute name
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -1890,39 +2427,82 @@ pub(crate) fn builtin_get_xattr(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("get-xattr", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("get-xattr", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let name_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let name_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "get-xattr", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "get-xattr", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "get-xattr",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("get-xattr", path_val, thunk1.span.clone(), &ctx)?;
-        let attr_name = require_string("get-xattr", name_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("get-xattr", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("get-xattr", name_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let attr_name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get the file via DirCap
-        let file = dir.open(&path).map_err(|e| {
+        let file = match dir.open(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("get-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get the extended attribute using the /proc/self/fd/{fd} path.
         // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
@@ -1943,7 +2523,7 @@ pub(crate) fn builtin_get_xattr(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
             Ok(None) => {
                 // Attribute not found — return []
@@ -1956,17 +2536,17 @@ pub(crate) fn builtin_get_xattr(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            Err(e) => Err(Diagnostic::error(
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "get-xattr: failed to get attribute '{}' on '{}': {}",
                     attr_name, path, e
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -1974,15 +2554,16 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_get_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(Diagnostic::error(
+        let _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "get-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
-        )
-        .into())
+        ))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -1993,8 +2574,9 @@ pub(crate) fn builtin_get_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2005,7 +2587,7 @@ pub(crate) fn builtin_set_xattr(
 
         // Expect 4 args: DirCap, path, attribute name, value
         if args.len() != 4 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2013,39 +2595,89 @@ pub(crate) fn builtin_set_xattr(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("set-xattr", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("set-xattr", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
         let thunk3 = Arc::clone(&args[3]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let name_val = thunk2.require_value()?.clone();
-        let value_val = thunk3.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let name_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk3.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let value_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "set-xattr", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "set-xattr", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "set-xattr",
             call_span.clone(),
-        )?;
-        check_perm(
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Writable",
             perms.writable,
             "set-xattr",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("set-xattr", path_val, thunk1.span.clone(), &ctx)?;
-        let attr_name = require_string("set-xattr", name_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("set-xattr", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("set-xattr", name_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let attr_name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Extract value as Bytes
         let value_bytes = match value_val {
@@ -2053,7 +2685,7 @@ pub(crate) fn builtin_set_xattr(
                 source, start, end, ..
             } => source[start..end].to_vec(),
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2062,19 +2694,22 @@ pub(crate) fn builtin_set_xattr(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk3.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         // Get the file via DirCap
-        let file = dir.open(&path).map_err(|e| {
+        let file = match dir.open(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("set-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Set the extended attribute using the /proc/self/fd/{fd} path.
         // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
@@ -2082,7 +2717,7 @@ pub(crate) fn builtin_set_xattr(
         use std::os::unix::io::AsRawFd;
         let raw_fd = file.as_raw_fd();
         let proc_path = format!("/proc/self/fd/{}", raw_fd);
-        xattr::set(&proc_path, &attr_name, &value_bytes).map_err(|e| {
+        match xattr::set(&proc_path, &attr_name, &value_bytes).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -2091,7 +2726,10 @@ pub(crate) fn builtin_set_xattr(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -2102,22 +2740,23 @@ pub(crate) fn builtin_set_xattr(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_set_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(Diagnostic::error(
+        let _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "set-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
-        )
-        .into())
+        ))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -2128,8 +2767,9 @@ pub(crate) fn builtin_set_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2140,7 +2780,7 @@ pub(crate) fn builtin_remove_xattr(
 
         // Expect 3 args: DirCap, path, attribute name
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2148,46 +2788,94 @@ pub(crate) fn builtin_remove_xattr(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("remove-xattr", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("remove-xattr", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let name_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let name_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "remove-xattr", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "remove-xattr", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "remove-xattr",
             call_span.clone(),
-        )?;
-        check_perm(
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Writable",
             perms.writable,
             "remove-xattr",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("remove-xattr", path_val, thunk1.span.clone(), &ctx)?;
-        let attr_name = require_string("remove-xattr", name_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("remove-xattr", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("remove-xattr", name_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let attr_name = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get the file via DirCap
-        let file = dir.open(&path).map_err(|e| {
+        let file = match dir.open(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("remove-xattr: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Remove the extended attribute using the /proc/self/fd/{fd} path.
         // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
@@ -2205,7 +2893,7 @@ pub(crate) fn builtin_remove_xattr(
                     )),
                 },
                 call_span,
-            ),
+            ).with_diagnostics(_dr_diags),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // ENODATA — attribute doesn't exist, no-op gracefully
                 ok_val(
@@ -2217,17 +2905,17 @@ pub(crate) fn builtin_remove_xattr(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            Err(e) => Err(Diagnostic::error(
+            Err(e) => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "remove-xattr: failed to remove attribute '{}' on '{}': {}",
                     attr_name, path, e
                 ),
                 call_span,
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -2235,15 +2923,16 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_remove_xattr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(Diagnostic::error(
+        let _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "remove-xattr: extended attributes are only supported on Linux".to_string(),
             call_span,
-        )
-        .into())
+        ))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -2254,8 +2943,9 @@ pub(crate) fn builtin_remove_xattr(
 #[cfg(target_os = "linux")]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2266,7 +2956,7 @@ pub(crate) fn builtin_list_xattrs(
 
         // Expect 2 args: DirCap, path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2274,36 +2964,69 @@ pub(crate) fn builtin_list_xattrs(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("list-xattrs", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("list-xattrs", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "list-xattrs", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "list-xattrs", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "list-xattrs",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("list-xattrs", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("list-xattrs", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Get the file via DirCap
-        let file = dir.open(&path).map_err(|e| {
+        let file = match dir.open(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("list-xattrs: failed to open file '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // List extended attributes using the /proc/self/fd/{fd} path.
         // cap_std::fs::File does not implement xattr::FileExt, so we use the raw fd
@@ -2311,7 +3034,7 @@ pub(crate) fn builtin_list_xattrs(
         use std::os::unix::io::AsRawFd;
         let raw_fd = file.as_raw_fd();
         let proc_path = format!("/proc/self/fd/{}", raw_fd);
-        let names = xattr::list(&proc_path).map_err(|e| {
+        let names = match xattr::list(&proc_path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -2320,44 +3043,53 @@ pub(crate) fn builtin_list_xattrs(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Convert names to an integer-keyed Dict of Strings
         use crate::value::string_val;
-        let mut result: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();
         for (i, name) in names.into_iter().enumerate() {
             let name_str = name.to_string_lossy().to_string();
-            result.insert(
+            let (result, diags) = ok_val(string_val(&name_str), call_span.clone()).into_parts();
+            _dr_diags.extend(diags);
+            entries.insert(
                 HashableValue::Int(i as i64),
-                ok_val(string_val(&name_str), call_span.clone())?,
+                match result {
+                    Ok(v) => v,
+                    Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+                },
             );
         }
 
         ok_val(
             Value::Dict {
-                entries: result,
+                entries,
                 type_decl_id: TYPE_ID_DICT,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
                     crate::value::TYPE_ID_DICT,
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn builtin_list_xattrs(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
         let BuiltinArgs { call_span, .. } = ctx_arg;
-        Err(Diagnostic::error(
+        let _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+        crate::error::DiagnosticResult::err(Diagnostic::error(
             KIND,
             "list-xattrs: extended attributes are only supported on Linux".to_string(),
             call_span,
-        )
-        .into())
+        ))
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -2365,8 +3097,9 @@ pub(crate) fn builtin_list_xattrs(
 /// Takes a DirCap and String path, returns Null.
 pub(crate) fn builtin_make_dir(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2377,7 +3110,7 @@ pub(crate) fn builtin_make_dir(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2385,36 +3118,69 @@ pub(crate) fn builtin_make_dir(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("make-dir", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("make-dir", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "make-dir", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "make-dir", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Writable",
             perms.writable,
             "make-dir",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("make-dir", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("make-dir", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Create directory (and parents)
-        dir.create_dir_all(&path).map_err(|e| {
+        match dir.create_dir_all(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("make-dir: failed to create directory '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -2425,7 +3191,7 @@ pub(crate) fn builtin_make_dir(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2434,8 +3200,9 @@ pub(crate) fn builtin_make_dir(
 /// Tries to remove as file first, then as directory.
 pub(crate) fn builtin_remove(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2446,7 +3213,7 @@ pub(crate) fn builtin_remove(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2454,31 +3221,61 @@ pub(crate) fn builtin_remove(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("remove", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("remove", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "remove", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "remove", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Deletable",
             perms.deletable,
             "remove",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("remove", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("remove", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Try to remove as file first, then as directory
         if let Err(file_err) = dir.remove_file(&path) {
-            dir.remove_dir(&path).map_err(|dir_err| {
+            match dir.remove_dir(&path).map_err(|dir_err| {
                 Diagnostic::error(
                     KIND,
                     format!(
@@ -2487,7 +3284,10 @@ pub(crate) fn builtin_remove(
                     ),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
         }
 
         ok_val(
@@ -2499,7 +3299,7 @@ pub(crate) fn builtin_remove(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2507,8 +3307,9 @@ pub(crate) fn builtin_remove(
 /// Takes a DirCap, old path String, and new path String, returns Null.
 pub(crate) fn builtin_rename(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2519,7 +3320,7 @@ pub(crate) fn builtin_rename(
 
         // Expect 3 args: DirCap, String old_path, String new_path
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2527,33 +3328,73 @@ pub(crate) fn builtin_rename(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("rename", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("rename", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let old_path_val = thunk1.require_value()?.clone();
-        let new_path_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let old_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let new_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "rename", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "rename", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Renameable",
             perms.renameable,
             "rename",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let old_path = require_string("rename", old_path_val, thunk1.span.clone(), &ctx)?;
-        let new_path = require_string("rename", new_path_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("rename", old_path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let old_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("rename", new_path_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let new_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Rename (both source and dest are in the same DirCap)
-        dir.rename(&old_path, dir, &new_path).map_err(|e| {
+        match dir.rename(&old_path, dir, &new_path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!(
@@ -2562,7 +3403,10 @@ pub(crate) fn builtin_rename(
                 ),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -2573,7 +3417,7 @@ pub(crate) fn builtin_rename(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2583,8 +3427,9 @@ pub(crate) fn builtin_rename(
 /// Takes a DirCap, existing path String, and link path String, returns Null.
 pub(crate) fn builtin_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2595,7 +3440,7 @@ pub(crate) fn builtin_link(
 
         // Expect 3 args: DirCap, String existing_path, String link_path
         if args.len() != 3 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2603,27 +3448,67 @@ pub(crate) fn builtin_link(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("link", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("link", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
-        let dir_val = thunk0.require_value()?.clone();
-        let existing_path_val = thunk1.require_value()?.clone();
-        let link_path_val = thunk2.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let existing_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let link_path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "link", thunk0.span.clone())?;
-        check_perm(perms, "Writable", perms.writable, "link", call_span.clone())?;
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "link", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(perms, "Writable", perms.writable, "link", call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let existing_path = require_string("link", existing_path_val, thunk1.span.clone(), &ctx)?;
-        let link_path = require_string("link", link_path_val, thunk2.span.clone(), &ctx)?;
+        let (result, diags) = require_string("link", existing_path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let existing_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("link", link_path_val, thunk2.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let link_path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Create hard link
-        dir.hard_link(&existing_path, dir, &link_path)
+        match dir.hard_link(&existing_path, dir, &link_path)
             .map_err(|e| {
                 Diagnostic::error(
                     KIND,
@@ -2633,7 +3518,10 @@ pub(crate) fn builtin_link(
                     ),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Dict {
@@ -2644,7 +3532,7 @@ pub(crate) fn builtin_link(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2652,8 +3540,9 @@ pub(crate) fn builtin_link(
 /// Takes a DirCap and String path, returns the target path as a String.
 pub(crate) fn builtin_read_link(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2664,7 +3553,7 @@ pub(crate) fn builtin_read_link(
 
         // Expect 2 args: DirCap, String path
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2672,39 +3561,72 @@ pub(crate) fn builtin_read_link(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("read-link", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("read-link", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&ctx, &dir_val, "read-link", thunk0.span.clone())?;
-        check_perm(
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "read-link", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = check_perm(
             perms,
             "Readable",
             perms.readable,
             "read-link",
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        let path = require_string("read-link", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("read-link", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Read symlink target
-        let target = dir.read_link(&path).map_err(|e| {
+        let target = match dir.read_link(&path).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("read-link: failed to read symlink '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let target_str = target.to_string_lossy().to_string();
-        ok_val(string_val(&target_str), call_span)
+        ok_val(string_val(&target_str), call_span).with_diagnostics(_dr_diags)
     })
 }
 
@@ -2729,8 +3651,9 @@ pub(crate) fn builtin_read_link(
 /// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
 pub(crate) fn builtin_file_open(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2740,7 +3663,7 @@ pub(crate) fn builtin_file_open(
         } = ctx_arg;
 
         if args.len() != 5 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2748,31 +3671,70 @@ pub(crate) fn builtin_file_open(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-file-open", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
         let thunk2 = Arc::clone(&args[2]);
         let thunk3 = Arc::clone(&args[3]);
         let thunk4 = Arc::clone(&args[4]);
-        let dir_val = thunk0.require_value()?.clone();
-        let path_val = thunk1.require_value()?.clone();
-        let modes_raw = thunk2.require_value()?.clone();
-        let mode_raw = thunk3.require_value()?.clone();
-        let flags_raw = thunk4.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let dir_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let path_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk2.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let modes_raw = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk3.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let mode_raw = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk4.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let flags_raw = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
-        let (dir, _perms) =
-            extract_dir_cap(&ctx, &dir_val, "builtin-file-open", thunk0.span.clone())?;
-        let path = require_string("builtin-file-open", path_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = extract_dir_cap(&ctx, &dir_val, "builtin-file-open", thunk0.span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        let (dir, _perms) = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
+        let (result, diags) = require_string("builtin-file-open", path_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let path = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         // Third arg: positional list of mode strings — ["read"], ["write" "create" "truncate"], etc.
         let modes_dict = match modes_raw {
             Value::Dict { entries: map, .. } => map,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2781,8 +3743,8 @@ pub(crate) fn builtin_file_open(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk2.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
 
@@ -2792,7 +3754,7 @@ pub(crate) fn builtin_file_open(
         let mode_bits = match mode_raw {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2801,13 +3763,13 @@ pub(crate) fn builtin_file_open(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk3.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
         #[cfg(not(unix))]
         if !matches!(mode_raw, Value::Int { .. }) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2816,8 +3778,8 @@ pub(crate) fn builtin_file_open(
                     ctx.type_display_name(mode_raw.type_decl_id_of())
                 ),
                 thunk3.span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         // Fifth arg: raw open(2) flags (-1 = none).
@@ -2826,7 +3788,7 @@ pub(crate) fn builtin_file_open(
         let custom_flags = match flags_raw {
             Value::Int { n, .. } => n,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2835,13 +3797,13 @@ pub(crate) fn builtin_file_open(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk4.span.clone(),
-                )
-                .into());
+                ))
+                .with_diagnostics(_dr_diags);
             }
         };
         #[cfg(not(unix))]
         if !matches!(flags_raw, Value::Int { .. }) {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -2850,14 +3812,19 @@ pub(crate) fn builtin_file_open(
                     ctx.type_display_name(flags_raw.type_decl_id_of())
                 ),
                 thunk4.span.clone(),
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         use cap_std::fs::OpenOptions;
         let mut opts = OpenOptions::new();
         for (_, val_thunk) in modes_dict.iter() {
-            let val = crate::eval::materialize(val_thunk, Some(&call_span), &ctx).await?;
+            let (result, diags) = crate::eval::materialize(val_thunk, Some(&call_span), &ctx).await.into_parts();
+            _dr_diags.extend(diags);
+            let val = match result {
+                Ok(v) => v,
+                Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+            };
             if let Value::String {
                 ref source,
                 start,
@@ -2900,13 +3867,16 @@ pub(crate) fn builtin_file_open(
             }
         }
 
-        let file = dir.open_with(&path, &opts).map_err(|e| {
+        let file = match dir.open_with(&path, &opts).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-file-open: failed to open '{}': {}", path, e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::File {
@@ -2917,6 +3887,7 @@ pub(crate) fn builtin_file_open(
             },
             call_span,
         )
+        .with_diagnostics(_dr_diags)
     })
 }
 
@@ -2926,8 +3897,9 @@ pub(crate) fn builtin_file_open(
 /// Returns `Value::Bytes` with the bytes read, or empty `Value::Bytes` on EOF.
 pub(crate) fn builtin_file_read(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -2937,7 +3909,7 @@ pub(crate) fn builtin_file_read(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -2945,20 +3917,35 @@ pub(crate) fn builtin_file_read(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-file-read", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-file-read", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let file_val = thunk0.require_value()?.clone();
-        let n_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let file_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let n_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2967,23 +3954,23 @@ pub(crate) fn builtin_file_read(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let n = match n_val {
             Value::Int { n: i, .. } if i > 0 => i as usize,
             Value::Int { .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-file-read: byte count must be positive".to_string(),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -2992,32 +3979,35 @@ pub(crate) fn builtin_file_read(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         if n > MAX_FILE_READ_BYTES {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "builtin-file-read: byte count {} exceeds maximum {} bytes",
                     n, MAX_FILE_READ_BYTES
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
 
         use std::io::Read;
         let mut buf = vec![0u8; n];
-        let bytes_read = file_rc.lock().unwrap().read(&mut buf).map_err(|e| {
+        let bytes_read = match file_rc.lock().unwrap().read(&mut buf).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-file-read: read failed: {}", e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         buf.truncate(bytes_read);
         let len = buf.len();
         ok_val(
@@ -3030,7 +4020,7 @@ pub(crate) fn builtin_file_read(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3040,8 +4030,9 @@ pub(crate) fn builtin_file_read(
 /// Returns the same `Value::File` it received, enabling handle threading.
 pub(crate) fn builtin_file_write(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3051,7 +4042,7 @@ pub(crate) fn builtin_file_write(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3059,20 +4050,35 @@ pub(crate) fn builtin_file_write(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-file-write", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-file-write", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let file_val = thunk0.require_value()?.clone();
-        let s_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let file_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let s_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3081,15 +4087,20 @@ pub(crate) fn builtin_file_write(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
-        let s = require_string("builtin-file-write", s_val, thunk1.span.clone(), &ctx)?;
+        let (result, diags) = require_string("builtin-file-write", s_val, thunk1.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let s = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         use std::io::Write;
-        file_rc
+        match file_rc
             .lock()
             .unwrap()
             .write_all(s.as_bytes())
@@ -3099,9 +4110,12 @@ pub(crate) fn builtin_file_write(
                     format!("builtin-file-write: write failed: {}", e),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        Ok(thunk0)
+        crate::error::DiagnosticResult::ok(thunk0).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3110,8 +4124,9 @@ pub(crate) fn builtin_file_write(
 /// Calls `std::io::Write::flush()`. Returns empty dict `[]`.
 pub(crate) fn builtin_file_flush(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3120,18 +4135,23 @@ pub(crate) fn builtin_file_flush(
             ..
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg(
+        let (result, diags) = crate::builtins::expect_one_arg(
             "builtin-file-flush",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let file_rc = match val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3140,19 +4160,22 @@ pub(crate) fn builtin_file_flush(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     Arc::clone(&args[0]).span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         use std::io::Write;
-        file_rc.lock().unwrap().flush().map_err(|e| {
+        match file_rc.lock().unwrap().flush().map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-file-flush: flush failed: {}", e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Int {
@@ -3162,7 +4185,7 @@ pub(crate) fn builtin_file_flush(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3172,8 +4195,9 @@ pub(crate) fn builtin_file_flush(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_close(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3182,13 +4206,18 @@ pub(crate) fn builtin_file_close(
             ..
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg(
+        let (result, diags) = crate::builtins::expect_one_arg(
             "builtin-file-close",
             &args,
             named.as_ref(),
             &ctx,
             call_span.clone(),
-        )?;
+        ).into_parts();
+        _dr_diags.extend(diags);
+        let val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         match val {
             Value::File { .. } => {
@@ -3202,9 +4231,9 @@ pub(crate) fn builtin_file_close(
                         )),
                     },
                     call_span,
-                )
+                ).with_diagnostics(_dr_diags)
             }
-            other => Err(Diagnostic::error(
+            other => return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "{}: expected {}, got {}",
@@ -3213,8 +4242,8 @@ pub(crate) fn builtin_file_close(
                     ctx.type_display_name(other.type_decl_id_of())
                 ),
                 Arc::clone(&args[0]).span.clone(),
-            )
-            .into()),
+            ))
+            .with_diagnostics(_dr_diags),
         }
     })
 }
@@ -3225,8 +4254,9 @@ pub(crate) fn builtin_file_close(
 /// Returns empty dict `[]`.
 pub(crate) fn builtin_file_seek(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3236,7 +4266,7 @@ pub(crate) fn builtin_file_seek(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3244,20 +4274,35 @@ pub(crate) fn builtin_file_seek(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-file-seek", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-file-seek", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
         let thunk1 = Arc::clone(&args[1]);
-        let file_val = thunk0.require_value()?.clone();
-        let pos_val = thunk1.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let file_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
+        let (result, diags) = thunk1.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let pos_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         let file_rc = match file_val {
             Value::File { inner: rc, .. } => rc,
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3266,23 +4311,23 @@ pub(crate) fn builtin_file_seek(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         let pos = match pos_val {
             Value::Int { n: i, .. } if i >= 0 => i as u64,
             Value::Int { .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-file-seek: position must be non-negative".to_string(),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3291,13 +4336,13 @@ pub(crate) fn builtin_file_seek(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk1.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         use std::io::Seek;
-        file_rc
+        match file_rc
             .lock()
             .unwrap()
             .seek(std::io::SeekFrom::Start(pos))
@@ -3307,7 +4352,10 @@ pub(crate) fn builtin_file_seek(
                     format!("builtin-file-seek: seek failed: {}", e),
                     call_span.clone(),
                 )
-            })?;
+            }) {
+            Ok(_v) => {},
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         ok_val(
             Value::Int {
@@ -3317,7 +4365,7 @@ pub(crate) fn builtin_file_seek(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3330,8 +4378,9 @@ pub(crate) fn builtin_file_seek(
 ///   `write: [fn [let s h] [builtin-write-stdout s h]]`
 pub(crate) fn builtin_write_stdout(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3341,7 +4390,7 @@ pub(crate) fn builtin_write_stdout(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3349,26 +4398,44 @@ pub(crate) fn builtin_write_stdout(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-write-stdout", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-write-stdout", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
-        let s_val = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let s_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
-        let s = require_string("builtin-write-stdout", s_val, thunk0.span.clone(), &ctx)?;
+        let (result, diags) = require_string("builtin-write-stdout", s_val, thunk0.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let s = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         use std::io::Write;
-        std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
+        match std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-write-stdout: {e}"),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        Ok(Arc::clone(&args[1]))
+        crate::error::DiagnosticResult::ok(Arc::clone(&args[1])).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3378,8 +4445,9 @@ pub(crate) fn builtin_write_stdout(
 /// h is passed through lazily — it is not materialized.
 pub(crate) fn builtin_write_stderr(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3389,7 +4457,7 @@ pub(crate) fn builtin_write_stderr(
         } = ctx_arg;
 
         if args.len() != 2 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3397,26 +4465,44 @@ pub(crate) fn builtin_write_stderr(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-write-stderr", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-write-stderr", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
-        let s_val = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let s_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
-        let s = require_string("builtin-write-stderr", s_val, thunk0.span.clone(), &ctx)?;
+        let (result, diags) = require_string("builtin-write-stderr", s_val, thunk0.span.clone(), &ctx).into_parts();
+        _dr_diags.extend(diags);
+        let s = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         use std::io::Write;
-        std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
+        match std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-write-stderr: write failed: {e}"),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
-        Ok(Arc::clone(&args[1]))
+        crate::error::DiagnosticResult::ok(Arc::clone(&args[1])).with_diagnostics(_dr_diags)
     })
 }
 
@@ -3426,8 +4512,9 @@ pub(crate) fn builtin_write_stderr(
 /// Returns `Value::Bytes` (empty on EOF).
 pub(crate) fn builtin_read_stdin(
     ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = Result<Arc<Thunk>, Box<crate::error::Diagnostic>>> + Send>> {
+) -> Pin<Box<dyn Future<Output = crate::error::DiagnosticResult<Arc<Thunk>>> + Send>> {
     Box::pin(async move {
+        let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
         let BuiltinArgs {
             args,
             named,
@@ -3437,7 +4524,7 @@ pub(crate) fn builtin_read_stdin(
         } = ctx_arg;
 
         if args.len() != 1 {
-            return Err(Diagnostic::error(
+            return crate::error::DiagnosticResult::err(Diagnostic::error(
                 KIND,
                 format!(
                     "arity mismatch: expected {}, got {}",
@@ -3445,26 +4532,36 @@ pub(crate) fn builtin_read_stdin(
                     args.len()
                 ),
                 call_span,
-            )
-            .into());
+            ))
+            .with_diagnostics(_dr_diags);
         }
-        reject_named("builtin-read-stdin", named.as_ref(), call_span.clone())?;
+        let (result, diags) = reject_named("builtin-read-stdin", named.as_ref(), call_span.clone()).into_parts();
+        _dr_diags.extend(diags);
+        match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
 
         let thunk0 = Arc::clone(&args[0]);
-        let n_val = thunk0.require_value()?.clone();
+        let (result, diags) = thunk0.require_value().into_parts();
+        _dr_diags.extend(diags);
+        let n_val = match result {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        }.clone();
 
         let n = match n_val {
             Value::Int { n: i, .. } if i > 0 => i as usize,
             Value::Int { .. } => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     "builtin-read-stdin: byte count must be positive".to_string(),
                     call_span,
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
             other => {
-                return Err(Diagnostic::error(
+                return crate::error::DiagnosticResult::err(Diagnostic::error(
                     KIND,
                     format!(
                         "{}: expected {}, got {}",
@@ -3473,20 +4570,23 @@ pub(crate) fn builtin_read_stdin(
                         ctx.type_display_name(other.type_decl_id_of())
                     ),
                     thunk0.span.clone(),
-                )
-                .into())
+                ))
+                .with_diagnostics(_dr_diags)
             }
         };
 
         use std::io::Read;
         let mut buf = vec![0u8; n];
-        let bytes_read = std::io::stdin().read(&mut buf).map_err(|e| {
+        let bytes_read = match std::io::stdin().read(&mut buf).map_err(|e| {
             Diagnostic::error(
                 KIND,
                 format!("builtin-read-stdin: read failed: {}", e),
                 call_span.clone(),
             )
-        })?;
+        }) {
+            Ok(v) => v,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(_dr_diags),
+        };
         buf.truncate(bytes_read);
         let len = buf.len();
         ok_val(
@@ -3499,7 +4599,7 @@ pub(crate) fn builtin_read_stdin(
                 )),
             },
             call_span,
-        )
+        ).with_diagnostics(_dr_diags)
     })
 }
 
