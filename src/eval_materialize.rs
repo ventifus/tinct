@@ -133,7 +133,7 @@ pub(crate) fn attach_materialization_context(
         }
     }
     if let Some(label) = origin {
-        let message = format!("in {}", label);
+        let message = format!("in function {}", label);
         if !err
             .labels
             .iter()
