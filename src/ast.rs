@@ -580,6 +580,39 @@ pub fn is_expr_annotation(ann: &Annotation) -> bool {
     matches!(ann, Annotation::Quote)
 }
 
+/// Extract the trace level from an annotation.
+/// Returns 0 if the annotation is absent or has no `trace` property.
+pub fn extract_trace_level(ann: Option<&Spanned<Annotation>>) -> u32 {
+    ann.and_then(|a| a.node.get_property(ANNOTATION_KEY_TRACE))
+        .and_then(|node| {
+            if let SurfaceExpression::Int(n) = &node.expr {
+                Some(*n as u32)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
+/// Extract the trace level from any SurfaceNode by checking:
+/// 1. VarRef annotation
+/// 2. TypeAssert annotation
+/// 3. Fn return annotation
+pub fn node_trace_level(node: &SurfaceNode) -> u32 {
+    match &node.expr {
+        SurfaceExpression::VarRef { annotation, .. } => {
+            extract_trace_level(annotation.as_ref())
+        }
+        SurfaceExpression::TypeAssert { annotation, .. } => {
+            extract_trace_level(Some(annotation))
+        }
+        SurfaceExpression::Fn {
+            return_ann, ..
+        } => extract_trace_level(return_ann.as_ref()),
+        _ => 0,
+    }
+}
+
 /// Default function for `Annotated.inner` when deserializing via `ExprConvert`.
 /// Returns a placeholder `Arc<SurfaceNode>` wrapping a `Placeholder` expression.
 /// This is only used when reconstructing an `Annotated` node from a dict repr that has no

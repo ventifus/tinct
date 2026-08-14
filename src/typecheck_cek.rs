@@ -463,6 +463,17 @@ async fn infer_step(
             name, annotation, ..
         } => {
             let ty = infer_var_ref(name, annotation.as_ref(), node, state, errors).await;
+            let trace_level = crate::ast::extract_trace_level(annotation.as_ref());
+            if trace_level >= 1 {
+                let ty_str = crate::eval::format_type_with_names(&ty, &state.type_display_names);
+                let mut diag = Diagnostic::info(
+                    KIND_TRACE,
+                    format!("trace-typecheck VarRef '{}' : {}", name, ty_str),
+                    node.span.clone(),
+                );
+                diag = diag.with_note(format!("scope depth: {}", state.current_scope.len()));
+                errors.push(diag);
+            }
             TypeCheckAction::Done(ty)
         }
 
@@ -565,9 +576,6 @@ async fn infer_step(
             if exprs.is_empty() {
                 // Empty sequential: fresh TypeVar (unconstrained position)
                 return TypeCheckAction::Done(state.fresh_type_var(&node.span));
-            }
-            if exprs.len() == 1 {
-                return TypeCheckAction::Eval(Arc::clone(&exprs[0]));
             }
 
             let intermediates = &exprs[0..exprs.len() - 1];
@@ -1332,8 +1340,35 @@ async fn apply_cont(
             // resolved_type OnceLock so the lowerer can carry it into CoreExpr::TypeAssert.
             // This is the canonical write — first write wins (OnceLock semantics), so
             // shared AST nodes visited multiple times still get the correct type.
-            if let SurfaceExpression::TypeAssert { resolved_type, .. } = &assert_node.expr {
+            if let SurfaceExpression::TypeAssert {
+                resolved_type,
+                annotation: ta_annotation,
+                ..
+            } = &assert_node.expr
+            {
                 resolved_type.set(Some(Arc::clone(&expected_resolved)));
+
+                let trace_level = crate::ast::extract_trace_level(Some(ta_annotation));
+                if trace_level >= 1 {
+                    let actual_str = crate::eval::format_type_with_names(
+                        &actual_resolved,
+                        &state.type_display_names,
+                    );
+                    let expected_str = crate::eval::format_type_with_names(
+                        &expected_resolved,
+                        &state.type_display_names,
+                    );
+                    let mut diag = Diagnostic::info(
+                        KIND_TRACE,
+                        format!(
+                            "trace-typecheck TypeAssert: actual={}, expected={}",
+                            actual_str, expected_str
+                        ),
+                        span.clone(),
+                    );
+                    diag = diag.with_note(format!("scope depth: {}", state.current_scope.len()));
+                    state.diagnostics.push(diag);
+                }
             }
 
             // Emit diagnostic for explicit @Unknown annotation
@@ -1501,8 +1536,10 @@ async fn apply_cont(
                         }
                     }
                 }
+                Some(TV_NEVER) | Some(TV_ERROR) => {
+                    TypeCheckAction::Done(make_typevalue_never())
+                }
                 _ => {
-                    // Not a TV_RECORD — gradual: can't type-check field access on unknown/non-record types
                     TypeCheckAction::Done(make_typevalue_unknown())
                 }
             }
@@ -1568,8 +1605,12 @@ async fn infer_var_ref(
     // Dispatch uses slot-based lookup via current_scope;
     // EffectPerform uses typeclass method signature instantiation.
     // No fallback — missing entry is a resolver bug.
-    let scheme: Option<TypeValue> = if let SurfaceExpression::VarRef { resolution, .. } = &node.expr
-    {
+    let resolution_ref = match &node.expr {
+        SurfaceExpression::VarRef { resolution, .. } => Some(resolution),
+        SurfaceExpression::Field { resolution, .. } => Some(resolution),
+        _ => None,
+    };
+    let scheme: Option<TypeValue> = if let Some(resolution) = resolution_ref {
         if let Some(Some(addr)) = resolution.get() {
             match addr {
                 crate::ast::VarAddr::EffectPerform {
@@ -1746,14 +1787,14 @@ async fn infer_var_ref(
                 }
             } // close match addr
         } else {
-            let resolution_status = if let SurfaceExpression::VarRef { resolution, .. } = &node.expr {
+            let resolution_status = if let Some(resolution) = resolution_ref {
                 match resolution.get() {
                     Some(Some(_)) => "resolved but no addr match (bug)",
                     Some(None) => "resolver visited, name not found in scope",
                     None => "resolver did not visit this node",
                 }
             } else {
-                "not a VarRef"
+                "not a VarRef or Field"
             };
             let mut diag = Diagnostic::error(
                 KIND,
@@ -1834,11 +1875,23 @@ async fn infer_var_ref(
         // genuinely exists in scope — the type checker simply doesn't have its type.
         // Emit a warning and return Unknown (gradual typing) rather than a false
         // "undefined variable" diagnostic.
-        if let crate::ast::SurfaceExpression::VarRef { resolution, .. } = &node.expr {
-            if let Some(Some(_)) = resolution.get() {
+        if let Some(resolution) = resolution_ref {
+            if let Some(Some(addr)) = resolution.get() {
+                let frame_info = if let crate::ast::VarAddr::Dispatch(depth, slot) = addr {
+                    let chain = &state.current_scope;
+                    let frame_ptr = if (*depth as usize) < chain.len() {
+                        let idx = chain.len() - 1 - *depth as usize;
+                        Arc::as_ptr(&chain[idx]) as usize
+                    } else {
+                        0
+                    };
+                    format!(" addr=Dispatch({},{}) frame_ptr={:#x} chain_len={}", depth, slot, frame_ptr, chain.len())
+                } else {
+                    String::new()
+                };
                 errors.push(Diagnostic::warn(
                     KIND,
-                    format!("no type declaration for '{}'", name),
+                    format!("no type declaration for '{}'{}", name, frame_info),
                     node.span.clone(),
                 ));
                 return make_typevalue_never();
@@ -3339,18 +3392,7 @@ async fn infer_fn_push_cont(
         }
     };
 
-    // Extract trace level from return annotation @[trace: N].
-    let trace_level: u32 = return_ann
-        .as_ref()
-        .and_then(|ann| ann.node.get_property(crate::ast::ANNOTATION_KEY_TRACE))
-        .and_then(|node| {
-            if let SurfaceExpression::Int(n) = &node.expr {
-                Some(*n as u32)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
+    let trace_level = crate::ast::extract_trace_level(return_ann.as_ref());
 
     // Push FnBody first (fires last: handles return type checking and fn type construction),
     // then push AfterBlock (fires first: handles parameter liveness via SLOTS-only BFS).
@@ -4758,14 +4800,34 @@ async fn enter_dict_scope(
     type_map: &mut Option<&mut TypeMap>,
     errors: &mut Vec<Diagnostic>,
 ) -> TypeValue {
-    if let Some(sf) = scope.get() {
-        state.current_scope.push(Arc::clone(sf));
+    // Resolve key names BEFORE pushing the Dict scope.
+    // The resolver walks key expressions in the outer scope (resolve.rs line 269-274),
+    // so VarRefs in computed keys must be type-checked relative to the enclosing scope.
+    let mut auto_index: i64 = 0;
+    let mut pre_resolved_keys: Vec<Option<String>> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let name =
+            entry_key_name(&entry.node, &mut auto_index, state, errors, type_map).await;
+        pre_resolved_keys.push(name);
     }
+
+    let scope_frame = match scope.get() {
+        Some(sf) => Arc::clone(sf),
+        None => Arc::new(crate::symbol_table::SymbolTable::new()),
+    };
+    state.current_scope.push(scope_frame);
     let body_slot_base_pre: Option<u32> = entries
         .first()
         .and_then(|e| e.node.assigned_slot.get().copied());
     let (record_type, _, mut dict_errs) =
-        typecheck_letrec_group(entries, state, type_map, body_slot_base_pre).await;
+        typecheck_letrec_group(
+            entries,
+            pre_resolved_keys,
+            state,
+            type_map,
+            body_slot_base_pre,
+        )
+        .await;
     errors.append(&mut dict_errs);
     record_type
 }
@@ -4775,9 +4837,13 @@ async fn enter_dict_scope(
 /// Called by:
 /// - `enter_dict_scope` (the single code path for all dict scope management)
 /// - `process_document` (top-level dict expressions in a document)
-/// - Recursively for nested Dict values within the SCC per-entry loop
+///
+/// `pre_resolved_keys` contains key names resolved by `enter_dict_scope` in the
+/// OUTER scope (before the Dict's scope was pushed), matching the resolver's
+/// behavior (resolve.rs line 269-274: key expressions in outer scope).
 pub(crate) async fn typecheck_letrec_group(
     entries: &[Spanned<SurfaceEntry>],
+    pre_resolved_keys: Vec<Option<String>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     slot_base_override: Option<u32>,
@@ -4794,13 +4860,10 @@ pub(crate) async fn typecheck_letrec_group(
     // IndexMap preserves insertion order so constructor scheme ordering is deterministic.
     let mut ctor_schemes: indexmap::IndexMap<String, TypeValue> = indexmap::IndexMap::new();
     let mut key_entries: Vec<(Option<String>, bool, bool)> = Vec::new();
-    let mut auto_index: i64 = 0;
     let mut errors: Vec<Diagnostic> = Vec::new();
 
-    // Step 1: Key resolution
-    for entry in entries {
-        let key_name =
-            entry_key_name(&entry.node, &mut auto_index, state, &mut errors, type_map).await;
+    // Step 1: Key resolution — use pre-resolved keys from enter_dict_scope.
+    for (entry, key_name) in entries.iter().zip(pre_resolved_keys.into_iter()) {
         let is_type_decl = matches!(&entry.node.value.expr, SurfaceExpression::TypeDecl { .. });
         let is_static_key = entry.node.key.as_ref().is_some_and(|k| {
             matches!(
@@ -5062,25 +5125,10 @@ pub(crate) async fn typecheck_letrec_group(
                 }
                 state.current_binding = Some(current_entry_id);
 
-                // Infer the entry value using run_typecheck (CEK path, no Rust stack recursion).
-                // For nested Dict values, call typecheck_letrec_group directly to capture schemes.
-                let value_ty = if let SurfaceExpression::Dict {
-                    entries: nested_entries,
-                    ..
-                } = &entry.node.value.expr
-                {
-                    let (ty, _schemes, mut nested_errs) = Box::pin(typecheck_letrec_group(
-                        nested_entries,
-                        state,
-                        type_map,
-                        None,
-                    ))
-                    .await;
-                    errors.append(&mut nested_errs);
-                    let resolved = state.apply(&ty);
-                    entry.node.value.inferred_type_decl_id.set(resolved);
-                    Ok(ty)
-                } else {
+                // Infer the entry value using run_typecheck (CEK path).
+                // No special-casing for Dict values — run_typecheck dispatches to
+                // enter_dict_scope which handles scope push/pop correctly for all Dicts.
+                let value_ty = {
                     let mut local_errors = Vec::new();
                     let mut local_stack = Vec::new();
                     let ty = Box::pin(run_typecheck(
@@ -5214,34 +5262,17 @@ pub(crate) async fn typecheck_letrec_group(
             } else {
                 // Computed-key entry: type-check the value to resolve VarRefs for
                 // liveness tracking, but don't insert into field_types (no static name).
-                if let SurfaceExpression::Dict {
-                    entries: nested_entries,
-                    ..
-                } = &entry.node.value.expr
-                {
-                    let (ty, _schemes, mut nested_errs) = Box::pin(typecheck_letrec_group(
-                        nested_entries,
-                        state,
-                        type_map,
-                        None,
-                    ))
-                    .await;
-                    errors.append(&mut nested_errs);
-                    let resolved = state.apply(&ty);
-                    entry.node.value.inferred_type_decl_id.set(resolved);
-                } else {
-                    let mut local_errors = Vec::new();
-                    let mut local_stack = Vec::new();
-                    let _ = Box::pin(run_typecheck(
-                        &entry.node.value,
-                        state,
-                        &mut local_errors,
-                        type_map,
-                        &mut local_stack,
-                    ))
-                    .await;
-                    errors.append(&mut local_errors);
-                }
+                let mut local_errors = Vec::new();
+                let mut local_stack = Vec::new();
+                let _ = Box::pin(run_typecheck(
+                    &entry.node.value,
+                    state,
+                    &mut local_errors,
+                    type_map,
+                    &mut local_stack,
+                ))
+                .await;
+                errors.append(&mut local_errors);
             }
         }
 
@@ -5480,28 +5511,70 @@ pub(crate) async fn typecheck_letrec_group(
                     );
 
                     state.constraints = saved_constraints;
-                    let _ = scheme; // schemes are written to SymbolTable via set_type_scheme
+
+                    // Write the generalized scheme to the SymbolTable immediately.
+                    // Subsequent SCCs (processed in topological order) need to see
+                    // this entry's scheme when resolving VarRefs.
+                    if let Some(slot) = entry_slots[idx] {
+                        if let Some(frame) = state.current_scope.last() {
+                            frame.set_type_scheme(slot, Arc::clone(&scheme));
+                        }
+                    }
+
+                    let trace_level = entry.node.key.as_ref().and_then(|k| {
+                        if let SurfaceExpression::VarRef { annotation, .. } = &k.expr {
+                            Some(crate::ast::extract_trace_level(annotation.as_ref()))
+                        } else {
+                            None
+                        }
+                    }).unwrap_or(0);
+                    if trace_level >= 1 {
+                        let ty_str = crate::eval::format_type_with_names(
+                            &scheme, &state.type_display_names,
+                        );
+                        errors.push(Diagnostic::info(
+                            KIND_TRACE,
+                            format!(
+                                "trace-typecheck scheme write '{}' slot={:?} type={}",
+                                name, entry_slots[idx], ty_str,
+                            ),
+                            entry.span.clone(),
+                        ));
+                    }
                 }
             }
         }
-    }
 
-    // Build final schemes map from field_types directly (Env is gone).
-    let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
-    for (idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
-        if let Some(name) = key_name {
-            if let Some(slot) = entry_slots[idx] {
-                if let Some(ty) = field_types.get(name) {
-                    schemes.insert(name.clone(), Arc::clone(ty));
-                    // Write type scheme into the current SymbolTable at the resolver-assigned slot.
-                    if let Some(frame) = state.current_scope.last() {
-                        frame.set_type_scheme(slot, Arc::clone(ty));
+        // Write TypeDecl schemes at the SCC boundary too.
+        // TypeDecl entries are skipped by generalization (their schemes come from
+        // type declaration registration), but their field_types entry still needs
+        // to be written to the SymbolTable for VarRef lookups in subsequent SCCs.
+        for &idx in &scc.indices {
+            let (ref key_name, is_type_decl, _) = key_entries[idx];
+            if is_type_decl {
+                if let Some(name) = key_name {
+                    if let Some(slot) = entry_slots[idx] {
+                        if let Some(ty) = field_types.get(name) {
+                            if let Some(frame) = state.current_scope.last() {
+                                frame.set_type_scheme(slot, Arc::clone(ty));
+                            }
+                        }
                     }
                 }
             }
         }
     }
-    // Merge ADT constructor schemes.
+
+    // Build final schemes map from field_types (return value only — SymbolTable
+    // writes already happened at each SCC boundary above).
+    let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
+    for (_idx, (key_name, _is_type_decl, _)) in key_entries.iter().enumerate() {
+        if let Some(name) = key_name {
+            if let Some(ty) = field_types.get(name) {
+                schemes.insert(name.clone(), Arc::clone(ty));
+            }
+        }
+    }
     for (name, scheme) in ctor_schemes {
         schemes
             .entry(name.clone())

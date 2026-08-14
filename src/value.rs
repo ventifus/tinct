@@ -36,6 +36,18 @@ pub struct FnAnnotation {
     pub extra: indexmap::IndexMap<String, crate::value::Value>,
 }
 
+impl FnAnnotation {
+    pub fn trace_level(&self) -> u32 {
+        self.extra
+            .get(crate::ast::ANNOTATION_KEY_TRACE)
+            .and_then(|v| match v {
+                crate::value::Value::Int { n, .. } => Some(*n as u32),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+}
+
 /// Arguments passed to built-in functions.
 ///
 /// Owns its arguments to allow capture in `async move` blocks that must be `'static`.

@@ -1467,6 +1467,7 @@ mod tests {
 
     use crate::ast::{CoreExpr, Spanned, VarAddr};
     use crate::eval::EvalContext;
+    use crate::rust_span;
     use crate::symbol_table::SymbolTable;
     use crate::test_util::test_span;
     use crate::value::{string_val, Thunk, Value};
@@ -1571,7 +1572,7 @@ mod tests {
             span.clone(),
         ));
         let mut st = SymbolTable::new();
-        st.insert("test-binding".to_string(), 0, None);
+        st.insert("test-binding".to_string(), 0, rust_span!());
         let frame = Arc::new(st);
         frame.set_value(0, Arc::clone(&known_thunk));
         let scope = vec![frame];

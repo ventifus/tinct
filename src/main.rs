@@ -2167,7 +2167,25 @@ async fn run_eval(args: RunArgs) -> tinct::DiagnosticResult<()> {
     let initial_scope = {
         let cap_entries: indexmap::IndexMap<String, Arc<tinct::Thunk>> =
             capabilities.into_iter().collect();
-        tinct::SymbolTable::extend_chain(&tinct::SymbolTable::empty_chain(), cap_entries)
+        let chain = tinct::SymbolTable::extend_chain(&tinct::SymbolTable::empty_chain(), cap_entries);
+        // Derive type schemes for CLI-injected capabilities from their values.
+        // The type checker reads type schemes from scope chain entries; without this,
+        // capabilities would appear as untyped bindings.
+        if let Some(frame) = chain.last() {
+            for (_, entry) in frame.entries().iter() {
+                if let Some(thunk) = entry.value.get() {
+                    if let Some(Ok(val)) = thunk.peek_result() {
+                        let id = val.type_decl_id_of();
+                        if id != 0 {
+                            let _ = entry.type_scheme.set(
+                                tinct::make_typevalue_nominal(id),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        chain
     };
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally

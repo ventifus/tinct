@@ -224,29 +224,9 @@ fn lower_expr(
             annotation,
             ..
         } => {
-            match resolution.get() {
+            let trace_level = crate::ast::extract_trace_level(annotation.as_ref());
+            let result = match resolution.get() {
                 Some(None) => {
-                    // Name not in scope — resolver already emitted a diagnostic (or
-                    // intentionally suppressed it in pattern position).
-                    //
-                    // `_` is the conventional wildcard name: emit Placeholder so it
-                    // continues to act as an unconditional wildcard in pattern position
-                    // (same semantics as `...`). This is a language-level convention —
-                    // `_` means "don't care" everywhere patterns appear.
-                    //
-                    // All other undefined names emit a sentinel Var. Placeholder (`...`)
-                    // is the unconditional wildcard; an undefined VarRef for any other
-                    // name must NOT act as a wildcard in pattern position, because
-                    // `x: body` where `x` is out of scope should produce a non-matching
-                    // pin (MatchExhaustion), not a match-everything arm.
-                    //
-                    // The sentinel addr Dispatch(0, u32::MAX) is never assigned by
-                    // the resolver to real bindings (slot indices are assigned 0..N-1).
-                    // In pattern position, bind_or_pin_name detects this sentinel and
-                    // returns Ok(false) (non-match). In body position, eval_core's Var
-                    // arm looks up group[u32::MAX as usize] → None →
-                    // Diagnostic (undefined variable), which is the correct deferred error
-                    // for referencing an undefined name.
                     if name == "_" {
                         CoreExpr::Placeholder {
                             inferred_type: make_typevalue_unknown(),
@@ -273,7 +253,20 @@ fn lower_expr(
                         inferred_type: make_typevalue_unknown(),
                     }
                 }
+            };
+            if trace_level >= 1 {
+                let addr_str = match resolution.get() {
+                    Some(Some(addr)) => format!("{:?}", addr),
+                    Some(None) => "unresolved".to_string(),
+                    None => "not visited by resolver".to_string(),
+                };
+                diagnostics.push(Diagnostic::info(
+                    KIND_TRACE,
+                    format!("trace-lower VarRef '{}' addr={}", name, addr_str),
+                    arc.span.clone(),
+                ));
             }
+            result
         }
 
         SurfaceExpression::Field {
@@ -626,17 +619,7 @@ fn lower_expr(
 
             // Emit trace diagnostic if return_ann has trace: property with value >= 1.
             // Value-based guard matches typecheck and runtime phases: trace: 0 does not fire.
-            let trace_level: u32 = return_ann
-                .as_ref()
-                .and_then(|ann| ann.node.get_property(crate::ast::ANNOTATION_KEY_TRACE))
-                .and_then(|node| {
-                    if let crate::ast::SurfaceExpression::Int(n) = &node.expr {
-                        Some(*n as u32)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0);
+            let trace_level = crate::ast::extract_trace_level(return_ann.as_ref());
             if trace_level >= 1 {
                 let sig = resolved_fn_type
                     .as_ref()
@@ -669,17 +652,26 @@ fn lower_expr(
             expr: inner,
             resolved_type,
         } => {
-            // Select the appropriate TypeAssertCheck variant:
-            // - If the type checker ran and produced a concrete TypeValue → Resolved(tv)
-            //   (skips runtime annotation parsing; check is a pre-resolved Arc<Value>)
-            // - If type checker did not run (resolved_type OnceLock not set) → Source { annotation }
-            //   (runtime evaluates the annotation to determine the type to check against)
+            let trace_level = crate::ast::extract_trace_level(Some(annotation));
             let check = match resolved_type.get().cloned() {
                 Some(tv) if !is_typevalue_unknown(&tv) => crate::ast::TypeAssertCheck::Resolved(tv),
                 _ => crate::ast::TypeAssertCheck::Source {
                     annotation: annotation.clone(),
                 },
             };
+            if trace_level >= 1 {
+                let check_str = match &check {
+                    crate::ast::TypeAssertCheck::Resolved(tv) => {
+                        crate::eval::format_type_with_names(tv, type_display_names)
+                    }
+                    crate::ast::TypeAssertCheck::Source { .. } => "source (unresolved)".to_string(),
+                };
+                diagnostics.push(Diagnostic::info(
+                    KIND_TRACE,
+                    format!("trace-lower TypeAssert check={}", check_str),
+                    arc.span.clone(),
+                ));
+            }
             CoreExpr::TypeAssert {
                 expr: Arc::new(lower_inner(inner, diagnostics, type_display_names)),
                 check,

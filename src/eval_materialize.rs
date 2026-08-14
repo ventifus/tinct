@@ -1381,15 +1381,9 @@ pub(crate) async fn apply_cont(
                                 // thunks for those positions, which is the best we can do.
                             }
 
-                            // trace: annotation — log call inputs when trace level >= 1.
-                            // Extract trace level from annotation.extra.trace (Value::Int).
-                            let trace_level: u32 = annotation
+                            let trace_level = annotation
                                 .as_deref()
-                                .and_then(|ann| ann.extra.get(crate::ast::ANNOTATION_KEY_TRACE))
-                                .and_then(|v| match v {
-                                    crate::value::Value::Int { n, .. } => Some(*n as u32),
-                                    _ => None,
-                                })
+                                .map(|ann| ann.trace_level())
                                 .unwrap_or(0);
                             if trace_level >= 1 {
                                 let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");

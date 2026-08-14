@@ -2141,7 +2141,7 @@ mod tests {
         let builtin_defs = crate::builtins_core::core_builtins();
         let mut scope = crate::symbol_table::SymbolTable::new();
         for (i, def) in builtin_defs.iter().enumerate() {
-            scope.insert(def.name.to_string(), i as u32, None);
+            scope.insert(def.name.to_string(), i as u32, rust_span!());
         }
         let scope = Arc::new(scope);
         for (i, def) in builtin_defs.iter().enumerate() {
@@ -5861,7 +5861,7 @@ mod tests {
 
         // Seed resolver with % in scope for tests.
         let mut seed_table = crate::symbol_table::SymbolTable::new();
-        seed_table.insert("%".to_string(), 0, None);
+        seed_table.insert("%".to_string(), 0, rust_span!());
         let seed_table = Arc::new(seed_table);
         let seed_scope = vec![Arc::clone(&seed_table)];
         let _result = crate::resolve::resolve_program(&program, &seed_scope, &Vec::new());

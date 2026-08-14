@@ -23,6 +23,7 @@ use crate::symbol_table::SymbolTable;
 use std::sync::Arc;
 
 const KIND: &str = "resolve";
+const KIND_TRACE: &str = "trace-resolve";
 
 /// Sentinel slot value stored in SymbolTable entries that represent EffectPerform
 /// typeclass method bindings. When `resolve_name` encounters an entry with this
@@ -214,11 +215,15 @@ impl SurfaceResolver {
     fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
         match expr {
             SurfaceExpression::VarRef {
-                name, resolution, ..
+                name,
+                resolution,
+                annotation,
+                ..
             } => {
-                if let Some(addr) = self.resolve_name(name) {
+                let resolved = self.resolve_name(name);
+                if let Some(addr) = &resolved {
                     resolution.set(Some(addr.clone()));
-                    self.table.insert(node_id(arc), addr);
+                    self.table.insert(node_id(arc), addr.clone());
                 } else {
                     resolution.set(None);
                     let mut diag = Diagnostic::error(
@@ -228,6 +233,31 @@ impl SurfaceResolver {
                     );
                     for note in crate::symbol_table::SymbolTable::scope_chain_notes(
                         &self.scope_stack, None,
+                    ) {
+                        diag = diag.with_note(note);
+                    }
+                    self.diagnostics.push(diag);
+                }
+
+                let trace_level = crate::ast::extract_trace_level(annotation.as_ref());
+                if trace_level >= 1 {
+                    let addr_str = match &resolved {
+                        Some(addr) => format!("{:?}", addr),
+                        None => "unresolved".to_string(),
+                    };
+                    let mut diag = Diagnostic::info(
+                        KIND_TRACE,
+                        format!("trace-resolve '{}' -> {}", name, addr_str),
+                        arc.span.clone(),
+                    );
+                    for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                        &self.scope_stack, resolved.as_ref().and_then(|a| {
+                            if let VarAddr::Dispatch(d, _) = a {
+                                Some(*d)
+                            } else {
+                                None
+                            }
+                        }),
                     ) {
                         diag = diag.with_note(note);
                     }
@@ -398,11 +428,13 @@ impl SurfaceResolver {
             }
 
             SurfaceExpression::Fn {
-                return_ann: _,
+                return_ann,
                 params,
                 body,
                 ..
             } => {
+                let trace_level = crate::ast::extract_trace_level(return_ann.as_ref());
+
                 for param in params {
                     if let Some(ann) = &param.node.annotation {
                         self.walk_surface_annotation(ann);
@@ -420,6 +452,21 @@ impl SurfaceResolver {
                 // Set SymbolTable on the Fn AST node.
                 if let SurfaceExpression::Fn { scope, .. } = &arc.expr {
                     let _ = scope.set(scope_arc);
+                }
+
+                if trace_level >= 1 {
+                    let param_str: Vec<&str> = params.iter().map(|p| p.node.name.as_str()).collect();
+                    let mut diag = Diagnostic::info(
+                        KIND_TRACE,
+                        format!("trace-resolve Fn([{}]) scope_depth={}", param_str.join(", "), self.scope_stack.len()),
+                        arc.span.clone(),
+                    );
+                    for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                        &self.scope_stack, None,
+                    ) {
+                        diag = diag.with_note(note);
+                    }
+                    self.diagnostics.push(diag);
                 }
 
                 self.walk_surface_node(body);
@@ -497,6 +544,25 @@ impl SurfaceResolver {
             } => {
                 self.walk_surface_annotation(annotation);
                 self.walk_surface_node(expr);
+
+                let trace_level = crate::ast::extract_trace_level(Some(annotation));
+                if trace_level >= 1 {
+                    let inner_desc = match &expr.expr {
+                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                        _ => format!("{:?}", expr.span),
+                    };
+                    let mut diag = Diagnostic::info(
+                        KIND_TRACE,
+                        format!("trace-resolve TypeAssert on '{}'", inner_desc),
+                        arc.span.clone(),
+                    );
+                    for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                        &self.scope_stack, None,
+                    ) {
+                        diag = diag.with_note(note);
+                    }
+                    self.diagnostics.push(diag);
+                }
             }
 
             // Quote: do NOT resolve variables inside — they are AST data, not bindings.
@@ -1247,6 +1313,7 @@ mod tests {
     // Tests use resolve_program() with the SurfaceProgram/SurfaceNode AST directly.
     use super::*;
     use crate::ast::{node_id, NodeId, SurfaceExpression};
+    use crate::rust_span;
 
     fn test_file(_src: &str) -> Arc<str> {
         Arc::from(file!())
@@ -1585,7 +1652,7 @@ mod tests {
         // Build scope from env_names with 0-based contiguous slots.
         let mut st = SymbolTable::new();
         for (i, name) in env_names.iter().enumerate() {
-            st.insert(name.clone(), i as u32, None);
+            st.insert(name.clone(), i as u32, rust_span!());
         }
         let scope = vec![Arc::new(st)];
         let result = resolve_document(doc, &scope, &Vec::new());
@@ -1795,7 +1862,7 @@ mod tests {
 
         // Build root scope with one entry.
         let mut root_st = SymbolTable::new();
-        root_st.insert("builtin-dict-get".to_string(), 0, None);
+        root_st.insert("builtin-dict-get".to_string(), 0, rust_span!());
         let scope = vec![Arc::new(root_st)];
         let result = resolve_document(doc, &scope, &Vec::new());
 
