@@ -125,16 +125,10 @@ pub(crate) fn attach_materialization_context(
     thunk_span: Span,
 ) -> Box<Diagnostic> {
     if let Some(span) = mat_span {
-        // spans[0] is always the primary span. spans[1] is the first note span (typically
-        // the materialization site). If no note span has been added yet, push this mat span.
         let first_note = err.labels.get(1).map(|sl| &sl.span);
         if first_note.is_none() {
             err = Box::new(err.with_materialization_span(span.clone()));
         } else if first_note != Some(span) && !err.labels.iter().any(|l| l.span == *span) {
-            // Only push a frame if the span differs from the existing
-            // materialization span and isn't already in the stack (avoids
-            // duplicate frames when the same span propagates through
-            // nested materialize calls).
             err.push_frame("materialized".to_string(), span.clone());
         }
     }
@@ -146,6 +140,13 @@ pub(crate) fn attach_materialization_context(
         {
             err.push_frame(label.to_string(), thunk_span);
         }
+    }
+    err
+}
+
+pub(crate) fn attach_call_site(mut err: Box<Diagnostic>, call_span: &Span) -> Box<Diagnostic> {
+    if !err.labels.iter().any(|l| l.span == *call_span) {
+        err.push_label(call_span.clone(), "called here".to_string());
     }
     err
 }
@@ -1248,13 +1249,15 @@ pub(crate) async fn apply_cont(
             let origin_for_decorate = origin.clone();
             let thunk_span_for_decorate = thunk_span.clone();
             let mat_span_for_decorate = mat_span.clone();
+            let call_span_for_decorate = call_span.clone();
             let decorate = move |e: Diagnostic| {
-                attach_materialization_context(
+                let d = attach_materialization_context(
                     Box::new(e),
                     mat_span_for_decorate.as_ref(),
                     origin_for_decorate.as_deref(),
                     thunk_span_for_decorate.clone(),
-                )
+                );
+                attach_call_site(d, &call_span_for_decorate)
             };
 
             // Wrap args/named in Option so each exclusive match arm can move them
@@ -1956,13 +1959,15 @@ pub(crate) async fn apply_cont(
             let origin_for_decorate = origin.clone();
             let thunk_span_for_decorate = thunk_span.clone();
             let mat_span_for_decorate = mat_span.clone();
+            let call_span_for_decorate = call_span.clone();
             let decorate = move |e: Diagnostic| {
-                attach_materialization_context(
+                let d = attach_materialization_context(
                     Box::new(e),
                     mat_span_for_decorate.as_ref(),
                     origin_for_decorate.as_deref(),
                     thunk_span_for_decorate.clone(),
-                )
+                );
+                attach_call_site(d, &call_span_for_decorate)
             };
 
             // Wrap args/named in Option so each exclusive match arm can move them

@@ -741,21 +741,23 @@ pub(crate) async fn bind_args_thunks(
 
     // Without any variadic: positional args must not exceed max_positional
     if !has_any_variadic && positional.len() > max_positional {
-        // Use Range when there are optional params, Exact when all params are required
         let expected = if required_count < max_positional {
             ArityBound::Range(required_count, max_positional)
         } else {
             ArityBound::Exact(max_positional)
         };
-        return crate::error::DiagnosticResult::err(Diagnostic::error(
+        let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+        let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let mut diag = Diagnostic::error(
             "eval",
             format!(
-                "arity mismatch: expected {}, got {}",
-                expected,
-                positional.len()
+                "arity mismatch calling '{}': expected {}, got {}",
+                fn_name, expected, positional.len()
             ),
             call_span.clone(),
-        )).with_diagnostics(_dr_diags);
+        );
+        diag = diag.with_note(format!("parameters: [{}]", param_names.join(", ")));
+        return crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags);
     }
 
     // BIND-NAMED-VALIDATE: Check named args against params before filling slots.
@@ -935,17 +937,19 @@ pub(crate) async fn bind_args_thunks(
                     rest_dict.insert(HashableValue::Int(rest_int_key), Arc::clone(arg_thunk));
                     rest_int_key += 1;
                 } else {
-                    // No rest bucket and no typed bucket matched: arg cannot be accepted.
                     let expected = ArityBound::Exact(max_positional);
-                    return crate::error::DiagnosticResult::err(Diagnostic::error(
+                    let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+                    let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                    let mut diag = Diagnostic::error(
                         "eval",
                         format!(
-                            "arity mismatch: expected {}, got {}",
-                            expected,
-                            positional.len()
+                            "arity mismatch calling '{}': expected {}, got {}",
+                            fn_name, expected, positional.len()
                         ),
                         call_span.clone(),
-                    )).with_diagnostics(_dr_diags);
+                    );
+                    diag = diag.with_note(format!("parameters: [{}]", param_names.join(", ")));
+                    return crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags);
                 }
             }
         }
