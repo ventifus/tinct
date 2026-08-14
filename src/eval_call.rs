@@ -696,6 +696,21 @@ pub(crate) async fn bind_args_thunks(
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 ) -> crate::error::DiagnosticResult<ScopeChain> {
     let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    let fn_name: &str = call_span.name.as_deref().unwrap_or_else(|| {
+        _dr_diags.push(Diagnostic::warn(
+            "eval",
+            format!("call span has no function name at {}", call_span),
+            call_span.clone(),
+        ));
+        "<unnamed>"
+    });
+    let param_descs: Vec<String> = params.iter().map(|p| {
+        let ann = p.annotation.as_ref()
+            .map(|a| format!("@{}", a.node))
+            .unwrap_or_default();
+        let var = if p.variadic { "..." } else { "" };
+        format!("{}{}{}", var, p.name, ann)
+    }).collect();
     // BIND-SPLIT: Classify params using resolved_type and variadic flag.
     // Typed variadics have variadic=true and a concrete resolved_type (not Unknown/None).
     // Untyped rest has variadic=true and resolved_type=None (or Unknown).
@@ -746,21 +761,6 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        let fn_name = call_span.name.as_deref().unwrap_or_else(|| {
-            _dr_diags.push(Diagnostic::warn(
-                "eval",
-                format!("call span has no function name at {}", call_span),
-                call_span.clone(),
-            ));
-            "<unnamed>"
-        });
-        let param_descs: Vec<String> = params.iter().map(|p| {
-            let ann = p.annotation.as_ref()
-                .map(|a| format!("@{}", a.node))
-                .unwrap_or_default();
-            let var = if p.variadic { "..." } else { "" };
-            format!("{}{}{}", var, p.name, ann)
-        }).collect();
         let mut diag = Diagnostic::error(
             "eval",
             format!(
@@ -953,21 +953,6 @@ pub(crate) async fn bind_args_thunks(
                     rest_int_key += 1;
                 } else {
                     let expected = ArityBound::Exact(max_positional);
-                    let fn_name = call_span.name.as_deref().unwrap_or_else(|| {
-            _dr_diags.push(Diagnostic::warn(
-                "eval",
-                format!("call span has no function name at {}", call_span),
-                call_span.clone(),
-            ));
-            "<unnamed>"
-        });
-                    let param_descs: Vec<String> = params.iter().map(|p| {
-                        let ann = p.annotation.as_ref()
-                            .map(|a| format!("@{}", a.node))
-                            .unwrap_or_default();
-                        let var = if p.variadic { "..." } else { "" };
-                        format!("{}{}{}", var, p.name, ann)
-                    }).collect();
                     let mut diag = Diagnostic::error(
                         "eval",
                         format!(
