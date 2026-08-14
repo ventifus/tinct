@@ -746,7 +746,14 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+        let fn_name = call_span.name.as_deref().unwrap_or_else(|| {
+            _dr_diags.push(Diagnostic::warn(
+                "eval",
+                format!("call span has no function name at {}", call_span),
+                call_span.clone(),
+            ));
+            "<unnamed>"
+        });
         let param_descs: Vec<String> = params.iter().map(|p| {
             let ann = p.annotation.as_ref()
                 .map(|a| format!("@{}", a.node))
@@ -946,7 +953,14 @@ pub(crate) async fn bind_args_thunks(
                     rest_int_key += 1;
                 } else {
                     let expected = ArityBound::Exact(max_positional);
-                    let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+                    let fn_name = call_span.name.as_deref().unwrap_or_else(|| {
+            _dr_diags.push(Diagnostic::warn(
+                "eval",
+                format!("call span has no function name at {}", call_span),
+                call_span.clone(),
+            ));
+            "<unnamed>"
+        });
                     let param_descs: Vec<String> = params.iter().map(|p| {
                         let ann = p.annotation.as_ref()
                             .map(|a| format!("@{}", a.node))

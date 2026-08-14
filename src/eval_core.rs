@@ -1183,6 +1183,11 @@ pub(crate) fn eval_core_expr<'a>(
                 // the enclosing scope are accessible via Dispatch(depth, slot) addresses
                 // that index into the chain — no closure conversion needed.
                 let definition_scope = scope.clone();
+                let fn_span = if span.name.is_none() {
+                    span.clone().with_name(Arc::from(format!("ꟛ⧼{}⧽", span)))
+                } else {
+                    span.clone()
+                };
                 let thunk = Arc::new(Thunk::value(
                     Value::Function {
                         clauses: Arc::new(clauses.clone()),
@@ -1192,7 +1197,7 @@ pub(crate) fn eval_core_expr<'a>(
                             crate::value::TYPE_ID_FUNCTION,
                         )),
                     },
-                    span.clone(),
+                    fn_span,
                 ));
                 crate::error::DiagnosticResult::ok(thunk).with_diagnostics(_dr_diags)
             }
