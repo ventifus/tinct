@@ -696,14 +696,14 @@ pub(crate) async fn bind_args_thunks(
     type_inst: std::collections::HashMap<String, std::sync::Arc<crate::value::Value>>,
 ) -> crate::error::DiagnosticResult<ScopeChain> {
     let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
-    let fn_name: &str = call_span.name.as_deref().unwrap_or_else(|| {
-        _dr_diags.push(Diagnostic::warn(
-            "eval",
-            format!("call span has no function name at {}", call_span),
-            call_span.clone(),
-        ));
-        "<unnamed>"
-    });
+    let unnamed_label: String;
+    let fn_name: &str = match call_span.name.as_deref() {
+        Some(n) => n,
+        None => {
+            unnamed_label = format!("<unnamed at {}>", call_span);
+            &unnamed_label
+        }
+    };
     let param_descs: Vec<String> = params.iter().map(|p| {
         let ann = p.annotation.as_ref()
             .map(|a| format!("@{}", a.node))

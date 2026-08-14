@@ -1388,7 +1388,14 @@ pub(crate) async fn apply_cont(
                                 .map(|ann| ann.trace_level())
                                 .unwrap_or(0);
                             if trace_level >= 1 {
-                                let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
+                                let unnamed_label_trace;
+                                let fn_name = match call_span.name.as_deref() {
+                                    Some(n) => n,
+                                    None => {
+                                        unnamed_label_trace = format!("<unnamed at {}>", call_span);
+                                        &unnamed_label_trace
+                                    }
+                                };
                                 let args_ref = args.as_ref().expect("args set above");
                                 let args_str: String = args_ref
                                     .iter()
@@ -1497,7 +1504,7 @@ pub(crate) async fn apply_cont(
                                             let label: Arc<str> = call_span
                                                 .name
                                                 .clone()
-                                                .unwrap_or_else(|| Arc::from("<anonymous>"));
+                                                .unwrap_or_else(|| Arc::from(format!("<unnamed at {}>", call_span)));
                                             stack.push(Cont::TraceFnReturn(Box::new(
                                                 TraceFnReturnData {
                                                     label,
