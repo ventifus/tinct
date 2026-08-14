@@ -133,12 +133,13 @@ pub(crate) fn attach_materialization_context(
         }
     }
     if let Some(label) = origin {
+        let message = format!("in {}", label);
         if !err
             .labels
             .iter()
-            .any(|l| l.span == thunk_span && l.message == label)
+            .any(|l| l.span == thunk_span && l.message == message)
         {
-            err.push_frame(label.to_string(), thunk_span);
+            err.push_frame(message, thunk_span);
         }
     }
     err

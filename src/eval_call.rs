@@ -757,12 +757,6 @@ pub(crate) async fn bind_args_thunks(
             call_span.clone(),
         );
         diag = diag.with_note(format!("parameters: [{}]", param_names.join(", ")));
-        diag = diag.with_note(format!(
-            "call_span: {}:{}..{}:{} file={}",
-            call_span.start_line, call_span.start_col,
-            call_span.end_line, call_span.end_col,
-            call_span.file
-        ));
         return crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags);
     }
 
