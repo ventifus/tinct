@@ -3446,27 +3446,24 @@ async fn infer_fn_push_cont(
 // Returns (next_remaining_scrutinee, guard_narrowings).
 // Returns `None` only if called with no arms (should not happen in practice).
 
+/// Extract the NominalVariant that a TypeValue ultimately produces.
+/// Follows Fn return types to find the NominalVariant at the end of the chain.
+fn extract_nominal_variant(tv: &TypeValue) -> Option<TypeValue> {
+    match typevalue_ctor_index(tv) {
+        Some(TV_NOMINAL_VARIANT) => Some(Arc::clone(tv)),
+        Some(TV_FN) => {
+            let (_, ret) = typevalue_fn_params_and_ret(tv)?;
+            extract_nominal_variant(&ret)
+        }
+        _ => None,
+    }
+}
+
 /// Extract `(type_decl_id, ctor_index)` from a pattern node's `inferred_type_decl_id`.
-///
-/// Handles both unit constructors (TV_NOMINAL_VARIANT directly) and payload
-/// constructors (TV_FN whose return type is TV_NOMINAL_VARIANT).
 fn extract_ctor_identity_from_inferred_type(node: &SurfaceNode) -> Option<(u64, u32)> {
     let stored_tv = node.inferred_type_decl_id.get()?;
-    let fn_ret: Option<TypeValue> = if typevalue_ctor_index(stored_tv) == Some(TV_FN) {
-        let (_, ret) = typevalue_fn_params_and_ret(stored_tv)?;
-        if typevalue_ctor_index(&ret) == Some(TV_NOMINAL_VARIANT) {
-            Some(ret)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let tv = match &fn_ret {
-        Some(ret) => ret,
-        None if typevalue_ctor_index(stored_tv) == Some(TV_NOMINAL_VARIANT) => stored_tv,
-        _ => return None,
-    };
+    let variant_tv = extract_nominal_variant(stored_tv)?;
+    let tv = &variant_tv;
     let extract_int = |field: &str| -> Option<u64> {
         match tv.as_ref() {
             crate::value::Value::Variant {
