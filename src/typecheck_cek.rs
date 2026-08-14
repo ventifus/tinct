@@ -518,7 +518,6 @@ async fn infer_step(
                     },
                     Arc::clone(node),
                 ));
-                stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
                 TypeCheckAction::Eval(Arc::clone(base))
             }
         },
@@ -772,17 +771,32 @@ async fn infer_step(
         // Expansion-produced variants: UnitVariant and MakeVariant should infer to their
         // nominal type by looking up the tycon in tycon_env. TypeDecl and ReprDecl wrap
         // an inner expression — recurse into it.
-        SurfaceExpression::UnitVariant { type_decl_id, .. } => {
+        SurfaceExpression::UnitVariant {
+            type_decl_id,
+            ctor_index,
+        } => {
             let tv = if state.tycon_env.contains_key(type_decl_id) {
-                crate::type_infer::make_typevalue_nominal(*type_decl_id)
+                make_typevalue_nominal_variant_by_id(
+                    *type_decl_id,
+                    *ctor_index,
+                    make_typevalue_record(indexmap::IndexMap::new(), None),
+                )
             } else {
                 make_typevalue_unknown()
             };
             TypeCheckAction::Done(tv)
         }
-        SurfaceExpression::MakeVariant { type_decl_id, .. } => {
+        SurfaceExpression::MakeVariant {
+            type_decl_id,
+            ctor_index,
+            ..
+        } => {
             let tv = if state.tycon_env.contains_key(type_decl_id) {
-                crate::type_infer::make_typevalue_nominal(*type_decl_id)
+                make_typevalue_nominal_variant_by_id(
+                    *type_decl_id,
+                    *ctor_index,
+                    make_typevalue_record(indexmap::IndexMap::new(), None),
+                )
             } else {
                 make_typevalue_unknown()
             };
@@ -3434,13 +3448,25 @@ async fn infer_fn_push_cont(
 
 /// Extract `(type_decl_id, ctor_index)` from a pattern node's `inferred_type_decl_id`.
 ///
-/// The type checker populates `inferred_type_decl_id` with a NominalVariant TypeValue
-/// for constructor patterns. This reads the numeric identity from that TypeValue.
+/// Handles both unit constructors (TV_NOMINAL_VARIANT directly) and payload
+/// constructors (TV_FN whose return type is TV_NOMINAL_VARIANT).
 fn extract_ctor_identity_from_inferred_type(node: &SurfaceNode) -> Option<(u64, u32)> {
-    let tv = node.inferred_type_decl_id.get()?;
-    if typevalue_ctor_index(tv) != Some(TV_NOMINAL_VARIANT) {
-        return None;
-    }
+    let stored_tv = node.inferred_type_decl_id.get()?;
+    let fn_ret: Option<TypeValue> = if typevalue_ctor_index(stored_tv) == Some(TV_FN) {
+        let (_, ret) = typevalue_fn_params_and_ret(stored_tv)?;
+        if typevalue_ctor_index(&ret) == Some(TV_NOMINAL_VARIANT) {
+            Some(ret)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let tv = match &fn_ret {
+        Some(ret) => ret,
+        None if typevalue_ctor_index(stored_tv) == Some(TV_NOMINAL_VARIANT) => stored_tv,
+        _ => return None,
+    };
     let extract_int = |field: &str| -> Option<u64> {
         match tv.as_ref() {
             crate::value::Value::Variant {
