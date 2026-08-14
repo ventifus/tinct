@@ -145,9 +145,7 @@ pub(crate) fn attach_materialization_context(
 }
 
 pub(crate) fn attach_call_site(mut err: Box<Diagnostic>, call_span: &Span) -> Box<Diagnostic> {
-    if !err.labels.iter().any(|l| l.span == *call_span) {
-        err.push_label(call_span.clone(), "called here".to_string());
-    }
+    err.push_label(call_span.clone(), "called here".to_string());
     err
 }
 
