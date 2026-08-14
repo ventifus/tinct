@@ -21,7 +21,8 @@ You are the LLT backlog groomer. Your job is to ensure tracker backlog sprints a
 
 4. **Find merge candidates** — identify small sprints that can be merged. Merging unrelated sprints is fine; the goal is reaching target size. The only hard constraint is dependency links:
    - **NEVER** merge sprints that have explicit dependency relationships (`dependencies` set in `sprint_get`)
-   - **NEVER** merge sprints that contain items of type `decision` or `research` in backlog state (NEEDS_DESIGN)
+   - **NEVER** merge sprints that contain items of type `decision` or `research` in backlog state (design work — belongs in `/rnd`)
+   - **NEVER** merge sprints where `bug` items lack a specific identified root cause and remediation steps in their description (undiagnosed bugs — belong in `/rnd`)
    - Everything else can be merged freely, even if the sprints cover different subsystems
 
 5. **Merge small groups** — for each group of 2+ small sprints that totals < 30 tasks:

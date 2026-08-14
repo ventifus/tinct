@@ -1,23 +1,25 @@
 {
+  "env": {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6[1m]"
+  },
   "permissions": {
+    "allow": [
+      "mcp__tracker__*",
+      "mcp__mempalace-tinct__*"
+    ],
     "deny": [
       "Bash",
-      "Write(/tmp/**)",
       "Edit(/tmp/**)",
-      "Write(../**/tmp/**)",
       "Edit(../**/tmp/**)",
-      "Write(**/*.py)",
       "Edit(**/*.py)",
-      "Write(**/*.sh)",
       "Edit(**/*.sh)",
-      "Write(**/plugins/**)",
       "Edit(**/plugins/**)"
     ]
   },
   "mcpServers": {
     "mempalace-tinct": {
-      "command": "python",
-      "args": ["-m", "mempalace.mcp_server", "--palace", "/var/home/adenton/Projects/tinct/.mempalace"],
+      "command": "python3",
+      "args": ["-m", "mempalace.mcp_server", "--palace", "/home/adenton/Projects/tinct/.mempalace"],
       "type": "stdio"
     }
   }

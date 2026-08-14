@@ -43,12 +43,8 @@ After `/groom` completes, the backlog is ready for Phase 3.
 
 1. Call `mcp__tracker__tracker_status` — if `sprints.backlog == 0`, skip this phase and report "All backlog sprints complete"
 2. Invoke the `/sprint` skill to run the next tracker backlog sprint
-3. **Resumption anchor** — after `/sprint` returns control, you are the **cycle coordinator**. Check step 4 before proceeding to Phase 4.
-4. Check the sprint's response for the `NEEDS_DESIGN` signal. If the sprint reports `NEEDS_DESIGN: [slug] — [items]`:
-   - Log to mempalace: `"Cycle #N | Sprint: [slug] | HALTED: unresolved design work"`
-   - Stop the cycle and report: `"Cycle halted: sprint [slug] has unresolved design work. Run /rnd [slug] first, then resume /cycle."`
-   - Do NOT proceed to Phase 4 (Completion Check) or loop back to Phase 1
-5. Otherwise the sprint implements all tasks, gates through the sprint-reviewer (inner loop), then runs the specialist panel review with a fix loop until all agents approve
+3. **Resumption anchor** — after `/sprint` returns control, you are the **cycle coordinator**. The sprint skips design tasks and undiagnosed bugs automatically (they belong in `/rnd`), so no NEEDS_DESIGN halt is expected.
+4. The sprint implements all eligible tasks, gates through the sprint-reviewer (inner loop), then runs the specialist panel review with a fix loop until all agents approve
 
 ### Phase 4: Completion Check
 
