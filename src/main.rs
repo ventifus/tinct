@@ -2351,7 +2351,8 @@ async fn run_fmt(
     // Parse once and run the per-document pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output = match parse(&source, Arc::clone(&sf_path)) {
+        let (parse_result, _parse_diags) = parse(&source, Arc::clone(&sf_path)).into_parts();
+        let output = match parse_result {
             Ok(v) => v,
             Err(e) => return tinct::DiagnosticResult::err(cli_error(tinct::format_diagnostic(&e, &source, file_path))),
         };
@@ -2366,7 +2367,8 @@ async fn run_fmt(
         // Process builtin_core.llt inline — same pipeline, same context.
         let core_source = include_str!("../stdlib/builtin_core.llt");
         let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-        let core_parsed = match parse(core_source, core_sf) {
+        let (core_result, _core_diags) = parse(core_source, core_sf).into_parts();
+        let core_parsed = match core_result {
             Ok(v) => v,
             Err(e) => return tinct::DiagnosticResult::err(cli_error(format!("builtin_core.llt parse error: {e}"))),
         };

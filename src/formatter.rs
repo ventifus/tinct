@@ -46,11 +46,12 @@ pub async fn format_source_tinct(
 
     // Parse the input source (no env/ctx needed yet).
     let file: Arc<str> = Arc::from("<formatter>");
-    let parse_output = parse(input, file).map_err(|e| format!("{e}"))?;
+    let (parse_result, _diagnostics) = parse(input, file).into_parts();
+    let parse_output = parse_result.map_err(|e| format!("{e}"))?;
 
     let formatter_file: Arc<str> = Arc::from(script_name);
-    let formatter_parsed =
-        parse(script_source, formatter_file).map_err(|e| format!("formatter parse error: {e}"))?;
+    let (formatter_result, _diagnostics) = parse(script_source, formatter_file).into_parts();
+    let formatter_parsed = formatter_result.map_err(|e| format!("formatter parse error: {e}"))?;
 
     // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
     let formatter_program = desugar::desugar_program_full(&formatter_parsed.program);

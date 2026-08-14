@@ -2507,19 +2507,21 @@ pub(crate) fn builtin_parse(
         // Fatal parse errors (lexer failure, unclosed brackets) are captured in the
         // diagnostics list rather than raised, so callers can inspect them programmatically.
         let source_file: Arc<str> = Arc::from(path_str.as_str());
+        let (parse_result, parse_diagnostics) = crate::parser::parse(&source, Arc::clone(&source_file)).into_parts();
         let (parsed, fatal_diagnostics) =
-            match crate::parser::parse(&source, Arc::clone(&source_file)) {
+            match parse_result {
                 Ok(output) => (Some(output), vec![]),
                 Err(fatal) => (None, vec![fatal]),
             };
 
-        // Build diagnostics list: fatal error (if any) + recovered errors from ParseOutput.
-        let all_parse_diagnostics: Vec<crate::error::Diagnostic> = if let Some(ref output) = parsed
+        // Build diagnostics list: fatal error (if any) + recovered errors from ParseOutput + parse diagnostics.
+        let mut all_parse_diagnostics: Vec<crate::error::Diagnostic> = if let Some(ref output) = parsed
         {
             output.diagnostics.clone()
         } else {
             fatal_diagnostics
         };
+        all_parse_diagnostics.extend(parse_diagnostics);
 
         let mk = |v: Value| -> Arc<Thunk> { Arc::new(Thunk::value(v, call_span.clone())) };
         let mut errors_dict: IndexMap<HashableValue, Arc<Thunk>> = IndexMap::new();

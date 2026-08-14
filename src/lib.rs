@@ -185,9 +185,11 @@ pub async fn run_loader_pipeline(
     // Rust builtin implementations into those entries before eval runs.
     let core_source = include_str!("../stdlib/builtin_core.llt");
     let core_sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
-    let core_parsed = match parse(core_source, core_sf) {
+    let (core_result, core_diags) = parse(core_source, core_sf).into_parts();
+    let core_parsed = match core_result {
         Ok(p) => p,
         Err(e) => {
+            diagnostics.extend(core_diags);
             return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
                 KIND_PARSE,
                 format!("builtin_core.llt: {e}"),
@@ -196,6 +198,7 @@ pub async fn run_loader_pipeline(
             .with_diagnostics(diagnostics);
         }
     };
+    diagnostics.extend(core_diags);
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {
@@ -224,9 +227,11 @@ pub async fn run_loader_pipeline(
 
     // Process init program documents.
     let loader_sf: Arc<str> = Arc::from(init_path);
-    let loader_parsed = match parse(init_source, Arc::clone(&loader_sf)) {
+    let (loader_result, loader_diags) = parse(init_source, Arc::clone(&loader_sf)).into_parts();
+    let loader_parsed = match loader_result {
         Ok(p) => p,
         Err(e) => {
+            diagnostics.extend(loader_diags);
             return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
                 KIND_PARSE,
                 format!("{init_path}: {e}"),
@@ -236,6 +241,7 @@ pub async fn run_loader_pipeline(
         }
     };
     diagnostics.extend(loader_parsed.diagnostics.into_iter().map(|d| d.into()));
+    diagnostics.extend(loader_diags);
     let loader_program = desugar::desugar_program_full(&loader_parsed.program);
     let loader_program = expand::expand_program(&loader_program);
     for doc in &loader_program.documents {
@@ -267,17 +273,18 @@ pub async fn run_loader_pipeline(
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
-    let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
+    let (parse_result, _parse_diags) = parse(input, file).into_parts();
+    let parsed = parse_result.map_err(|e| format!("{e}"))?;
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
     let ctx = eval::EvalContext::new_empty();
     let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
     // Process builtin_core.llt inline.
-    let core_parsed = parse(
+    let (core_result, _core_diags) = parse(
         include_str!("../stdlib/builtin_core.llt"),
         Arc::from("stdlib/builtin_core.llt"),
-    )
-    .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    ).into_parts();
+    let core_parsed = core_result.map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {
@@ -312,17 +319,18 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let file: Arc<str> = Arc::from("<typecheck>");
-    let parsed = parse(input, file).map_err(|e| format!("{e}"))?;
+    let (parse_result, _parse_diags) = parse(input, file).into_parts();
+    let parsed = parse_result.map_err(|e| format!("{e}"))?;
     let program = desugar::desugar_program_full(&parsed.program);
     let program = expand::expand_program(&program);
     let ctx = eval::EvalContext::new_empty();
     let mut state = crate::pipeline::PipelineState::from_builtins(&ctx);
     // Process builtin_core.llt inline.
-    let core_parsed = parse(
+    let (core_result, _core_diags) = parse(
         include_str!("../stdlib/builtin_core.llt"),
         Arc::from("stdlib/builtin_core.llt"),
-    )
-    .map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
+    ).into_parts();
+    let core_parsed = core_result.map_err(|e| format!("builtin_core.llt parse error: {e}"))?;
     let core_program = desugar::desugar_program_full(&core_parsed.program);
     let core_program = expand::expand_program(&core_program);
     for doc in &core_program.documents {

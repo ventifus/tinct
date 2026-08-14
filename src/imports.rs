@@ -163,10 +163,12 @@ async fn build_builtin_core_envs_inner() -> crate::error::DiagnosticResult<(
     let source = include_str!("../stdlib/builtin_core.llt");
     let sf: Arc<str> = Arc::from("stdlib/builtin_core.llt");
 
+    let (parse_result, parse_diags) = crate::parser::parse(source, sf).into_parts();
     let program = crate::desugar::desugar_program_full(
-        &match crate::parser::parse(source, sf) {
+        &match parse_result {
             Ok(v) => v,
             Err(e) => {
+                _dr_diags.extend(parse_diags);
                 return crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
                     KIND,
                     format!("builtin_core.llt parse failed: {e}"),
@@ -177,6 +179,7 @@ async fn build_builtin_core_envs_inner() -> crate::error::DiagnosticResult<(
         }
         .program,
     );
+    _dr_diags.extend(parse_diags);
     let program = crate::expand::expand_program(&program);
 
     let ctx = crate::eval::EvalContext::new_empty();
