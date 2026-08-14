@@ -747,16 +747,24 @@ pub(crate) async fn bind_args_thunks(
             ArityBound::Exact(max_positional)
         };
         let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
-        let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        let param_descs: Vec<String> = params.iter().map(|p| {
+            let ann = p.annotation.as_ref()
+                .map(|a| format!("@{}", a.node))
+                .unwrap_or_default();
+            let var = if p.variadic { "..." } else { "" };
+            format!("{}{}{}", var, p.name, ann)
+        }).collect();
         let mut diag = Diagnostic::error(
             "eval",
             format!(
-                "arity mismatch calling '{}': expected {}, got {}",
-                fn_name, expected, positional.len()
+                "arity mismatch calling '{}': function has {} ({}) but received {} argument(s)",
+                fn_name, expected, param_descs.join(", "), positional.len()
             ),
             call_span.clone(),
         );
-        diag = diag.with_note(format!("parameters: [{}]", param_names.join(", ")));
+        for (i, arg) in positional.iter().enumerate() {
+            diag = diag.with_note(format!("  arg {}: {}", i, arg.span));
+        }
         return crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags);
     }
 
@@ -939,16 +947,24 @@ pub(crate) async fn bind_args_thunks(
                 } else {
                     let expected = ArityBound::Exact(max_positional);
                     let fn_name = call_span.name.as_deref().unwrap_or("<anonymous>");
-                    let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                    let param_descs: Vec<String> = params.iter().map(|p| {
+                        let ann = p.annotation.as_ref()
+                            .map(|a| format!("@{}", a.node))
+                            .unwrap_or_default();
+                        let var = if p.variadic { "..." } else { "" };
+                        format!("{}{}{}", var, p.name, ann)
+                    }).collect();
                     let mut diag = Diagnostic::error(
                         "eval",
                         format!(
-                            "arity mismatch calling '{}': expected {}, got {}",
-                            fn_name, expected, positional.len()
+                            "arity mismatch calling '{}': function has {} ({}) but received {} argument(s)",
+                            fn_name, expected, param_descs.join(", "), positional.len()
                         ),
                         call_span.clone(),
                     );
-                    diag = diag.with_note(format!("parameters: [{}]", param_names.join(", ")));
+                    for (i, arg) in positional.iter().enumerate() {
+                        diag = diag.with_note(format!("  arg {}: {}", i, arg.span));
+                    }
                     return crate::error::DiagnosticResult::err(diag).with_diagnostics(_dr_diags);
                 }
             }
