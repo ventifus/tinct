@@ -397,11 +397,7 @@ impl fmt::Display for Diagnostic {
 
         // Primary span location
         if let Some(primary) = self.labels.first() {
-            write!(
-                f,
-                "\n --> {}:{}:{}",
-                primary.span.file, primary.span.start_line, primary.span.start_col
-            )?;
+            write!(f, "\n --> {}", primary.span)?;
             if !primary.message.is_empty() {
                 write!(f, "  {}", primary.message)?;
             }
@@ -409,11 +405,7 @@ impl fmt::Display for Diagnostic {
 
         // Secondary labeled spans
         for label in self.labels.iter().skip(1) {
-            write!(
-                f,
-                "\n --> {}:{}:{}",
-                label.span.file, label.span.start_line, label.span.start_col
-            )?;
+            write!(f, "\n --> {}", label.span)?;
             if !label.message.is_empty() {
                 write!(f, "  {}", label.message)?;
             }
@@ -453,10 +445,7 @@ pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> S
 
     for (i, label) in diag.labels.iter().enumerate() {
         let prefix = if i == 0 { " at" } else { "-->" };
-        out.push_str(&format!(
-            "\n {prefix} {}:{}:{}",
-            label.span.file, label.span.start_line, label.span.start_col
-        ));
+        out.push_str(&format!("\n {prefix} {}", label.span));
         if let Some(snippet) = render_span_snippet(source, label.span.clone()) {
             out.push_str("\n  |\n");
             out.push_str(&snippet);
