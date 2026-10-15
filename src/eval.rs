@@ -174,20 +174,21 @@ const ANNOTATION_META_KEYS: &[&str] = &[
 #[cfg(test)]
 pub(crate) fn annotation_has_structural_fields(annotation: &crate::ast::Annotation) -> bool {
     match annotation {
-        crate::ast::Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
-            let Some(key_node) = entry.node.key.as_ref() else {
-                return false;
-            };
-            match &key_node.expr {
-                crate::ast::SurfaceExpression::StringLiteral { content: name, .. } => {
-                    !ANNOTATION_META_KEYS.contains(&name.as_str())
+        crate::ast::Annotation::Expr(node) => match &node.expr {
+            crate::ast::SurfaceExpression::Dict { entries, .. } => entries.iter().any(|entry| {
+                let Some(key_node) = entry.node.key.as_ref() else {
+                    return false;
+                };
+                match &key_node.expr {
+                    crate::ast::SurfaceExpression::StringLiteral { content: name, .. } => {
+                        !ANNOTATION_META_KEYS.contains(&name.as_str())
+                    }
+                    _ => true,
                 }
-                _ => true,
-            }
-        }),
-        crate::ast::Annotation::Simple(_)
-        | crate::ast::Annotation::Quote
-        | crate::ast::Annotation::Annotated(_, _) => false,
+            }),
+            _ => false,
+        },
+        crate::ast::Annotation::Quote => false,
     }
 }
 
@@ -353,19 +354,6 @@ pub struct EvalContext {
     /// Starts as `SymbolTable::empty_chain()` and is extended as documents are evaluated.
     /// Cloned across child contexts.
     pub current_scope: ScopeChain,
-    /// Snapshot of the accumulated scope after the init program (loader + prelude) finishes
-    /// evaluating all its intermediate dicts.
-    ///
-    /// Set exactly once via `set_init_accumulated_group`. The OnceLock guarantees at-most-once
-    /// write; the `Arc` allows sharing across all child contexts.
-    ///
-    /// Contains the full ScopeChain with all prelude bindings.
-    /// Builtins use `call_to_match_resolved` to retrieve the `to-match` instance
-    /// binding thunk for Matchable dispatch (T-1846/T-1847).
-    ///
-    /// `None` (OnceLock not set) in bootstrap/test contexts where the full loader pipeline
-    /// has not run. All callers must gracefully fall back when `get()` returns `None`.
-    pub init_accumulated_group: Arc<std::sync::OnceLock<ScopeChain>>,
     /// Bootstrap TypeValue metatype. Represents the "type of all types." Initialized as an empty
     /// Dict since the self-referential fixed-point requires `Weak<Value>` semantics: constructing
     /// `Type.type_val == Type` needs a back-pointer into an already-constructed `Arc<Value>`, which
@@ -465,7 +453,6 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             current_scope: SymbolTable::empty_chain(),
-            init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
@@ -509,7 +496,6 @@ impl EvalContext {
             tycon_env: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
             current_scope: SymbolTable::empty_chain(),
-            init_accumulated_group: Arc::new(std::sync::OnceLock::new()),
             type_metatype: Arc::new(Value::Dict {
                 entries: indexmap::IndexMap::new(),
                 type_decl_id: TYPE_ID_DICT,
@@ -555,7 +541,6 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             current_scope: self.current_scope.clone(),
-            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
@@ -599,7 +584,6 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             current_scope: self.current_scope.clone(),
-            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
@@ -646,38 +630,12 @@ impl EvalContext {
             },
             type_context: Arc::clone(&self.type_context),
             current_scope: self.current_scope.clone(),
-            init_accumulated_group: Arc::clone(&self.init_accumulated_group),
             type_metatype: Arc::clone(&self.type_metatype),
             repr_registry: Arc::clone(&self.repr_registry),
             is_predicates: Arc::clone(&self.is_predicates),
             type_identity_registry: Arc::clone(&self.type_identity_registry),
             runtime_diagnostics: std::sync::Arc::clone(&self.runtime_diagnostics),
         })
-    }
-
-    /// Store a snapshot of the accumulated_group after the init program evaluates.
-    ///
-    /// Called from `eval_document_exprs_with_env` the first time it reaches the last
-    /// expression node of the loader program. The OnceLock ensures the snapshot is written
-    /// at most once; subsequent calls (from nested `builtin-eval` or user documents) silently
-    /// do nothing (the first write wins).
-    ///
-    /// The `group` parameter is the full `accumulated_group` at the point just before the last
-    /// expression node is evaluated — it contains every thunk for every intermediate dict the
-    /// loader has evaluated so far, at their canonical LGM slots.
-    pub fn set_init_accumulated_group(&self, group: ScopeChain) {
-        // get_or_init: first write wins; subsequent calls are no-ops (the existing value is
-        // returned, and the supplied closure is not called). This is the correct at-most-once
-        // initialization pattern — no Result to discard.
-        self.init_accumulated_group.get_or_init(|| group);
-    }
-
-    /// Retrieve the accumulated_group snapshot from the init program's evaluation.
-    ///
-    /// Returns `None` in bootstrap/test contexts where the full loader pipeline has not run.
-    /// Callers must gracefully fall back (e.g., return `false`) when this is `None`.
-    pub fn get_init_accumulated_group(&self) -> Option<&ScopeChain> {
-        self.init_accumulated_group.get()
     }
 
     /// Record blame provenance for a pipeline `%` thunk at a `---` boundary.
@@ -1762,19 +1720,20 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
-/// Look up a function by `name` in `ctx.init_accumulated_group` (SymbolTable),
-/// call it with `val`, and return true if the result is a nonzero Int.
+/// Look up a function by `name` in the caller-supplied lexical `scope`, call it with
+/// `val`, and return true if the result is a nonzero Int.
 ///
 /// This is the shared implementation for `call_to_match` (looks up `"to-match"`) and
 /// `call_to_match_resolved` (looks up a pre-resolved instance binding name). Both
-/// dispatch through the SymbolTable name lookup path.
+/// dispatch through an ordinary stage-aware scope-chain name lookup — `scope` is the
+/// real lexical chain in effect at the match-guard evaluation site (each call site
+/// passes its own, e.g. `guard_scope`); there is no separate accumulated-group
+/// indirection to maintain.
 ///
-/// Returns `Ok(false)` in bootstrap/pre-prelude contexts where the dispatch infrastructure
-/// is not yet in place:
-/// - `ctx.init_accumulated_group` is not set (bootstrap/test context)
-/// - `name` is not found in the accumulated scope
+/// Returns `Ok(false)` in bootstrap/pre-prelude contexts where `name` is not yet bound
+/// (e.g. before the `Matchable` class has been loaded).
 ///
-/// Returns `Err` if the dispatch infrastructure is in place but the call itself fails:
+/// Returns `Err` if `name` is bound but the call itself fails:
 /// - the thunk at the resolved slot fails to materialize
 /// - the thunk does not contain a function value
 /// - the function call result fails to materialize
@@ -1784,12 +1743,12 @@ async fn call_to_match_by_name(
     val: &Value,
     ctx: &Arc<EvalContext>,
     span: &Span,
-    _scope: ScopeChain,
+    scope: ScopeChain,
 ) -> crate::error::DiagnosticResult<bool> {
-    let Some(acc_group) = ctx.get_init_accumulated_group() else {
-        return crate::error::DiagnosticResult::ok(false);
-    };
-    let lookup = SymbolTable::get_in_chain(acc_group, name);
+    // to-match instances are runtime-stage constructs only; no type-stage binding
+    // should ever satisfy this lookup.
+    let lookup =
+        SymbolTable::get_in_chain_staged(&scope, name, &[crate::symbol_table::Stage::Runtime]);
     let (lookup_result, mut lookup_diags) = lookup.into_parts();
     let fn_thunk = match lookup_result {
         Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(lookup_diags),
@@ -2194,7 +2153,7 @@ mod tests {
         });
         let program = crate::expand::expand_program(&program);
         let _result =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), crate::symbol_table::Stage::Runtime);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -2237,9 +2196,18 @@ mod tests {
         src: &str,
         ctx: &Arc<EvalContext>,
     ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
-        let node = crate::parser::parse_surface_expression(src)
-            .unwrap_or_else(|e| panic!("parse_surface_expression({src:?}) failed: {e:?}"));
-        eval_for_test_resolved(node, ctx).await
+        let (node, diags) = crate::parser::parse_surface_expression(src).into_parts();
+        let node = match node {
+            Ok(n) => n,
+            Err(e) => return crate::error::DiagnosticResult::err(e).with_diagnostics(diags),
+        };
+        let (result, more_diags) = eval_for_test_resolved(node, ctx).await.into_parts();
+        let mut all_diags = diags;
+        all_diags.extend(more_diags);
+        match result {
+            Ok(v) => crate::error::DiagnosticResult::ok(v).with_diagnostics(all_diags),
+            Err(e) => crate::error::DiagnosticResult::err(e).with_diagnostics(all_diags),
+        }
     }
 
     /// Build a zero-span SurfaceNode wrapping the given SurfaceExpression.
@@ -2949,7 +2917,7 @@ mod tests {
                 )),
                 check: TypeAssertCheck::Source {
                     annotation: Spanned::new(
-                        crate::ast::Annotation::PropertyDict(entries),
+                        crate::ast::Annotation::dict_synthetic(entries, span.clone()),
                         span.clone(),
                     ),
                 },
@@ -3027,7 +2995,7 @@ mod tests {
                 )),
                 check: TypeAssertCheck::Source {
                     annotation: Spanned::new(
-                        crate::ast::Annotation::PropertyDict(entries),
+                        crate::ast::Annotation::dict_synthetic(entries, span.clone()),
                         span.clone(),
                     ),
                 },
@@ -4161,16 +4129,14 @@ mod tests {
     #[tokio::test]
     async fn test_annotation_has_structural_fields_simple_returns_false() {
         // Simple annotations like @Integer have no structural fields
-        assert!(!annotation_has_structural_fields(&Annotation::Simple(
-            "Integer".into()
-        )));
+        assert!(!annotation_has_structural_fields(&Annotation::simple_synthetic("Integer", rust_span!())));
     }
 
     #[tokio::test]
     async fn test_annotation_has_structural_fields_empty_property_dict() {
         // Empty PropertyDict has no structural fields
         assert!(!annotation_has_structural_fields(
-            &Annotation::PropertyDict(vec![])
+            &Annotation::dict_synthetic(vec![], rust_span!())
         ));
     }
 
@@ -4179,7 +4145,7 @@ mod tests {
         // [@[default: 0] $x] — default-only, no structural fields
         let entries = vec![surf_ann_entry("default", SurfaceExpression::Int(0))];
         assert!(!annotation_has_structural_fields(
-            &Annotation::PropertyDict(entries)
+            &Annotation::dict_synthetic(entries, rust_span!())
         ));
     }
 
@@ -4198,7 +4164,7 @@ mod tests {
             },
         )];
         assert!(!annotation_has_structural_fields(
-            &Annotation::PropertyDict(entries)
+            &Annotation::dict_synthetic(entries, rust_span!())
         ));
     }
 
@@ -4229,9 +4195,7 @@ mod tests {
                 },
             ),
         ];
-        assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
-            entries
-        )));
+        assert!(annotation_has_structural_fields(&Annotation::dict_synthetic(entries, rust_span!())));
     }
 
     #[tokio::test]
@@ -4257,9 +4221,7 @@ mod tests {
                 },
             ),
         ];
-        assert!(annotation_has_structural_fields(&Annotation::PropertyDict(
-            entries
-        )));
+        assert!(annotation_has_structural_fields(&Annotation::dict_synthetic(entries, rust_span!())));
     }
 
     // ── elaboration gap tests ────────────────────────────────────────────
@@ -5470,7 +5432,7 @@ mod tests {
         let _table = crate::resolve::resolve_program(
             &surface_program,
             &crate::symbol_table::SymbolTable::empty_chain(),
-            &Vec::new(),
+            crate::symbol_table::Stage::Runtime,
         );
 
         {
@@ -5658,6 +5620,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            param_names: &[],
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
@@ -5864,7 +5827,7 @@ mod tests {
         seed_table.insert("%".to_string(), 0, rust_span!());
         let seed_table = Arc::new(seed_table);
         let seed_scope = vec![Arc::clone(&seed_table)];
-        let _result = crate::resolve::resolve_program(&program, &seed_scope, &Vec::new());
+        let _result = crate::resolve::resolve_program(&program, &seed_scope, crate::symbol_table::Stage::Runtime);
 
         {
             let _env = crate::builtins::build_core_env();
@@ -5988,7 +5951,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), crate::symbol_table::Stage::Runtime);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6047,7 +6010,7 @@ mod tests {
         let program = crate::expand::expand_program(&program);
         // Seed resolver with builtins in scope (test expression uses builtin-int-add).
         let seed_scope = build_test_scope_with_builtins();
-        let _result = crate::resolve::resolve_program(&program, &seed_scope, &Vec::new());
+        let _result = crate::resolve::resolve_program(&program, &seed_scope, crate::symbol_table::Stage::Runtime);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {
@@ -6103,7 +6066,7 @@ mod tests {
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), crate::symbol_table::Stage::Runtime);
 
         // Type-check so all SurfaceNodes get inferred_type_decl_id set.
         {

@@ -756,8 +756,15 @@ async fn resolve_fn_type(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, TypeValue>, bool)>,
 ) -> Result<TypeValue, Diagnostic> {
-    match ann {
-        Annotation::PropertyDict(surface_entries) => {
+    let surface_entries: Option<&Vec<Spanned<SurfaceEntry>>> = match ann {
+        Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::Dict { entries, .. } => Some(entries),
+            _ => None,
+        },
+        Annotation::Quote => None,
+    };
+    match surface_entries {
+        Some(surface_entries) => {
             // Dispatch: if any entry has a named key matching function metadata keys
             // (return:, constraint:, doc:, bind:, kinds:), treat as fn metadata dict.
             // If all entries are positional, delegate to resolve_type_dict (handles
@@ -836,8 +843,8 @@ async fn resolve_fn_type(
                 .await
             }
         }
-        _ => {
-            // Simple(name) path: fn@Int, fn@a, etc.
+        None => {
+            // Bare-name / Quote / chained-application path: fn@Int, fn@a, fn@Seq@Int, etc.
             let ret = resolve_annotation_as_type(
                 ann,
                 span.clone(),
@@ -850,6 +857,54 @@ async fn resolve_fn_type(
             .await?;
             // fn type with zero params: TypeValue.Fn { params: [], return: ret }
             Ok(make_typevalue_fn(vec![], ret))
+        }
+    }
+}
+
+/// Shared handling for chained type application — formerly the separate
+/// `Annotated(outer, inner)` variant (`Seq@Int`, `@[key:val]@Int`). The only place this
+/// logic lives; both `resolve_annotation` and `resolve_annotation_as_type` delegate here
+/// via `Annotation::as_application` instead of each maintaining their own copy.
+async fn resolve_application(
+    outer: &Annotation,
+    inner: &Annotation,
+    span: Span,
+    state: &mut InferState,
+    constraints: &mut Vec<Arc<crate::value::Value>>,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<(&HashMap<String, TypeValue>, bool)>,
+) -> Result<TypeValue, Diagnostic> {
+    // @Outer@Inner means: apply type constructor `outer` to type argument `inner`.
+    // One path for all types — resolve the argument, then delegate to resolve_type_head
+    // which handles TyCons, type-stage functions, classes, and kind constructors uniformly.
+    let arg = Box::pin(resolve_annotation(
+        inner,
+        span.clone(),
+        state,
+        constraints,
+        ann_mapping,
+        row_ann_mapping,
+        type_params_scope,
+    ))
+    .await?;
+    // When outer is a bare name (the common case: Seq@Int, Map@[K:V]), call
+    // resolve_type_head directly. For non-bare-name outers (PropertyDict@Inner), resolve
+    // the outer to a type and produce App(outer_ty, arg).
+    match outer.bare_name() {
+        Some(name) => Box::pin(resolve_type_head(name, &[arg], state, constraints, span)).await,
+        None => {
+            let outer_ty = Box::pin(resolve_annotation(
+                outer,
+                span.clone(),
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            ))
+            .await?;
+            Ok(make_typevalue_app(outer_ty, arg))
         }
     }
 }
@@ -867,19 +922,6 @@ async fn resolve_annotation_as_type(
     type_params_scope: Option<(&HashMap<String, TypeValue>, bool)>,
 ) -> Result<TypeValue, Diagnostic> {
     match ann {
-        Annotation::Simple(name) => {
-            let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            resolve_type_name(
-                name,
-                span,
-                state,
-                constraints,
-                ann_mapping,
-                type_params_scope,
-                &row_ref,
-            )
-            .await
-        }
         Annotation::Quote => {
             // The quoting annotation constrains the value to be an AST node — a
             // runtime-determined type. The type checker cannot statically determine
@@ -887,83 +929,121 @@ async fn resolve_annotation_as_type(
             // (consistent with typecheck_narrow.rs:368).
             Ok(state.fresh_type_var(&span))
         }
-        Annotation::PropertyDict(surface_entries) => {
-            // Check for the @[type: T] shorthand — user-written annotations like
-            // `x@[type: Int  default: 0]` where "type:" specifies the type alongside metadata.
-            // When all keys are annotation metadata keys and "type:" is present, resolve
-            // the type: value as the type expression rather than as a structural record.
-            //
-            // This mirrors the same shorthand detection in resolve_annotation (line ~1599)
-            // so that `Fn@SomeType [params]` resolves the Fn's return type as TyCon("SomeType")
-            // rather than Dict({type: TyCon("SomeType")}).
-            //
-            // Metadata keys: "type", "default", "repr", "doc", "is"
-            // Non-metadata key (e.g. "id", "name") means @[type: T  id: X] is a structural
-            // record — the "type" here is just a field name, not the shorthand.
-            const METADATA_KEYS: &[&str] = &["type", "default", "repr", "doc", "is"];
-            let has_non_metadata_key = surface_entries.iter().any(|se| {
-                if let Some(ref k) = se.node.key {
-                    match &k.expr {
-                        SurfaceExpression::StringLiteral { content: s, .. } => {
-                            !METADATA_KEYS.contains(&s.as_str())
+        Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } => {
+                let row_ref: Option<&HashMap<String, String>> =
+                    row_ann_mapping.as_ref().map(|m| &**m);
+                resolve_type_name(
+                    name,
+                    span,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    type_params_scope,
+                    &row_ref,
+                )
+                .await
+            }
+            SurfaceExpression::Dict { entries: surface_entries, .. } => {
+                // Check for the @[type: T] shorthand — user-written annotations like
+                // `x@[type: Int  default: 0]` where "type:" specifies the type alongside metadata.
+                // When all keys are annotation metadata keys and "type:" is present, resolve
+                // the type: value as the type expression rather than as a structural record.
+                //
+                // This mirrors the same shorthand detection in resolve_annotation (line ~1599)
+                // so that `Fn@SomeType [params]` resolves the Fn's return type as TyCon("SomeType")
+                // rather than Dict({type: TyCon("SomeType")}).
+                //
+                // Metadata keys: "type", "default", "repr", "doc", "is"
+                // Non-metadata key (e.g. "id", "name") means @[type: T  id: X] is a structural
+                // record — the "type" here is just a field name, not the shorthand.
+                const METADATA_KEYS: &[&str] = &["type", "default", "repr", "doc", "is"];
+                let has_non_metadata_key = surface_entries.iter().any(|se| {
+                    if let Some(ref k) = se.node.key {
+                        match &k.expr {
+                            SurfaceExpression::StringLiteral { content: s, .. } => {
+                                !METADATA_KEYS.contains(&s.as_str())
+                            }
+                            _ => true, // non-string key → treat as non-metadata
                         }
-                        _ => true, // non-string key → treat as non-metadata
+                    } else {
+                        true // positional entry → not the @[type: T] shorthand
                     }
-                } else {
-                    true // positional entry → not the @[type: T] shorthand
+                });
+                if !has_non_metadata_key {
+                    if let Some(type_node) = surface_entries.iter().find_map(|se| {
+                        let key_node = se.node.key.as_ref()?;
+                        match &key_node.expr {
+                            SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
+                                Some(&se.node.value)
+                            }
+                            _ => None,
+                        }
+                    }) {
+                        return Box::pin(resolve_type_expr(
+                            type_node,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            row_ann_mapping,
+                            type_params_scope,
+                        ))
+                        .await;
+                    }
                 }
-            });
-            if !has_non_metadata_key {
-                if let Some(type_node) = surface_entries.iter().find_map(|se| {
-                    let key_node = se.node.key.as_ref()?;
-                    match &key_node.expr {
-                        SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
-                            Some(&se.node.value)
-                        }
-                        _ => None,
-                    }
-                }) {
-                    return Box::pin(resolve_type_expr(
-                        type_node,
+                // All-positional or has non-metadata keys: structural type, function type, or
+                // type constructor application. Delegate to resolve_type_dict.
+                resolve_type_dict(
+                    surface_entries,
+                    span,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    TypeDictCtx {
+                        type_params_scope,
+                        tycon_name: "",
+                    },
+                )
+                .await
+            }
+            _ => match ann.as_application() {
+                // Chained type application (formerly Annotated(outer, inner)): for fn
+                // annotations, forward to the full resolver (e.g. fn@Seq@Int should
+                // resolve the application properly).
+                Some((outer, inner)) => {
+                    resolve_application(
+                        &outer,
+                        &inner,
+                        span,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    )
+                    .await
+                }
+                // Any other SurfaceExpression shape: fall back to the general
+                // type-expression resolver, which already handles the full range of
+                // raw-node type syntax (and correctly errors on anything invalid).
+                None => {
+                    Box::pin(resolve_type_expr(
+                        node,
                         state,
                         constraints,
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
                     ))
-                    .await;
+                    .await
                 }
-            }
-            // All-positional or has non-metadata keys: structural type, function type, or
-            // type constructor application. Delegate to resolve_type_dict.
-            resolve_type_dict(
-                surface_entries,
-                span,
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                TypeDictCtx {
-                    type_params_scope,
-                    tycon_name: "",
-                },
-            )
-            .await
-        }
-        Annotation::Annotated(outer, inner) => {
-            // For fn annotations, forward to full resolver
-            // (e.g., fn@Seq@Int should resolve the Annotated properly)
-            resolve_annotation(
-                &Annotation::Annotated(outer.clone(), inner.clone()),
-                span,
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                type_params_scope,
-            )
-            .await
-        }
+            },
+        },
     }
 }
 
@@ -977,19 +1057,6 @@ pub(crate) async fn resolve_annotation(
     type_params_scope: Option<(&HashMap<String, TypeValue>, bool)>,
 ) -> Result<TypeValue, Diagnostic> {
     match ann {
-        Annotation::Simple(name) => {
-            let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            resolve_type_name(
-                name,
-                span,
-                state,
-                constraints,
-                ann_mapping,
-                type_params_scope,
-                &row_ref,
-            )
-            .await
-        }
         Annotation::Quote => {
             // The quoting annotation constrains the value to be an AST node — a
             // runtime-determined type. The type checker cannot statically determine
@@ -997,158 +1064,153 @@ pub(crate) async fn resolve_annotation(
             // (consistent with typecheck_narrow.rs:368).
             Ok(state.fresh_type_var(&span))
         }
-        Annotation::Annotated(outer, inner) => {
-            // @Outer@Inner means: apply type constructor `outer` to type argument `inner`.
-            // One path for all types — resolve the argument, then delegate to resolve_type_head
-            // which handles TyCons, type-stage functions, classes, and kind constructors uniformly.
-            let arg = Box::pin(resolve_annotation(
-                inner,
-                span.clone(),
-                state,
-                constraints,
-                ann_mapping,
-                row_ann_mapping,
-                type_params_scope,
-            ))
-            .await?;
-            // Extract the name from outer for resolve_type_head dispatch.
-            // When outer is a Simple annotation (the common case: Seq@Int, Map@[K:V]),
-            // call resolve_type_head directly. For non-Simple outers (PropertyDict@Inner),
-            // resolve the outer to a type and produce App(outer_ty, arg).
-            match outer.as_ref() {
-                Annotation::Simple(name) => {
-                    Box::pin(resolve_type_head(name, &[arg], state, constraints, span)).await
+        Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } => {
+                let row_ref: Option<&HashMap<String, String>> =
+                    row_ann_mapping.as_ref().map(|m| &**m);
+                resolve_type_name(
+                    name,
+                    span,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    type_params_scope,
+                    &row_ref,
+                )
+                .await
+            }
+            SurfaceExpression::Dict { entries: surface_entries, .. } => {
+                // A record-type-literal-shaped annotation can mean different things
+                // depending on its keys:
+                //
+                // 1. Type shorthand: @[type: T  default: V  repr: R]
+                //    If a "type:" key is present, resolve its value as the annotation type.
+                //    The "default:" and "repr:" keys are handled separately by resolve_type_assert.
+                //
+                // 2. Structural type: @[field: Type ...], @[or A B], @[Seq Int], etc.
+                //    No "type:" key → delegate to resolve_property_dict_as_record which calls
+                //    resolve_type_dict (handles union/intersection/record types, type constructors,
+                //    Fn type expressions) and falls back to Unknown for metadata-only annotations.
+                //
+                // Check for the "type:" key using SurfaceEntry directly (avoids allocation when
+                // the key is present and we only need the value node).
+                //
+                // The "type:" shorthand ONLY applies when all keys are annotation metadata
+                // (type:, default:, repr:, doc:, is:). If there are non-metadata keys like "id:", "name:",
+                // etc., the annotation must be a structural record type — "type:" is a field name.
+                // E.g.: @[type: String] → Type::Str (shorthand)
+                //       @[type: String id: Int] → Record{type: Str, id: Int} (structural)
+                // "is:" is narrowing metadata: @[is: Int] declares a type predicate narrowing hint
+                // for path-sensitive type narrowing in if/match conditions.
+                let metadata_keys = ["type", "default", "repr", "doc", "is"];
+                let has_non_metadata_key = surface_entries.iter().any(|se| {
+                    if let Some(ref k) = se.node.key {
+                        match &k.expr {
+                            SurfaceExpression::StringLiteral { content: s, .. } => {
+                                !metadata_keys.contains(&s.as_str())
+                            }
+                            _ => true, // non-string key → non-metadata
+                        }
+                    } else {
+                        true // positional entry → non-metadata
+                    }
+                });
+
+                let type_value_node = if !has_non_metadata_key {
+                    surface_entries.iter().find_map(|se| {
+                        let key_node = se.node.key.as_ref()?;
+                        match &key_node.expr {
+                            SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
+                                Some(&se.node.value)
+                            }
+                            _ => None,
+                        }
+                    })
+                } else {
+                    None
+                };
+
+                // When all keys are annotation metadata but no "type:" key is present,
+                // the annotation carries only metadata (e.g., @[is: Int], @[default: 3],
+                // @[doc: "..."]). Return Unknown: the metadata doesn't define a type.
+                // Note: "label" is not in metadata_keys, so @[label: l] takes the normal
+                // has_non_metadata_key path and is handled by the label: branch below.
+                if !has_non_metadata_key && type_value_node.is_none() {
+                    return Ok(make_typevalue_unknown());
                 }
-                _ => {
-                    // Non-Simple outer: resolve outer as a type then apply arg to it.
-                    let outer_ty = Box::pin(resolve_annotation(
-                        outer,
-                        span.clone(),
+
+                if let Some(type_node) = type_value_node {
+                    // @[type: T ...] shorthand — resolve the type: value as a type expression.
+                    resolve_type_expr(
+                        type_node,
                         state,
                         constraints,
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ))
-                    .await?;
-                    Ok(make_typevalue_app(outer_ty, arg))
-                }
-            }
-        }
-        Annotation::PropertyDict(surface_entries) => {
-            // PropertyDict can mean different things depending on its keys:
-            //
-            // 1. Type shorthand: @[type: T  default: V  repr: R]
-            //    If a "type:" key is present, resolve its value as the annotation type.
-            //    The "default:" and "repr:" keys are handled separately by resolve_type_assert.
-            //
-            // 2. Structural type: @[field: Type ...], @[or A B], @[Seq Int], etc.
-            //    No "type:" key → delegate to resolve_property_dict_as_record which calls
-            //    resolve_type_dict (handles union/intersection/record types, type constructors,
-            //    Fn type expressions) and falls back to Unknown for metadata-only annotations.
-            //
-            // Check for the "type:" key using SurfaceEntry directly (avoids allocation when
-            // the key is present and we only need the value node).
-            //
-            // The "type:" shorthand ONLY applies when all keys are annotation metadata
-            // (type:, default:, repr:, doc:, is:). If there are non-metadata keys like "id:", "name:",
-            // etc., the annotation must be a structural record type — "type:" is a field name.
-            // E.g.: @[type: String] → Type::Str (shorthand)
-            //       @[type: String id: Int] → Record{type: Str, id: Int} (structural)
-            // "is:" is narrowing metadata: @[is: Int] declares a type predicate narrowing hint
-            // for path-sensitive type narrowing in if/match conditions.
-            let metadata_keys = ["type", "default", "repr", "doc", "is"];
-            let has_non_metadata_key = surface_entries.iter().any(|se| {
-                if let Some(ref k) = se.node.key {
-                    match &k.expr {
-                        SurfaceExpression::StringLiteral { content: s, .. } => {
-                            !metadata_keys.contains(&s.as_str())
+                    )
+                    .await
+                } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
+                    // @[label: name] — named Label-kinded TypeVar annotation.
+                    // Only fires when there is exactly one entry and its key is "label".
+                    if surface_entries.len() == 1 {
+                        let key_node = se.node.key.as_ref()?;
+                        match &key_node.expr {
+                            SurfaceExpression::StringLiteral { content: s, .. } if s == "label" => {
+                                Some(&se.node.value)
+                            }
+                            _ => None,
                         }
-                        _ => true, // non-string key → non-metadata
+                    } else {
+                        None
                     }
-                } else {
-                    true // positional entry → non-metadata
-                }
-            });
-
-            let type_value_node = if !has_non_metadata_key {
-                surface_entries.iter().find_map(|se| {
-                    let key_node = se.node.key.as_ref()?;
-                    match &key_node.expr {
-                        SurfaceExpression::StringLiteral { content: s, .. } if s == "type" => {
-                            Some(&se.node.value)
-                        }
-                        _ => None,
-                    }
-                })
-            } else {
-                None
-            };
-
-            // When all keys are annotation metadata but no "type:" key is present,
-            // the annotation carries only metadata (e.g., @[is: Int], @[default: 3],
-            // @[doc: "..."]). Return Unknown: the metadata doesn't define a type.
-            // Note: "label" is not in metadata_keys, so @[label: l] takes the normal
-            // has_non_metadata_key path and is handled by the label: branch below.
-            if !has_non_metadata_key && type_value_node.is_none() {
-                return Ok(make_typevalue_unknown());
-            }
-
-            if let Some(type_node) = type_value_node {
-                // @[type: T ...] shorthand — resolve the type: value as a type expression.
-                resolve_type_expr(
-                    type_node,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                )
-                .await
-            } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
-                // @[label: name] — named Label-kinded TypeVar annotation.
-                // Only fires when there is exactly one entry and its key is "label".
-                if surface_entries.len() == 1 {
-                    let key_node = se.node.key.as_ref()?;
-                    match &key_node.expr {
-                        SurfaceExpression::StringLiteral { content: s, .. } if s == "label" => {
-                            Some(&se.node.value)
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }) {
-                // @[label: name] — validate and create a Label-kinded TypeVar.
-                //
-                // Validation rules (from doc/07-type-extensions.md §Label polymorphism):
-                // 1. Value must be a bare identifier (VarRef), not a string literal.
-                // 2. The identifier must start with a lowercase letter (label TypeVars are
-                //    lowercase by convention, mirroring type-kind TypeVars).
-                match &label_value_node.expr {
-                    SurfaceExpression::StringLiteral { .. } => Err(Diagnostic::error(
-                        KIND,
-                        "label: value must be a bare name (e.g. `label: l`), not a string literal",
-                        span,
-                    )),
-                    SurfaceExpression::VarRef { name, .. } => {
-                        if name.starts_with(|c: char| c.is_uppercase()) {
-                            Err(Diagnostic::error(KIND,
-                                format!(
-                                    "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
-                                    name
-                                ),
-                                span,
-                            ))
-                        } else {
-                            // Valid lowercase label name: create a Label-kinded TypeVar.
-                            // If we're inside a function scope (ann_mapping is Some), reuse the
-                            // same TypeVar for the same label name across multiple params
-                            // (same-name label vars must share the same TypeVar).
-                            let fresh = if let Some(ref mut mapping) = ann_mapping {
-                                if let Some(existing_var) = mapping.get(name.as_str()) {
-                                    existing_var.clone()
+                }) {
+                    // @[label: name] — validate and create a Label-kinded TypeVar.
+                    //
+                    // Validation rules (from doc/07-type-extensions.md §Label polymorphism):
+                    // 1. Value must be a bare identifier (VarRef), not a string literal.
+                    // 2. The identifier must start with a lowercase letter (label TypeVars are
+                    //    lowercase by convention, mirroring type-kind TypeVars).
+                    match &label_value_node.expr {
+                        SurfaceExpression::StringLiteral { .. } => Err(Diagnostic::error(
+                            KIND,
+                            "label: value must be a bare name (e.g. `label: l`), not a string literal",
+                            span,
+                        )),
+                        SurfaceExpression::VarRef { name, .. } => {
+                            if name.starts_with(|c: char| c.is_uppercase()) {
+                                Err(Diagnostic::error(KIND,
+                                    format!(
+                                        "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
+                                        name
+                                    ),
+                                    span,
+                                ))
+                            } else {
+                                // Valid lowercase label name: create a Label-kinded TypeVar.
+                                // If we're inside a function scope (ann_mapping is Some), reuse the
+                                // same TypeVar for the same label name across multiple params
+                                // (same-name label vars must share the same TypeVar).
+                                let fresh = if let Some(ref mut mapping) = ann_mapping {
+                                    if let Some(existing_var) = mapping.get(name.as_str()) {
+                                        existing_var.clone()
+                                    } else {
+                                        let level = state.ctx.current_level;
+                                        let (v, _) = state.fresh_type_var_with(
+                                            Some("_label"),
+                                            Some(level),
+                                            "Label",
+                                            &label_value_node.span,
+                                        );
+                                        // kind_env removed in S-1003 — Label-kinded TypeVars are tracked via ctx.levels.
+                                        state.type_var_source_names.insert(v.clone(), name.clone());
+                                        mapping.insert(name.clone(), v.clone());
+                                        v
+                                    }
                                 } else {
                                     let level = state.ctx.current_level;
                                     let (v, _) = state.fresh_type_var_with(
@@ -1157,66 +1219,84 @@ pub(crate) async fn resolve_annotation(
                                         "Label",
                                         &label_value_node.span,
                                     );
-                                    // kind_env removed in S-1003 — Label-kinded TypeVars are tracked via ctx.levels.
-                                    state.type_var_source_names.insert(v.clone(), name.clone());
-                                    mapping.insert(name.clone(), v.clone());
+                                    // kind_env removed in S-1003
                                     v
-                                }
-                            } else {
-                                let level = state.ctx.current_level;
-                                let (v, _) = state.fresh_type_var_with(
-                                    Some("_label"),
-                                    Some(level),
-                                    "Label",
-                                    &label_value_node.span,
+                                };
+                                assert!(
+                                    state.get_level(&fresh).is_some(),
+                                    "invariant: label var just inserted must be present in state.ctx.levels"
                                 );
-                                // kind_env removed in S-1003
-                                v
-                            };
-                            assert!(
-                                state.get_level(&fresh).is_some(),
-                                "invariant: label var just inserted must be present in state.ctx.levels"
-                            );
-                            Ok(make_typevalue_var(&fresh))
+                                Ok(make_typevalue_var(&fresh))
+                            }
                         }
+                        _ => Err(Diagnostic::error(
+                            KIND,
+                            "label: value must be a bare name (e.g. `label: l`)",
+                            span,
+                        )),
                     }
-                    _ => Err(Diagnostic::error(
-                        KIND,
-                        "label: value must be a bare name (e.g. `label: l`)",
-                        span,
-                    )),
-                }
-            } else {
-                // Validate: all keyed entries must have string (bare-word) keys.
-                // Integer keys (e.g., @[42: Int]) are not valid type annotation syntax.
-                for se in surface_entries.iter() {
-                    if let Some(ref k) = se.node.key {
-                        match &k.expr {
-                            SurfaceExpression::StringLiteral { .. }
-                            | SurfaceExpression::VarRef { .. } => {}
-                            _ => {
-                                return Err(Diagnostic::error(
-                                    "invalid-annotation",
-                                    "property dict type annotation requires string (bare-word) keys",
-                                    k.span.clone(),
-                                ));
+                } else {
+                    // Validate: all keyed entries must have string (bare-word) keys.
+                    // Integer keys (e.g., @[42: Int]) are not valid type annotation syntax.
+                    for se in surface_entries.iter() {
+                        if let Some(ref k) = se.node.key {
+                            match &k.expr {
+                                SurfaceExpression::StringLiteral { .. }
+                                | SurfaceExpression::VarRef { .. } => {}
+                                _ => {
+                                    return Err(Diagnostic::error(
+                                        "invalid-annotation",
+                                        "property dict type annotation requires string (bare-word) keys",
+                                        k.span.clone(),
+                                    ));
+                                }
                             }
                         }
                     }
+                    // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
+                    Box::pin(resolve_property_dict_as_record(
+                        surface_entries,
+                        span,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    ))
+                    .await
                 }
-                // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
-                Box::pin(resolve_property_dict_as_record(
-                    surface_entries,
-                    span,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                ))
-                .await
             }
-        }
+            _ => match ann.as_application() {
+                // @Outer@Inner means: apply type constructor `outer` to type argument
+                // `inner` (formerly the separate Annotated variant) — shared handling.
+                Some((outer, inner)) => {
+                    resolve_application(
+                        &outer,
+                        &inner,
+                        span,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    )
+                    .await
+                }
+                // Any other SurfaceExpression shape: fall back to the general
+                // type-expression resolver.
+                None => {
+                    Box::pin(resolve_type_expr(
+                        node,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    ))
+                    .await
+                }
+            },
+        },
     }
 }
 
@@ -1437,6 +1517,7 @@ async fn instantiate_tycon_def(
     alias: &TyConDef,
     type_args: &[TypeValue],
     state: &mut InferState,
+    span: Span,
 ) -> Result<TypeValue, Diagnostic> {
     // Build substitution from parameter names to provided types
     let mut type_subst: HashMap<String, TypeValue> = HashMap::new();
@@ -1513,7 +1594,7 @@ async fn instantiate_tycon_def(
                     "type argument(s) {:?} do not satisfy constraint '{}' required by type alias",
                     tags, class_name,
                 ),
-                rust_span!(),
+                span.clone(),
             ));
         }
     }
@@ -1548,66 +1629,64 @@ async fn resolve_type_head(
     constraints: &mut Vec<Arc<crate::value::Value>>,
     span: Span,
 ) -> Result<TypeValue, Diagnostic> {
-    // Step 0: look up name in scope chains. Type-stage chain is searched FIRST
-    // (type expressions see type-stage definitions before runtime definitions).
-    // Then the current scope chain (accumulated from all documents).
+    // Step 0: look up name in the unified scope chain (accumulated from all documents).
+    // Type expressions must resolve type-stage bindings before runtime-stage ones, the
+    // same stage priority `resolve.rs::resolve_name` uses for type-expression VarRefs —
+    // a name may legitimately be bound at both stages (e.g. a type-stage alias to a
+    // TypeNode, and an unrelated runtime-stage binding of the same name), and stage
+    // priority must override mere lexical depth. `get_in_chain_staged` implements this;
+    // it must NOT be replaced with a flat/depth-only scan.
     let mut scope_lookup_info: Option<String> = None;
     let _ = &scope_lookup_info;
-    let chains_to_search: Vec<&[std::sync::Arc<crate::symbol_table::SymbolTable>]> = {
-        let mut v: Vec<&[std::sync::Arc<crate::symbol_table::SymbolTable>]> = Vec::new();
-        if !state.type_stage_scope.is_empty() {
-            v.push(&state.type_stage_scope);
-        }
-        if !state.current_scope.is_empty() {
-            v.push(&state.current_scope);
-        }
-        v
-    };
-    for chain in &chains_to_search {
-        let (chain_result, chain_diags) =
-            crate::symbol_table::SymbolTable::get_in_chain(chain, name).into_parts();
-        state.diagnostics.extend(chain_diags);
-        if let Some(thunk) = chain_result? {
-            if let Some(eval_ctx) = &state.eval_ctx {
-                let (mat_result, _mat_diags) = crate::eval::materialize(&thunk, None, eval_ctx)
-                    .await
-                    .into_parts();
-                let val = mat_result?;
-                let (tv_result, _tv_diags) = typenode_value_to_type(
-                    &val,
-                    eval_ctx,
-                    &state.type_stage_data.scope,
-                    &state.type_name_to_id,
-                )
+    let (chain_result, chain_diags) = crate::symbol_table::SymbolTable::get_in_chain_staged(
+        &state.current_scope,
+        name,
+        &[
+            crate::symbol_table::Stage::Type,
+            crate::symbol_table::Stage::Runtime,
+        ],
+    )
+    .into_parts();
+    state.diagnostics.extend(chain_diags);
+    if let Some(thunk) = chain_result? {
+        if let Some(eval_ctx) = &state.eval_ctx {
+            let (mat_result, _mat_diags) = crate::eval::materialize(&thunk, None, eval_ctx)
                 .await
                 .into_parts();
-                let convert_result = tv_result?;
-                if let Some(tv) = convert_result {
-                    if args.is_empty() {
-                        return Ok(tv);
-                    }
-                    let mut result = tv;
-                    for arg in args {
-                        result = make_typevalue_app(result, Arc::clone(arg));
-                    }
-                    return Ok(result);
+            let val = mat_result?;
+            let (tv_result, _tv_diags) = typenode_value_to_type(
+                &val,
+                eval_ctx,
+                &state.type_stage_data.scope,
+                &state.type_name_to_id,
+            )
+            .await
+            .into_parts();
+            let convert_result = tv_result?;
+            if let Some(tv) = convert_result {
+                if args.is_empty() {
+                    return Ok(tv);
                 }
-                scope_lookup_info = Some(format!(
-                    "found in scope, materialized to type_decl_id={}, but typenode_value_to_type returned None",
-                    val.type_decl_id_of(),
-                ));
-            } else {
-                scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
+                let mut result = tv;
+                for arg in args {
+                    result = make_typevalue_app(result, Arc::clone(arg));
+                }
+                return Ok(result);
             }
+            scope_lookup_info = Some(format!(
+                "found in scope, materialized to type_decl_id={}, but typenode_value_to_type returned None",
+                val.type_decl_id_of(),
+            ));
+        } else {
+            scope_lookup_info = Some("found in scope but no eval_ctx available".to_string());
         }
     }
-    // If not found in any chain, build diagnostic info.
+    // If not found in scope, build diagnostic info.
     if scope_lookup_info.is_none() {
-        let ts_count = state.type_stage_scope.len();
         let cs_count = state.current_scope.len();
         scope_lookup_info = Some(format!(
-            "not found in scope (type_stage: {} frames, current: {} frames)",
-            ts_count, cs_count
+            "not found in scope (current: {} frames)",
+            cs_count
         ));
     }
 
@@ -1669,20 +1748,70 @@ async fn resolve_type_head(
         return Ok(make_typevalue_var(&fresh));
     }
 
-    // Step 5: check tycon_env for runtime type declarations (e.g., Boolean: [type True False]).
+    // Step 5: check tycon_env for type declarations (e.g., Boolean: [type True False]) and
+    // structural type aliases (e.g. CodecInvalidHandler: [type [bind: [i o]] [Fn ...]]).
     // Annotations resolve in the type-stage env first, then fall back to runtime scope.
     // This handles types declared in the same dict or an enclosing runtime scope.
-    if state
+    //
+    // This is the single canonical mechanism for resolving `TyCon` / `TyCon Arg1 Arg2 ...`
+    // for BOTH syntactic forms (`Seq@Int` chained-annotation via resolve_application, and
+    // `[Seq Int]` implied-call via resolve_type_expr) — callers must resolve their own
+    // argument TypeValues and delegate here rather than re-deriving this logic.
+    //
+    // `def.constructors.is_empty()` is the exact, already-computed discriminant between a
+    // nominal ADT (non-empty: real NominalVariant tags were extracted by
+    // `build_tycon_def_for_entry` — never substitute into `body`, which would discard the
+    // type's nominal identity, swap its TypeValue ctor tag away from Nominal/App, and break
+    // every downstream nominal-identity check) and a structural type alias (empty — `body`
+    // IS the type definition; substituting type args into it and returning the result is
+    // the only correct way to resolve `[AliasName Arg1 Arg2]`, since no lazy/on-demand
+    // alias-unfolding exists anywhere else in the type checker — `bas.rs`'s subtyping never
+    // substitutes into `tycon_env[id].body`).
+    if let Some(def) = state
         .type_name_to_id
         .get(name)
-        .is_some_and(|id| state.tycon_env.contains_key(id))
+        .and_then(|id| state.tycon_env.get(id))
+        .cloned()
     {
+        let type_decl_id = *state.type_name_to_id.get(name).unwrap_or(&0);
+        if def.constructors.is_empty() {
+            // Structural type alias: always require exact arity. Unlike a nominal ADT, a
+            // partially-applied alias has no sensible substituted body to fall back to —
+            // there is no separate "generic head" identity for an alias the way `Nominal(id)`
+            // serves that role for an ADT (used by Operator-kinded partial references).
+            if args.len() != def.params.len() {
+                return Err(Diagnostic::error(
+                    KIND,
+                    format!(
+                        "type alias '{name}' expects {} type parameter(s), got {}",
+                        def.params.len(),
+                        args.len()
+                    ),
+                    span,
+                ));
+            }
+            return Box::pin(instantiate_tycon_def(def.as_ref(), args, state, span)).await;
+        }
+        // Nominal ADT: wrap in App, preserving nominal identity (never substitute into
+        // `def.body`). Partial application (fewer args than arity) is legitimate — it
+        // produces a type-constructor-shaped App chain used e.g. for Operator-kinded
+        // references. Providing MORE args than the type's arity is always a user error,
+        // never something to silently truncate.
         if args.is_empty() {
-            return Ok(make_typevalue_nominal(
-                *state.type_name_to_id.get(name).unwrap_or(&0),
+            return Ok(make_typevalue_nominal(type_decl_id));
+        }
+        if args.len() > def.arity() {
+            return Err(Diagnostic::error(
+                KIND,
+                format!(
+                    "type constructor '{name}' takes at most {} type argument(s), got {}",
+                    def.arity(),
+                    args.len()
+                ),
+                span,
             ));
         }
-        let mut result = make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
+        let mut result = make_typevalue_nominal(type_decl_id);
         for arg in args {
             result = make_typevalue_app(result, Arc::clone(arg));
         }
@@ -1702,20 +1831,6 @@ async fn resolve_type_head(
     if let Some(info) = scope_lookup_info {
         diag = diag.with_note(info);
     }
-    for (i, frame) in state.type_stage_scope.iter().enumerate() {
-        let entry_names: Vec<&str> = frame.entries().keys().map(|s| s.as_str()).take(8).collect();
-        let suffix = if frame.len() > 8 {
-            format!(" ... ({} total)", frame.len())
-        } else {
-            String::new()
-        };
-        diag = diag.with_note(format!(
-            "type_stage[{}]: [{}{}]",
-            i,
-            entry_names.join(", "),
-            suffix,
-        ));
-    }
     for (i, frame) in state.current_scope.iter().enumerate() {
         let entry_names: Vec<&str> =
             frame.entries().keys().map(|s| s.as_str()).take(8).collect();
@@ -1725,8 +1840,9 @@ async fn resolve_type_head(
             String::new()
         };
         diag = diag.with_note(format!(
-            "current_scope[{}]: [{}{}]",
+            "current_scope[{}] ({:?}): [{}{}]",
             i,
+            frame.stage(),
             entry_names.join(", "),
             suffix,
         ));
@@ -1886,14 +2002,12 @@ pub(crate) async fn resolve_type_expr(
             } else {
                 // For all other parameterized type annotations in type-expression position
                 // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
-                // reconstruct the `Annotation::Annotated(name, inner)` and dispatch through
-                // `resolve_annotation` which handles `"Handle"`, `"Seq"`, `"Map"`, etc.
-                let full_ann = Annotation::Annotated(
-                    Box::new(Annotation::Simple(name.clone())),
-                    Box::new(annotation.node.clone()),
-                );
+                // `node` already IS the VarRef-with-nested-annotation shape Annotation::Expr
+                // wraps — no reconstruction needed (formerly rebuilt as a synthetic
+                // Annotated(Simple(name), inner) before dispatching to resolve_annotation,
+                // which handles `"Handle"`, `"Seq"`, `"Map"`, etc. via `as_application`).
                 Box::pin(resolve_annotation(
-                    &full_ann,
+                    &Annotation::Expr(Arc::clone(node)),
                     node.span.clone(),
                     state,
                     constraints,
@@ -2097,53 +2211,25 @@ pub(crate) async fn resolve_type_expr(
                 }
             }
 
-            // TyConDef-based type constructor application (T-949) in implied-call position.
-            // Primary path for user-defined type constructors in [TyCon Arg1 Arg2 ...] form.
-            // Primary path: look up via TyConDef (covers user-defined types and builtin TyCons
-            // registered in T-1018: Seq, Map, Handle). Falls through to kind_env for unregistered names.
+            // Type constructor application in implied-call position: `[TyCon Arg1 Arg2 ...]`.
+            // Covers both nominal ADTs (Seq, Map, Handle, user-declared ADTs) and
+            // parameterized structural type aliases (e.g. CodecInvalidHandler) — resolve
+            // all arguments, then delegate entirely to `resolve_type_head`'s Step 5, the one
+            // canonical mechanism that discriminates ADT-vs-alias and does App-wrapping or
+            // substitution accordingly (shared with `Seq@Int`-style chained annotations via
+            // `resolve_application`, and with `resolve_type_dict`'s unified-type-head block).
+            // Do not reintroduce a parallel inline TyConDef lookup/branch here.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(def) = state
+                if state
                     .type_name_to_id
                     .get(name.as_str())
-                    .and_then(|id| state.tycon_env.get(id))
-                    .cloned()
+                    .is_some_and(|id| state.tycon_env.contains_key(id))
                 {
-                    let arity = def.arity();
-                    if arity > 0 {
-                        let mut result =
-                            make_typevalue_nominal(*state.type_name_to_id.get(name).unwrap_or(&0));
-                        let arg_count = std::cmp::min(arity, args.len());
-                        for arg_node in args.iter().take(arg_count) {
-                            let arg = Box::pin(resolve_type_expr(
-                                arg_node,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await?;
-                            result = make_typevalue_app(result, arg);
-                        }
-                        return Ok(result);
-                    }
-                }
-            }
-
-            // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(alias) = state
-                    .type_name_to_id
-                    .get(name.as_str())
-                    .and_then(|id| state.tycon_env.get(id))
-                    .cloned()
-                {
-                    // Resolve all type arguments
-                    let mut type_args = Vec::new();
-                    for arg in args {
-                        type_args.push(
+                    let mut resolved_args = Vec::with_capacity(args.len());
+                    for arg_node in args {
+                        resolved_args.push(
                             Box::pin(resolve_type_expr(
-                                arg,
+                                arg_node,
                                 state,
                                 constraints,
                                 ann_mapping,
@@ -2153,24 +2239,14 @@ pub(crate) async fn resolve_type_expr(
                             .await?,
                         );
                     }
-
-                    // Check arity
-                    if type_args.len() != alias.params.len() {
-                        return Err(Diagnostic::error(
-                            KIND,
-                            format!(
-                                "type alias '{}' expects {} type parameter(s), got {}",
-                                name,
-                                alias.params.len(),
-                                type_args.len()
-                            ),
-                            node.span.clone(),
-                        ));
-                    }
-
-                    // Build substitution and apply to body
-                    return Box::pin(instantiate_tycon_def(alias.as_ref(), &type_args, state))
-                        .await;
+                    return Box::pin(resolve_type_head(
+                        name,
+                        &resolved_args,
+                        state,
+                        constraints,
+                        node.span.clone(),
+                    ))
+                    .await;
                 }
             }
 

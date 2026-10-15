@@ -2249,8 +2249,7 @@ async fn run_eval(args: RunArgs) -> tinct::DiagnosticResult<()> {
             .expect("runtime diagnostics mutex poisoned");
         for d in diags.iter() {
             let source_text = std::fs::read_to_string(d.primary_span().file.as_ref()).unwrap_or_default();
-            let file = d.primary_span().file.as_ref();
-            eprintln!("{}", format_diagnostic(d, &source_text, file));
+            eprintln!("{}", format_diagnostic(d, &source_text));
         }
     }
 
@@ -2354,7 +2353,7 @@ async fn run_fmt(
         let (parse_result, _parse_diags) = parse(&source, Arc::clone(&sf_path)).into_parts();
         let output = match parse_result {
             Ok(v) => v,
-            Err(e) => return tinct::DiagnosticResult::err(cli_error(tinct::format_diagnostic(&e, &source, file_path))),
+            Err(e) => return tinct::DiagnosticResult::err(cli_error(tinct::format_diagnostic(&e, &source))),
         };
 
         // PIPELINE INVARIANT: parse -> desugar -> expand -> resolve -> typecheck.
@@ -2412,7 +2411,7 @@ async fn run_fmt(
                 } else {
                     d.clone()
                 };
-                eprintln!("{}", format_diagnostic(&effective, &source, file_path));
+                eprintln!("{}", format_diagnostic(&effective, &source));
             }
             if strict && has_fatal_diag {
                 return tinct::DiagnosticResult::err(cli_error(

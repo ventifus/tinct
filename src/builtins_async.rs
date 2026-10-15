@@ -217,6 +217,7 @@ pub(crate) fn builtin_task(
                         call_span: call_span_clone,
                         scope: crate::symbol_table::SymbolTable::empty_chain(),
                         ctx: Arc::clone(&ctx_clone),
+                        param_names: &[],
                     })
                     .await.into_parts();
                     _dr_diags.extend(builtin_diags);

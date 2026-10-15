@@ -77,20 +77,20 @@
     Never@[as-type: [fn [let t] t]  guarding: 1]:      []
     Dict@[as-type: [fn [let r] r]  guarding: 1]:
       [fields@Child@[role: "MapValues"]: [Map String TypeNode]  # explicit role: MapValues (map over values, preserve keys)
-       open:                           Int]                    # 1 = open, 0 = closed; no @Child → NonChild
+       open:                           Integer]                    # 1 = open, 0 = closed; no @Child → NonChild
     Union@[as-type: [fn [let u] u]  guarding: 0]:
-      [types@Child@[role: "MapValues"]: [Map Int TypeNode]]  # explicit role: MapValues (map over values)
+      [types@Child@[role: "MapValues"]: [Map Integer TypeNode]]  # explicit role: MapValues (map over values)
     Intersect@[as-type: [fn [let i] i]  guarding: 0]:
-      [types@Child@[role: "MapValues"]: [Map Int TypeNode]]  # explicit role: MapValues (map over values)
+      [types@Child@[role: "MapValues"]: [Map Integer TypeNode]]  # explicit role: MapValues (map over values)
     Negation@[as-type: [fn [let n] n]  guarding: 0]:
       [inner@Child: TypeNode]                # @Child on TypeNode → One
     TypeConstructor@[as-type: [fn [let t] t]  guarding: 1]:
       [name: String]                         # no @Child → leaf
     TypeApplication@[as-type: [fn [let a] a]  guarding: 1]:
       [ctor@Child:                     TypeNode                 # @Child on TypeNode → One (default)
-       args@Child@[role: "MapValues"]: [Map Int TypeNode]]    # explicit role: MapValues
+       args@Child@[role: "MapValues"]: [Map Integer TypeNode]]    # explicit role: MapValues
     Arrow@[as-type: [fn [let a] a]  guarding: 1]:
-      [params@Child@[role: "MapValues"]: [Map Int TypeNode]  # explicit role: MapValues
+      [params@Child@[role: "MapValues"]: [Map Integer TypeNode]  # explicit role: MapValues
        result@Child:                   TypeNode]            # @Child on TypeNode → One (default)
     Recursive@[as-type: [fn [let r] r]  guarding: 1]:
       [var:         String                   # no @Child → NonChild (binder name, not a type child)
@@ -99,11 +99,11 @@
       [name: String]                         # no @Child → leaf
     TypeVar@[as-type: [fn [let t] t]  guarding: 0]:
       [name:  String                         # e.g. "_t42"
-       level: Int]
+       level: Integer]
     SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: 0]:
-      [n: Int]                               # n: the concrete byte-count N from [Bytes N] annotation
+      [n: Integer]                               # n: the concrete byte-count N from [Bytes N] annotation
     IntLiteral@[as-type: [fn [let t] t]  guarding: 0]:
-      [n: Int]
+      [n: Integer]
     StringLiteral@[as-type: [fn [let t] t]  guarding: 0]:
       [s: String]]
 
@@ -257,7 +257,7 @@
 
 Closed: [type Closed]
 Full:   [type Full]
-Lagged: [type Lagged: [count: Int]]
+Lagged: [type Lagged: [count: Integer]]
 
 Result: [type [let a]
   Ok:    [value: a]
@@ -358,7 +358,7 @@ Indexable:
   [class [let c k v]
     [determines: [[[c k] v]]  resolver: FieldType]
     get:    [Fn@v      [k c]]
-    slice:  [Fn@c      [c Int Int]]
+    slice:  [Fn@c      [c Integer Integer]]
     length: [Fn@Integer    [c]]]
 
 ]
@@ -368,16 +368,16 @@ Indexable:
 
 
 Span: [type Span: [
-  start-line: Int
-  start-col:  Int
-  end-line:   Int
-  end-col:    Int]]
+  start-line: Integer
+  start-col:  Integer
+  end-line:   Integer
+  end-col:    Integer]]
 
-DotKey: [type Ident: [name: String] Index: [index: Int]]
+DotKey: [type Ident: [name: String] Index: [index: Integer]]
 
 Annotation: [type
   Simple:       [text: String  name: String]
-  PropertyDict: [text: String  parts: [Map Int Any]  doc: Any  return: Any]
+  PropertyDict: [text: String  parts: [Map Integer Any]  doc: Any  return: Any]
   Annotated:    [text: String  name: String  inner: String]
   Unknown:      [text: String]]
 
@@ -404,7 +404,7 @@ MatchArm: [type MatchArm: [
   span:    Span]]
 
 Expression: [type
-  IntLiteral:   [value: Int    span: Span]
+  IntLiteral:   [value: Integer    span: Span]
   FloatLiteral: [value: Float  span: Span]
   StrLiteral:   [value: String span: Span]
   Var:          [name: String  escaped: Bool  span: Span]
@@ -604,7 +604,7 @@ Note: Derived as negation of <.
 """] [let x@a y@a] [not [< x y]]]
 
 
-quot: [fn@[return: Int  doc: """
+quot: [fn@[return: Integer  doc: """
 Integer quotient (truncate toward zero).
 
 Example: [quot 7 2] => 3
@@ -624,7 +624,7 @@ Note: Uses the algebraic identity: mod(a, b) = a - (quot(a, b) * b). Clojure/Has
 """] [let a@Number b@Number] [- a [* [quot a b] b]]]
 
 
-ceil: [fn@[return: Int  doc: """
+ceil: [fn@[return: Integer  doc: """
 Ceiling (smallest integer >= x).
 
 Example: [ceil 3.2] => 4
@@ -633,7 +633,7 @@ Example: [ceil -3.2] => -3
 Note: Derived as -floor(-x). Inherently materializing: derived from arithmetic operations.
 """] [let x@Number] [- 0 [floor [- 0 x]]]]
 
-trunc: [fn@[return: Int  doc: """
+trunc: [fn@[return: Integer  doc: """
 Truncate toward zero.
 
 Example: [trunc 3.7] => 3
@@ -1455,7 +1455,7 @@ File: [
 
   Readable@[doc: "Typeclass for readable handles: read-chunk."]:
     [class [let h]
-      read-chunk: [Fn@[bytes: Bytes  handle: h] [h Int]]]
+      read-chunk: [Fn@[bytes: Bytes  handle: h] [h Integer]]]
 
   Writable@[doc: "Typeclass for writable handles: write and flush."]:
     [class [let h]
@@ -3201,8 +3201,8 @@ Digit@[doc: "Internal: 1–4 element buffer used as prefix/suffix in a FingerTre
 
 FNode@[doc: "Internal: 2- or 3-child spine node carrying a precomputed subtree leaf count in the size field."]:
   [type [let a]
-    FNode2: [size: Int  left: a  right: a]
-    FNode3: [size: Int  left: a  mid: a  right: a]]
+    FNode2: [size: Integer  left: a  right: a]
+    FNode3: [size: Integer  left: a  mid: a  right: a]]
 
 FingerTree@[doc: """
 Internal: 2-3 finger tree (Hinze & Paterson 2006). Backing structure for List.
@@ -3214,7 +3214,7 @@ Purely tinct — no Rust builtins required.
   [type [let a]
     FTEmpty
     FTSingle: [value: a]
-    FTDeep:   [size: Int  prefix: [Digit a]  spine: [FingerTree [FNode a]]  suffix: [Digit a]]]
+    FTDeep:   [size: Integer  prefix: [Digit a]  spine: [FingerTree [FNode a]]  suffix: [Digit a]]]
 
 List@[doc: """
 Ordered finite sequence with O(1) amortized push and O(log n) index access.

@@ -2109,12 +2109,22 @@ pub(crate) fn builtin_annotation_of(
                     // `return` is excluded from `extra` (type expressions cannot be safely
                     // evaluated at definition time), so it is derived from `return_ann` here.
                     let return_str: Option<String> = match &ann.return_ann {
-                        Some(crate::ast::Annotation::Simple(name)) => Some(name.clone()),
+                        Some(crate::ast::Annotation::Expr(node)) => match &node.expr {
+                            crate::ast::SurfaceExpression::VarRef {
+                                name,
+                                annotation: None,
+                                ..
+                            } => Some(name.clone()),
+                            _ => ann
+                                .return_ann
+                                .as_ref()
+                                .and_then(|a| a.get_property("return"))
+                                .map(|n| n.to_string()),
+                        },
                         // Returns "Expr" because that is the user-visible source-level text
                         // for the @Expr annotation — not a semantic coupling to the prelude
                         // type name. The string "Expr" is what the user wrote in source.
                         Some(crate::ast::Annotation::Quote) => Some("Expr".to_string()),
-                        Some(ann_node) => ann_node.get_property("return").map(|n| n.to_string()),
                         None => None,
                     };
                     if let Some(s) = return_str {
@@ -2686,7 +2696,11 @@ pub(crate) fn builtin_resolve(
         };
 
         // Resolve the document using the SymbolTable scope.
-        let resolve_result = crate::resolve::resolve_document(&doc_arc, &vec![table], &Vec::new());
+        let resolve_result = crate::resolve::resolve_document(
+            &doc_arc,
+            &vec![table],
+            crate::symbol_table::Stage::Runtime,
+        );
         let resolve_diagnostics = resolve_result.diagnostics;
         let unreferenced_names = resolve_result.unreferenced;
 
@@ -4643,7 +4657,15 @@ pub(crate) fn builtin_symbol_table_get(
         };
 
         let get_result = {
-            let (result, diags) = crate::symbol_table::SymbolTable::get_in_chain(&[table], &name).into_parts();
+            let (result, diags) = crate::symbol_table::SymbolTable::get_in_chain_staged(
+                &[table],
+                &name,
+                &[
+                    crate::symbol_table::Stage::Type,
+                    crate::symbol_table::Stage::Runtime,
+                ],
+            )
+            .into_parts();
             _dr_diags.extend(diags);
             match result {
                 Ok(v) => v,
@@ -5019,7 +5041,11 @@ pub(crate) fn builtin_eval_macro_ast(
         // Desugar + expand + resolve with empty SymbolTable
         let program = crate::expand::expand_program(&program);
         let empty_chain = crate::symbol_table::SymbolTable::empty_chain();
-        crate::resolve::resolve_program(&program, &empty_chain, &Vec::new());
+        crate::resolve::resolve_program(
+            &program,
+            &empty_chain,
+            crate::symbol_table::Stage::Runtime,
+        );
 
         // Lower each document's expressions to CoreExpr and evaluate
         let display_names = ctx.type_display_names_snapshot();
@@ -6689,6 +6715,7 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -6728,6 +6755,7 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -6775,6 +6803,7 @@ mod tests {
             ctx: std::sync::Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await?;
         let val = materialize_sync(&result, &ctx).await?;
@@ -6810,6 +6839,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(

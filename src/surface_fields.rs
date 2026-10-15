@@ -523,14 +523,26 @@ fn annotation_inner_to_value(
     );
 
     let ann_ctor_index = match ann {
-        Annotation::Simple(name) => {
+        Annotation::Quote => {
+            // Quoting sentinel — serialised as ANN_NULL (ctor_index 2).
+            // Does not mention "Expr" so the wire format is agnostic to the
+            // prelude's type name.
+            ANN_NULL
+        }
+        Annotation::Expr(node) if matches!(&node.expr, SurfaceExpression::VarRef { annotation: None, .. }) => {
+            let SurfaceExpression::VarRef { name, .. } = &node.expr else {
+                unreachable!()
+            };
             payload_map.insert(
                 HashableValue::Str("name".into()),
                 Arc::new(Thunk::value(string_val(name), span.clone())),
             );
             ANN_SIMPLE
         }
-        Annotation::PropertyDict(entries) => {
+        Annotation::Expr(node) if matches!(&node.expr, SurfaceExpression::Dict { .. }) => {
+            let SurfaceExpression::Dict { entries, .. } = &node.expr else {
+                unreachable!()
+            };
             // Expose positional entries as a "parts" list (integer-keyed dict of annotation values).
             // This allows tinct code to access the structure of type annotations like @[Seq k]
             // without string parsing. Named entries (doc:, return:) are also exposed by name.
@@ -691,20 +703,22 @@ fn annotation_inner_to_value(
             }
             ANN_PROP_DICT
         }
-        Annotation::Annotated(outer, inner) => {
-            // When the outer is Simple, emit a flat "name" string for backward compatibility.
-            // When the outer is any other variant (e.g. PropertyDict), emit a structured
-            // "outer" field containing the recursively serialized annotation value so that
-            // deserialization can reconstruct the full Annotation without information loss.
-            match outer.as_ref() {
-                Annotation::Simple(name) => {
+        Annotation::Expr(_) if ann.as_application().is_some() => {
+            let (outer, inner) = ann.as_application().expect("checked by guard above");
+            // When the outer is a bare name, emit a flat "name" string for backward
+            // compatibility. When the outer is any other shape (e.g. a record-type
+            // literal), emit a structured "outer" field containing the recursively
+            // serialized annotation value so deserialization can reconstruct the full
+            // Annotation without information loss.
+            match outer.bare_name() {
+                Some(name) => {
                     payload_map.insert(
                         HashableValue::Str("name".into()),
                         Arc::new(Thunk::value(string_val(name), span.clone())),
                     );
                 }
-                other_outer => {
-                    let outer_val = annotation_inner_to_value(other_outer, span.clone(), ctx);
+                None => {
+                    let outer_val = annotation_inner_to_value(&outer, span.clone(), ctx);
                     payload_map.insert(
                         HashableValue::Str("outer".into()),
                         Arc::new(Thunk::value(outer_val, span.clone())),
@@ -713,19 +727,17 @@ fn annotation_inner_to_value(
             }
             // Serialize inner as a structured "inner-ann" recursive Annotation value.
             // This is the only serialization form — no "inner" string fallback.
-            let inner_ann_val = annotation_inner_to_value(inner.as_ref(), span.clone(), ctx);
+            let inner_ann_val = annotation_inner_to_value(&inner, span.clone(), ctx);
             payload_map.insert(
                 HashableValue::Str("inner-ann".into()),
                 Arc::new(Thunk::value(inner_ann_val, span.clone())),
             );
             ANN_ANNOTATED
         }
-        Annotation::Quote => {
-            // Quoting sentinel — serialised as ANN_NULL (ctor_index 2).
-            // Does not mention "Expr" so the wire format is agnostic to the
-            // prelude's type name.
-            ANN_NULL
-        }
+        // Any other SurfaceExpression shape (e.g. a Call that isn't a recognized chained
+        // application): expose as text only, same convention used for complex positional
+        // entries above.
+        Annotation::Expr(_) => ANN_UNKNOWN,
     };
 
     Value::Variant {

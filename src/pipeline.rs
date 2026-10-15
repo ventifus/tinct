@@ -54,8 +54,21 @@ pub async fn typecheck_pipeline_document(
 ) -> Vec<crate::error::Diagnostic> {
     let doc = doc_spanned.node.as_ref();
 
+    let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
+        matches!(
+            &stage_node.expr,
+            crate::ast::SurfaceExpression::StringLiteral { content, .. }
+            if content == "type"
+        )
+    });
+    let stage = if is_type_stage {
+        crate::symbol_table::Stage::Type
+    } else {
+        crate::symbol_table::Stage::Runtime
+    };
+
     // Step 1: Resolve this document against the current scope.
-    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, &state.infer_state.type_stage_scope);
+    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, stage);
     state
         .infer_state
         .diagnostics
@@ -92,8 +105,21 @@ pub async fn process_pipeline_document(
     let doc = doc_spanned.node.as_ref();
     let mut diagnostics: Vec<crate::error::Diagnostic> = Vec::new();
 
+    let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
+        matches!(
+            &stage_node.expr,
+            crate::ast::SurfaceExpression::StringLiteral { content, .. }
+            if content == "type"
+        )
+    });
+    let stage = if is_type_stage {
+        crate::symbol_table::Stage::Type
+    } else {
+        crate::symbol_table::Stage::Runtime
+    };
+
     // Step 1: Resolve this document against the current scope.
-    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, &state.infer_state.type_stage_scope);
+    let resolve_result = crate::resolve::resolve_document(doc, &state.current_scope, stage);
     diagnostics.extend(resolve_result.diagnostics);
 
     // Step 1b: Wire Rust builtins into the resolver's scope frames.
@@ -114,14 +140,6 @@ pub async fn process_pipeline_document(
     }
 
     // Step 2: Lower and evaluate the document body.
-
-    let is_type_stage = doc.header.get("stage").is_some_and(|stage_node| {
-        matches!(
-            &stage_node.expr,
-            crate::ast::SurfaceExpression::StringLiteral { content, .. }
-            if content == "type"
-        )
-    });
 
     let display_names = state.infer_state.type_display_names.clone();
     let lowered_body = Arc::new(
@@ -158,12 +176,11 @@ pub async fn process_pipeline_document(
     diagnostics.extend(tc_errors);
 
     // Step 4: Accumulate this document's scope frames for subsequent documents.
+    // Frames are already tagged with their stage by the resolver (walk_surface_document
+    // calls mark_type_stage() on type-stage frames), so resolution later filters by
+    // stage over this single chain — no branching needed here.
     for frame in &resolve_result.scope_frames {
-        if is_type_stage {
-            state.infer_state.type_stage_scope.push(Arc::clone(frame));
-        } else {
-            state.current_scope.push(Arc::clone(frame));
-        }
+        state.current_scope.push(Arc::clone(frame));
     }
 
     let first_error = diagnostics

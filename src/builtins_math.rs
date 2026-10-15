@@ -626,6 +626,7 @@ pub(crate) fn builtin_lte(
             call_span: call_span.clone(),
             scope,
             ctx,
+            param_names: &[],
         })
         .await.into_parts();
         _dr_diags.extend(diags);
@@ -2736,6 +2737,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }));
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
         assert!(
@@ -2763,6 +2765,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }));
         assert!(
             result.is_err(),
@@ -2802,6 +2805,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(
@@ -2845,6 +2849,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(
@@ -2870,6 +2875,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

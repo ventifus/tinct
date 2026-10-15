@@ -144,7 +144,8 @@ fn make_test_union(members: Vec<Arc<Value>>) -> Arc<Value> {
     })
 }
 
-/// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
+/// Build a `Spanned<SurfaceEntry>` for use in `Annotation::dict_synthetic` test constructions
+/// (a record-type-literal-shaped `Annotation::Expr`).
 /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
 fn surf_ann_entry_tc(
     key: Option<SurfaceExpression>,
@@ -176,7 +177,7 @@ async fn test_annotation_type_var() {
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let result = resolve_annotation(
-        &Annotation::Simple("a".into()),
+        &Annotation::simple_synthetic("a", span.clone()),
         span,
         &mut state,
         &mut c,
@@ -224,14 +225,17 @@ async fn test_property_dict_non_str_key_is_error() {
     // Non-bare-word (integer) key in a type record annotation is now an error.
     // The legacy Dict fallback-to-Any path was removed; invalid keys are rejected.
     let span = crate::test_util::test_span(1, 1, 1, 10);
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        Some(SurfaceExpression::Int(42)),
-        SurfaceExpression::StringLiteral {
-            prefix: String::new(),
-            delimiter: "\"".to_string(),
-            content: "Int".into(),
-        },
-    )]);
+    let ann = Annotation::dict_synthetic(
+        vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::Int(42)),
+            SurfaceExpression::StringLiteral {
+                prefix: String::new(),
+                delimiter: "\"".to_string(),
+                content: "Int".into(),
+            },
+        )],
+        span.clone(),
+    );
     let mut c = Vec::new();
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -251,21 +255,24 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
     // (Uppercase names like "NoSuchType" are treated as nominal variant constructors
     // and succeed with NominalVariant; lowercase names that are not type variables
     // produce an error since they don't match any known primitive or alias.)
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        Some(SurfaceExpression::StringLiteral {
-            prefix: String::new(),
-            delimiter: "\"".to_string(),
-            content: "x".into(),
-        }),
-        SurfaceExpression::VarRef {
-            name: "noSuchType".into(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
+    let ann = Annotation::dict_synthetic(
+        vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::StringLiteral {
+                prefix: String::new(),
+                delimiter: "\"".to_string(),
+                content: "x".into(),
+            }),
+            SurfaceExpression::VarRef {
+                name: "noSuchType".into(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
 
-            annotation: None,
-            do_infer_placeholder: false,
-        },
-    )]);
+                annotation: None,
+                do_infer_placeholder: false,
+            },
+        )],
+        span.clone(),
+    );
     let mut c = Vec::new();
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -283,14 +290,17 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
 #[tokio::test]
 async fn test_property_dict_literal_value_falls_back_to_any() {
     let span = crate::test_util::test_span(1, 1, 1, 10);
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        Some(SurfaceExpression::StringLiteral {
-            prefix: String::new(),
-            delimiter: "\"".to_string(),
-            content: "default".into(),
-        }),
-        SurfaceExpression::Int(30),
-    )]);
+    let ann = Annotation::dict_synthetic(
+        vec![surf_ann_entry_tc(
+            Some(SurfaceExpression::StringLiteral {
+                prefix: String::new(),
+                delimiter: "\"".to_string(),
+                content: "default".into(),
+            }),
+            SurfaceExpression::Int(30),
+        )],
+        span.clone(),
+    );
     let mut c = Vec::new();
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -310,17 +320,23 @@ async fn test_property_dict_fn_type_error_propagates() {
     let span = crate::test_util::test_span(1, 1, 1, 10);
     // [Fn@Integer] -- function type pattern detected (Fn@ prefix) but wrong
     // number of entries: should propagate, not fall back to Any.
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        None,
-        SurfaceExpression::VarRef {
-            name: "Fn".into(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
+    let ann = Annotation::dict_synthetic(
+        vec![surf_ann_entry_tc(
+            None,
+            SurfaceExpression::VarRef {
+                name: "Fn".into(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
 
-            annotation: Some(Spanned::new(Annotation::Simple("Int".into()), span.clone())),
-            do_infer_placeholder: false,
-        },
-    )]);
+                annotation: Some(Spanned::new(
+                    Annotation::simple_synthetic("Int", span.clone()),
+                    span.clone(),
+                )),
+                do_infer_placeholder: false,
+            },
+        )],
+        span.clone(),
+    );
     let mut c = Vec::new();
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -453,23 +469,30 @@ async fn test_annotation_or_int_literals_resolves_to_union() {
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let mut state = InferState::new();
     let mut c = Vec::new();
-    // Construct Annotation::PropertyDict representing [or 0 1]:
-    //   positional entries: VarRef("or"), Int(0), Int(1)
-    let ann = Annotation::PropertyDict(vec![
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "or".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-
-                annotation: None,
-                do_infer_placeholder: false,
-            },
-        ),
-        surf_ann_entry_tc(None, SurfaceExpression::Int(0)),
-        surf_ann_entry_tc(None, SurfaceExpression::Int(1)),
-    ]);
+    // Construct the real Call-shaped node `@[or 0 1]` actually parses to (a bracket
+    // implied-call) — Annotation::Expr wraps it directly, no PropertyDict conversion.
+    let ann = Annotation::expr(Arc::new(SurfaceNode::new(
+        SurfaceExpression::Call {
+            func: Arc::new(SurfaceNode::new(
+                SurfaceExpression::VarRef {
+                    name: "or".into(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    annotation: None,
+                    do_infer_placeholder: false,
+                },
+                span.clone(),
+            )),
+            args: vec![
+                Arc::new(SurfaceNode::new(SurfaceExpression::Int(0), span.clone())),
+                Arc::new(SurfaceNode::new(SurfaceExpression::Int(1), span.clone())),
+            ],
+            named_args: vec![],
+            implied: true,
+            pipe_span: None,
+        },
+        span.clone(),
+    )));
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let result = resolve_annotation(&ann, span, &mut state, &mut c, &mut ann_m, &mut row_m, None)
@@ -490,14 +513,15 @@ async fn test_annotation_string_literal_resolves_to_string_literal_type() {
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut state = InferState::new();
     let mut c = Vec::new();
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        None,
+    // @"foo" really parses as a bare StringLiteral node — no Dict/Call wrapper needed.
+    let ann = Annotation::expr(Arc::new(SurfaceNode::new(
         SurfaceExpression::StringLiteral {
             prefix: String::new(),
             delimiter: "\"".to_string(),
             content: "foo".into(),
         },
-    )]);
+        span.clone(),
+    )));
     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
     let result = resolve_annotation(&ann, span, &mut state, &mut c, &mut ann_m, &mut row_m, None)

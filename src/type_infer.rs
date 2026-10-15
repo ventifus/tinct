@@ -2344,10 +2344,6 @@ pub struct InferState {
     /// live in `type_stage_type_vars`. Class entries are NOT stored here — they are looked
     /// up via `state.env`.
     pub type_stage_data: TypeStageData,
-    /// Type-stage scope chain — accumulated from `stage: "type"` documents.
-    /// Type expression evaluation searches this chain FIRST, giving type-stage
-    /// entries priority over runtime entries with the same name.
-    pub type_stage_scope: crate::symbol_table::ScopeChain,
     /// Type constructor environment.
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<u64, std::sync::Arc<crate::type_def::TyConDef>>,
@@ -2433,7 +2429,6 @@ impl InferState {
             type_var_source_names: HashMap::new(),
             eval_ctx: None,
             type_stage_data: TypeStageData::new(),
-            type_stage_scope: Vec::new(),
             tycon_env: std::collections::HashMap::new(),
             type_name_to_id: std::collections::HashMap::new(),
             type_display_names: std::collections::HashMap::new(),

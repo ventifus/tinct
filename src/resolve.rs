@@ -19,7 +19,7 @@ use crate::ast::{
     SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram, VarAddr,
 };
 use crate::error::Diagnostic;
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{Stage, SymbolTable};
 use std::sync::Arc;
 
 const KIND: &str = "resolve";
@@ -65,12 +65,15 @@ fn extract_case_arm_binding_names(let_bindings: &SurfaceNode) -> Vec<(String, Sp
 
 struct SurfaceResolver {
     /// Scope stack: index 0 is the outermost scope, last element is the innermost.
+    /// Frames are tagged with the `Stage` they were produced by (see
+    /// `crate::symbol_table::Stage`); resolution is a stage-filtered search over
+    /// this single chain so that de-Bruijn addresses are always valid wherever
+    /// they're later looked up.
     scope_stack: Vec<Arc<SymbolTable>>,
-    /// Type-stage scope chain. Searched for VarRefs in type expression positions
-    /// (annotations, type declaration field types). Type-stage has different bindings
-    /// than runtime — e.g., `or` is a union constructor in type-stage but a boolean
-    /// function in runtime.
-    type_stage_scope: Vec<Arc<SymbolTable>>,
+    /// The stage this resolution call represents (i.e. the stage of the document
+    /// being resolved). Used to tag the document's own top-level frame(s) in
+    /// `walk_surface_document`.
+    stage: Stage,
     table: ResolutionTable,
     diagnostics: Vec<Diagnostic>,
     effect_perform_addrs: std::collections::HashMap<String, VarAddr>,
@@ -80,13 +83,10 @@ struct SurfaceResolver {
 }
 
 impl SurfaceResolver {
-    fn from_chain(
-        scope: &crate::symbol_table::ScopeChain,
-        type_stage_scope: &crate::symbol_table::ScopeChain,
-    ) -> Self {
+    fn from_chain(scope: &crate::symbol_table::ScopeChain, stage: Stage) -> Self {
         Self {
             scope_stack: scope.clone(),
-            type_stage_scope: type_stage_scope.clone(),
+            stage,
             table: ResolutionTable::new(),
             diagnostics: Vec::new(),
             effect_perform_addrs: std::collections::HashMap::new(),
@@ -110,102 +110,45 @@ impl SurfaceResolver {
 
     /// Resolve `name` in the scope stack, returning its `VarAddr`.
     ///
+    /// Searches the single unified scope chain, filtered by `stages`: for each
+    /// stage in order, scans the chain innermost-first for a frame tagged with
+    /// that stage containing `name`. This lets type expression contexts search
+    /// `[Stage::Type, Stage::Runtime]` (type-stage bindings take precedence, e.g.
+    /// `or` is a union constructor in type-stage but a boolean function in
+    /// runtime) while ordinary runtime references search `[Stage::Runtime]` only.
+    ///
+    /// `skip` implements leading-dot (`.name`) semantics: skip this many matching
+    /// bindings (searched within the stage-filtered chain, in order) before
+    /// returning. `skip = 0` is ordinary lookup; `skip = 1` finds the **second**
+    /// occurrence of `name`, used for `.name` to avoid a letrec self-reference.
+    ///
     /// All variable addressing uses exactly two variants:
     /// - `Dispatch(depth, slot)` — per-frame relative slot lookup.
     ///   `depth` is the distance from the top of the scope stack (0 = innermost).
     ///   `slot` is the entry index within that frame.
     /// - `EffectPerform { class_decl_id, method_slot }` — typeclass method call;
     ///   resolved at runtime via the evidence map.
-    fn resolve_name(&mut self, name: &str) -> Option<VarAddr> {
+    fn resolve_name(&mut self, name: &str, stages: &[Stage], skip: u32) -> Option<VarAddr> {
         if self.scope_stack.is_empty() {
             return None;
         }
         let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
-        let mut result: Option<(u32, u32, bool, bool)> = None; // depth, slot, is_effect, is_initial
-
-        for (depth, frame) in self.scope_stack.iter().rev().enumerate() {
-            if let Some(entry) = frame.entries().get(name) {
-                let is_initial =
-                    initial_ptr.map_or(false, |ip| std::ptr::eq(Arc::as_ptr(frame), ip));
-                let is_effect = entry.slot == EFFECT_SENTINEL;
-                if !is_effect {
-                    entry
-                        .referenced
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                result = Some((depth as u32, entry.slot, is_effect, is_initial));
-                break;
-            }
+        let (depth, frame, entry) =
+            SymbolTable::find_in_chain_staged(&self.scope_stack, name, stages, skip)?;
+        let is_initial = initial_ptr.map_or(false, |ip| std::ptr::eq(Arc::as_ptr(frame), ip));
+        let is_effect = entry.slot == EFFECT_SENTINEL;
+        if !is_effect {
+            entry
+                .referenced
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
-
-        let (depth, slot, is_effect, is_initial) = result?;
         if is_initial {
             self.referenced_initial_names.insert(name.to_string());
         }
         if is_effect {
             return self.effect_perform_addrs.get(name).cloned();
         }
-        Some(VarAddr::Dispatch(depth, slot))
-    }
-
-    /// Resolve a name in a type expression context: search type-stage scope first,
-    /// then runtime scope. Type-stage has different bindings (e.g., `or` produces
-    /// unions, not booleans). Falls back to runtime scope if not found in type-stage.
-    fn resolve_name_type_expr(&mut self, name: &str) -> Option<VarAddr> {
-        for frame in self.type_stage_scope.iter().rev() {
-            if frame.entries().contains_key(name) {
-                return Some(VarAddr::Dispatch(0, 0));
-            }
-        }
-        self.resolve_name(name)
-    }
-
-
-    /// Resolve `name` using leading-dot semantics: find the **second** occurrence of `name`
-    /// in the scope stack, skipping the innermost (first) binding.
-    ///
-    /// `.name` means "the next `name` beyond the nearest one." This is relative to where
-    /// `name` is actually bound, not to the structure of Dict scope boundaries:
-    ///
-    /// - Find the first binding of `name` anywhere in the scope stack (innermost wins).
-    /// - Skip it and search outward for the next binding of `name`.
-    /// - Return `None` if there is no second binding — caller emits "undefined variable".
-    fn resolve_name_parent(&mut self, name: &str) -> Option<VarAddr> {
-        if self.scope_stack.is_empty() {
-            return None;
-        }
-        let initial_ptr = self.initial_scope.as_ref().map(|s| Arc::as_ptr(s));
-        let mut found_first = false;
-        let mut result: Option<(u32, u32, bool, bool)> = None;
-
-        for (depth, frame) in self.scope_stack.iter().rev().enumerate() {
-            if frame.entries().contains_key(name) {
-                if !found_first {
-                    found_first = true;
-                } else {
-                    let entry = frame.entries().get(name).unwrap();
-                    let is_initial =
-                        initial_ptr.map_or(false, |ip| std::ptr::eq(Arc::as_ptr(frame), ip));
-                    let is_effect = entry.slot == EFFECT_SENTINEL;
-                    if !is_effect {
-                        entry
-                            .referenced
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    result = Some((depth as u32, entry.slot, is_effect, is_initial));
-                    break;
-                }
-            }
-        }
-
-        let (depth, slot, is_effect, is_initial) = result?;
-        if is_initial {
-            self.referenced_initial_names.insert(name.to_string());
-        }
-        if is_effect {
-            return self.effect_perform_addrs.get(name).cloned();
-        }
-        Some(VarAddr::Dispatch(depth, slot))
+        Some(VarAddr::Dispatch(depth, entry.slot))
     }
 
     fn walk_surface_node(&mut self, arc: &Arc<SurfaceNode>) {
@@ -220,7 +163,7 @@ impl SurfaceResolver {
                 annotation,
                 ..
             } => {
-                let resolved = self.resolve_name(name);
+                let resolved = self.resolve_name(name, &[Stage::Runtime], 0);
                 if let Some(addr) = &resolved {
                     resolution.set(Some(addr.clone()));
                     self.table.insert(node_id(arc), addr.clone());
@@ -237,6 +180,14 @@ impl SurfaceResolver {
                         diag = diag.with_note(note);
                     }
                     self.diagnostics.push(diag);
+                }
+
+                // Ordinary VarRef annotations (e.g. `[let x@[is: Int]]` on a non-parameter
+                // binding, or any other bare-VarRef annotation outside the fn-param/
+                // dict-key carriers) were previously never visited by the resolver at
+                // all. Walk it like any other annotation.
+                if let Some(ann) = annotation {
+                    self.walk_surface_annotation(ann);
                 }
 
                 let trace_level = crate::ast::extract_trace_level(annotation.as_ref());
@@ -435,6 +386,14 @@ impl SurfaceResolver {
             } => {
                 let trace_level = crate::ast::extract_trace_level(return_ann.as_ref());
 
+                // Return annotations were previously never visited by the resolver at
+                // all (only scanned for trace_level above) — every name inside a
+                // function's `return:`/`constraint:`/`kinds:` dict had its Resolution
+                // left permanently unvisited. Walk it like any other annotation.
+                if let Some(ann) = return_ann {
+                    self.walk_surface_annotation(ann);
+                }
+
                 for param in params {
                     if let Some(ann) = &param.node.annotation {
                         self.walk_surface_annotation(ann);
@@ -504,6 +463,11 @@ impl SurfaceResolver {
                 }
                 for na in named_args {
                     self.walk_surface_node(&na.node.value);
+                    // Named-argument annotations (e.g. `Child@Type: v`) were previously
+                    // never visited by the resolver at all.
+                    if let Some(ann) = &na.node.annotation {
+                        self.walk_surface_annotation(ann);
+                    }
                 }
             }
 
@@ -522,7 +486,7 @@ impl SurfaceResolver {
                     // `.a.b.c` chains work correctly: only this innermost `expr: None`
                     // case uses parent lookup; outer `.b` / `.c` lower to CoreExpr::Field
                     // (direct structural access — no resolver involvement needed).
-                    if let Some(coords) = self.resolve_name_parent(name) {
+                    if let Some(coords) = self.resolve_name(name, &[Stage::Runtime], 1) {
                         resolution.set(Some(coords.clone()));
                         self.table.insert(node_id(arc), coords);
                     } else {
@@ -578,16 +542,47 @@ impl SurfaceResolver {
                     let let_bindings = &arm.let_bindings;
                     self.walk_surface_node(let_bindings);
                     let bound_names = extract_case_arm_binding_names(let_bindings);
-                    let has_bindings = !bound_names.is_empty();
+                    let bound_names_set: std::collections::HashSet<&str> =
+                        bound_names.iter().map(|(n, _)| n.as_str()).collect();
 
+                    // Resolve the pattern's references in the PARENT scope — i.e. BEFORE
+                    // this arm's own bindings frame is pushed below — EXCEPT for bare
+                    // VarRefs whose name matches one of this arm's own `bound_names`
+                    // (binding self-references, e.g. `[case [let v] v body]`), which
+                    // `walk_match_pattern` skips resolving entirely. This mirrors the
+                    // Key-Isolation Invariant used for Dict keys ("key expressions must
+                    // not see letrec sibling bindings") for genuine external references
+                    // (pins like `$x`, constructor/type names), while matching the
+                    // eval-side structural-pattern evaluator exactly for both cases:
+                    // `eval_case_arm_structural_pattern` resolves pin addresses via
+                    // `pre_arm_scope` (captured before the arm's own frame — `arm_scope`
+                    // — is built in `Cont::MatchDispatch`), and binds matching names via
+                    // `bind_or_pin_name`'s `binding_map` lookup alone, never consulting
+                    // `.resolution` for a true binding match. Walking with plain
+                    // `walk_type_expr_node` here (resolving every bare VarRef against
+                    // whatever scope is active) cannot serve both cases with a single
+                    // push/walk ordering: pins need the pre-push scope, binding
+                    // self-references need to be entirely skipped (not resolved against
+                    // ANY scope, pre- or post-push).
+                    self.walk_match_pattern(&arm.pattern, &bound_names_set);
+
+                    // Push a frame for every arm, unconditionally — even when the arm has
+                    // no `[let ...]` bindings (an empty frame). This must match the
+                    // Dict-node convention elsewhere in this function (a Dict always gets
+                    // a scope frame pushed regardless of whether it ends up empty) because
+                    // `eval_materialize.rs`'s `Cont::MatchDispatch` handling ALSO always
+                    // pushes a frame per arm (`arm_scope`, used for the guard/body below);
+                    // every `Dispatch(depth, slot)` address this resolver assigns for a
+                    // VarRef inside an arm's guard/body is computed against a
+                    // `scope_stack` that must have the same frame count, at every point,
+                    // as the runtime scope chain the evaluator builds for guard/body
+                    // evaluation. Conditionally skipping this push for bindings-less arms
+                    // was previously an asymmetry with the evaluator's unconditional push,
+                    // off-by-one-shifting every `depth` the resolver assigned inside such
+                    // an arm's guard/body.
                     let saved_depth = self.scope_stack.len();
-                    if has_bindings {
-                        let scope_arc = self.enter_scope(&bound_names);
-                        // Set SymbolTable on the MatchArm.
-                        let _ = arm.scope.set(scope_arc);
-                    }
-
-                    self.walk_type_expr_node(&arm.pattern);
+                    let scope_arc = self.enter_scope(&bound_names);
+                    let _ = arm.scope.set(scope_arc);
 
                     if let Some(guard) = &arm.guard {
                         self.walk_surface_node(guard);
@@ -612,16 +607,14 @@ impl SurfaceResolver {
             // Declaration embedded as a dict entry value — walk class/instance bodies so
             // that runtime VarRefs inside method implementations (e.g. `result-map`
             // referenced in a named instance) get resolved against the enclosing letrec
-            // scope. For TypeAlias, walk only constructor annotation values (runtime
-            // expressions like [fn [let t] t]) — NOT the type structure itself (constructor
-            // names, field types, type parameters), which are type-level, not runtime.
+            // scope.
             SurfaceExpression::Decl(decl) => match decl.as_ref() {
                 crate::ast::SurfaceDeclaration::ClassDecl { .. }
                 | crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
                     self.walk_surface_declaration(decl);
                 }
-                crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                    self.walk_type_alias_body(body);
+                crate::ast::SurfaceDeclaration::TypeAlias { .. } => {
+                    self.reject_unexpanded_type_alias();
                 }
                 _ => {}
             },
@@ -729,106 +722,65 @@ impl SurfaceResolver {
     ///   - Annotation values: PropertyDict entries on constructor VarRefs/funcs — runtime
     ///     expressions stored via builtin-make-annotated, returned by annotation-of at runtime.
     ///
-    /// Walk the body of a TypeAlias declaration, resolving VarRefs inside constructor
-    /// annotations. After expansion, TypeAlias declarations are replaced with TypeDecl
-    /// nodes, so this function is only needed for pre-expand ASTs (e.g., type-stage
-    /// documents or paths where the expander has not yet run).
-    fn walk_type_alias_body(&mut self, body: &Arc<SurfaceNode>) {
-        match &body.expr {
-            SurfaceExpression::Dict { entries, scope: _ } => {
-                // Multi-constructor union. Each entry is one constructor:
-                //   - Named constructor: `Constructor@[annotation]: [fields]`
-                //     The KEY holds the constructor name and annotation; the VALUE is
-                //     the field type dict (type-level, not walked at runtime).
-                //   - Positional (unit) constructor: `Constructor@[annotation]`
-                //     (no key) — the VALUE is the constructor node itself.
-                // Walk only the node that carries the constructor name and annotation.
-                for entry in entries {
-                    if let Some(key) = &entry.node.key {
-                        // Named constructor: annotation is on the key.
-                        self.walk_ctor_node(key);
-                    } else {
-                        // Positional constructor: annotation is on the value.
-                        self.walk_ctor_node(&entry.node.value);
-                    }
-                }
-            }
-            _ => {
-                // Single constructor body.
-                self.walk_ctor_node(body);
-            }
-        }
-    }
-
-    /// Walk the PropertyDict annotation values of a single constructor node.
-    fn walk_ctor_node(&mut self, node: &Arc<SurfaceNode>) {
-        match &node.expr {
-            // Annotated VarRef: `Red@[as-type: [fn [let t] t]]` (bare unit constructor)
-            SurfaceExpression::VarRef {
-                name,
-                annotation: Some(ann),
-                ..
-            } if crate::eval::is_constructor_name(name) => {
-                self.walk_surface_annotation(ann);
-            }
-            SurfaceExpression::VarRef {
-                name,
-                annotation: None,
-                ..
-            } if crate::eval::is_constructor_name(name) => {}
-            // Bracket form: `[Dict@[as-type: ...] fields: ...]` or `[Int@[...]]`
-            // The parser wraps annotated constructors in a bracket (a single-entry Dict).
-            // Recurse through it to find the actual VarRef or Call inside.
-            SurfaceExpression::Dict { entries, scope: _ } => {
-                for entry in entries {
-                    self.walk_ctor_node(&entry.node.value);
-                }
-            }
-            // Call with annotated func: `Call { func: VarRef("Dict")@[...], named_args: [...] }`
-            SurfaceExpression::Call { func, .. } => {
-                if let SurfaceExpression::VarRef {
-                    name, annotation, ..
-                } = &func.expr
-                {
-                    if crate::eval::is_constructor_name(name) {
-                        if let Some(ann) = annotation {
-                            self.walk_surface_annotation(ann);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+    /// `TypeAlias` surface declarations must never reach the resolver: every call site
+    /// of `resolve_document`/`resolve_program` in the entire pipeline (the primary
+    /// `pipeline.rs` flow and the self-hosted `builtin-resolve` flow alike, verified
+    /// exhaustively) runs `expand::expand_program` first, and expansion unconditionally
+    /// replaces every `TypeAlias` with a `TypeDecl` (or removes it entirely for
+    /// anonymous/standalone cases) before resolution ever sees the AST. A narrow,
+    /// silently-correct handler for this case would just be stale-by-construction dead
+    /// code masquerading as support for an input that cannot occur — a panic here is a
+    /// loud, immediate signal that the parse → desugar → expand → resolve → typecheck
+    /// invariant was violated, rather than quietly mishandling the first real violation.
+    fn reject_unexpanded_type_alias(&self) -> ! {
+        unreachable!(
+            "TypeAlias reached resolve.rs — expand::expand_program must run before \
+             resolve_document/resolve_program; this is a pipeline invariant violation, \
+             not a case resolve.rs is meant to handle"
+        )
     }
 
     fn walk_surface_annotation(&mut self, ann: &Spanned<crate::ast::Annotation>) {
         match &ann.node {
-            crate::ast::Annotation::Simple(_) => {}
             crate::ast::Annotation::Quote => {}
-            crate::ast::Annotation::PropertyDict(entries) => {
-                for entry in entries {
-                    if let Some(key) = &entry.node.key {
-                        self.walk_surface_node(key);
-                    }
-                    let is_runtime_key = entry.node.key.as_ref().is_some_and(|k| {
-                        matches!(&k.expr,
-                            SurfaceExpression::StringLiteral { content, .. }
-                            if content == "default" || content == "doc" || content == "bind"
-                        )
-                    });
-                    if is_runtime_key {
-                        self.walk_surface_node(&entry.node.value);
-                    } else {
-                        self.walk_type_expr_node(&entry.node.value);
+            crate::ast::Annotation::Expr(node) => match &node.expr {
+                // A record-type literal used directly as an annotation (`x@[default: 5
+                // doc: "..."]`): default/doc keys carry runtime-evaluated metadata values,
+                // not type expressions; `bind: [a b c]` declares fresh type-parameter NAMES
+                // (processed exclusively by typecheck_annot.rs's own ann_mapping /
+                // type_params_scope mechanism — see resolve_fn_metadata's Step 0) and must
+                // not be walked as a reference at all, by either walker: these names have
+                // no SymbolTable presence anywhere (runtime or type-stage), so resolving
+                // them via `resolve_name` would always fail. Everything else is a genuine
+                // field type, handled uniformly by walk_type_expr_node. This is the only
+                // shape needing this distinction; every other Annotation::Expr shape (bare
+                // name, type application, ...) is a pure type expression end to end.
+                SurfaceExpression::Dict { entries, .. } => {
+                    for entry in entries {
+                        if let Some(key) = &entry.node.key {
+                            self.walk_surface_node(key);
+                        }
+                        let key_name = entry.node.key.as_ref().and_then(|k| {
+                            if let SurfaceExpression::StringLiteral { content, .. } = &k.expr {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        });
+                        match key_name {
+                            // Declares fresh type-parameter names — not a reference to walk.
+                            Some("bind") => {}
+                            Some("default") | Some("doc") => {
+                                self.walk_surface_node(&entry.node.value);
+                            }
+                            _ => {
+                                self.walk_type_expr_node(&entry.node.value);
+                            }
+                        }
                     }
                 }
-            }
-            crate::ast::Annotation::Annotated(outer, inner) => {
-                let outer_spanned = Spanned::new(outer.as_ref().clone(), ann.span.clone());
-                self.walk_surface_annotation(&outer_spanned);
-                let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span.clone());
-                self.walk_surface_annotation(&inner_spanned);
-            }
+                _ => self.walk_type_expr_node(node),
+            },
         }
     }
 
@@ -839,11 +791,21 @@ impl SurfaceResolver {
     fn walk_type_expr_node(&mut self, arc: &Arc<SurfaceNode>) {
         match &arc.expr {
             SurfaceExpression::VarRef {
-                name, resolution, ..
+                name,
+                resolution,
+                annotation,
+                ..
             } => {
-                if let Some(addr) = self.resolve_name_type_expr(name) {
+                if let Some(addr) = self.resolve_name(name, &[Stage::Type, Stage::Runtime], 0) {
                     resolution.set(Some(addr.clone()));
                     self.table.insert(node_id(arc), addr);
+                }
+                // Chained type application (`Seq@Int`) nests the argument in this VarRef's
+                // own annotation field — walk it too, so e.g. `Int` gets resolved, not just
+                // `Seq`. Applies uniformly wherever a type-expression VarRef is walked, not
+                // just at the top of an annotation.
+                if let Some(inner) = annotation {
+                    self.walk_surface_annotation(inner);
                 }
             }
             SurfaceExpression::Call { func, args, named_args, .. } => {
@@ -872,12 +834,88 @@ impl SurfaceResolver {
         }
     }
 
+    /// Walk a match arm's pattern expression, aware of the arm's own `[let ...]`-declared
+    /// binding names. A bare VarRef whose name matches one of `bound_names` is a binding
+    /// self-reference (e.g. `[case [let v] v body]` — the pattern `v` refers to the
+    /// binding this very arm declares; `bind_or_pin_name`'s BIND branch consumes it purely
+    /// via its static name, never via `.resolution`/`VarAddr`) and must NOT be resolved
+    /// against the enclosing scope: at this point in the walk the arm's own frame has not
+    /// been pushed yet (see the Match handling below — the pattern is walked BEFORE the
+    /// push), so a bare lookup would either fail to find it or, worse, silently find a
+    /// same-named OUTER binding instead. Any other VarRef (a pin reference like `$x`, or a
+    /// constructor/type name) IS a genuine external reference, resolved exactly as
+    /// `walk_type_expr_node` would — against the scope BEFORE this arm's own frame exists.
+    /// This matches the eval-side structural-pattern evaluator exactly:
+    /// `eval_case_arm_structural_pattern` resolves pin addresses via `pre_arm_scope`
+    /// (`eval_materialize.rs`'s `Cont::MatchDispatch`, captured before the arm's own frame
+    /// — `arm_scope` — is built), and binds names via `bind_or_pin_name`'s `binding_map`
+    /// lookup alone, never consulting `.resolution` for a true binding match.
+    fn walk_match_pattern(
+        &mut self,
+        arc: &Arc<SurfaceNode>,
+        bound_names: &std::collections::HashSet<&str>,
+    ) {
+        match &arc.expr {
+            SurfaceExpression::VarRef {
+                name,
+                resolution,
+                annotation,
+                ..
+            } => {
+                if bound_names.contains(name.as_str()) {
+                    // Binding self-reference (e.g. `[case [let v] v body]` — the pattern
+                    // `v` refers to the binding this very arm declares).
+                    // `bind_or_pin_name`'s BIND branch (eval_materialize.rs) dispatches on
+                    // the static NAME alone via `binding_map`, never consulting
+                    // `.resolution`/`VarAddr` for a true bind — so mark it resolved-but-
+                    // absent directly (`Some(None)`) rather than attempting a lookup here:
+                    // looking it up against this PRE-push parent scope would at best find
+                    // nothing (the arm's own frame does not exist yet), or at worst
+                    // silently match a coincidentally same-named OUTER binding and attach
+                    // that irrelevant-but-misleading address. Leaving `.resolution`
+                    // completely untouched is not an option either — `lower_inner`
+                    // treats a never-set `.resolution` as a genuine resolver bug, pushing
+                    // a hard "VarRef not resolved" diagnostic and lowering the pattern as
+                    // a wildcard Placeholder (matches everything, binds nothing),
+                    // silently breaking the binding.
+                    resolution.set(None);
+                } else if let Some(addr) = self.resolve_name(name, &[Stage::Type, Stage::Runtime], 0) {
+                    resolution.set(Some(addr.clone()));
+                    self.table.insert(node_id(arc), addr);
+                }
+                if let Some(inner) = annotation {
+                    self.walk_surface_annotation(inner);
+                }
+            }
+            SurfaceExpression::Call { func, args, named_args, .. } => {
+                self.walk_match_pattern(func, bound_names);
+                for arg in args {
+                    self.walk_match_pattern(arg, bound_names);
+                }
+                for na in named_args {
+                    self.walk_match_pattern(&na.node.value, bound_names);
+                }
+            }
+            SurfaceExpression::Dict { entries, .. } => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        self.walk_surface_node(key);
+                    }
+                    self.walk_match_pattern(&entry.node.value, bound_names);
+                }
+            }
+            SurfaceExpression::Field { expr, .. } => {
+                if let Some(target) = expr {
+                    self.walk_match_pattern(target, bound_names);
+                }
+            }
+            _ => self.walk_surface_node(arc),
+        }
+    }
+
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
         match decl {
-            // After expansion, TypeAlias declarations are replaced with TypeDecl nodes.
-            // This arm is only reached for pre-expand ASTs (type-stage documents or
-            // paths where the expander has not yet run).
-            SurfaceDeclaration::TypeAlias { body, .. } => self.walk_type_alias_body(body),
+            SurfaceDeclaration::TypeAlias { .. } => self.reject_unexpanded_type_alias(),
             SurfaceDeclaration::ClassDecl { .. } => {
                 // ClassDecl is entirely type-level: method signatures, determines, and the
                 // resolver function name are all resolved by the type checker against the
@@ -917,6 +955,17 @@ impl SurfaceResolver {
 
         self.walk_surface_node(&doc.body);
 
+        // Tag the document's own top-level frame(s) with this resolution's stage.
+        // Nested dicts/fns push and truncate their own frames before this point,
+        // so `scope_stack[saved_depth..]` holds exactly the document's own frames.
+        // Frames are already shared via `Arc` by now (pushed during the walk above),
+        // so tagging uses interior mutability rather than rebuilding the table.
+        if self.stage == Stage::Type {
+            for frame in &self.scope_stack[saved_depth..] {
+                frame.mark_type_stage();
+            }
+        }
+
         self.document_scope_frames = self.scope_stack[saved_depth..].to_vec();
         self.scope_stack.truncate(saved_depth);
     }
@@ -954,9 +1003,9 @@ impl SurfaceResolver {
 pub fn resolve_document(
     doc: &SurfaceDocument,
     scope: &crate::symbol_table::ScopeChain,
-    type_stage_scope: &crate::symbol_table::ScopeChain,
+    stage: Stage,
 ) -> ResolveResult {
-    let mut resolver = SurfaceResolver::from_chain(scope, type_stage_scope);
+    let mut resolver = SurfaceResolver::from_chain(scope, stage);
     resolver.walk_surface_document(doc);
     resolver.finish()
 }
@@ -973,9 +1022,9 @@ pub fn resolve_document(
 pub fn resolve_program(
     program: &SurfaceProgram,
     scope: &crate::symbol_table::ScopeChain,
-    type_stage_scope: &crate::symbol_table::ScopeChain,
+    stage: Stage,
 ) -> ResolveResult {
-    let mut resolver = SurfaceResolver::from_chain(scope, type_stage_scope);
+    let mut resolver = SurfaceResolver::from_chain(scope, stage);
     for doc_spanned in &program.documents {
         resolver.walk_surface_document(&doc_spanned.node);
     }
@@ -1326,7 +1375,7 @@ mod tests {
         // No runtime env in unit tests — dict-internal and lexical references still
         // resolve via the resolver's scope tracking; env-provided names (builtins) use None.
         let scope = SymbolTable::empty_chain();
-        let result = resolve_program(&program, &scope, &Vec::new());
+        let result = resolve_program(&program, &scope, Stage::Runtime);
         (program, result.table)
     }
 
@@ -1655,7 +1704,7 @@ mod tests {
             st.insert(name.clone(), i as u32, rust_span!());
         }
         let scope = vec![Arc::new(st)];
-        let result = resolve_document(doc, &scope, &Vec::new());
+        let result = resolve_document(doc, &scope, Stage::Runtime);
         result.unreferenced
     }
 
@@ -1864,7 +1913,7 @@ mod tests {
         let mut root_st = SymbolTable::new();
         root_st.insert("builtin-dict-get".to_string(), 0, rust_span!());
         let scope = vec![Arc::new(root_st)];
-        let result = resolve_document(doc, &scope, &Vec::new());
+        let result = resolve_document(doc, &scope, Stage::Runtime);
 
         // With per-frame 0-based slots:
         // Outer dict scope: x→0, inner→1

@@ -766,7 +766,10 @@ pub(crate) async fn extract_fn_annotation_extra(
         return crate::error::DiagnosticResult::ok(IndexMap::new());
     };
 
-    let crate::ast::Annotation::PropertyDict(entries) = &ann_spanned.node else {
+    let crate::ast::Annotation::Expr(ann_expr_node) = &ann_spanned.node else {
+        return crate::error::DiagnosticResult::ok(IndexMap::new());
+    };
+    let crate::ast::SurfaceExpression::Dict { entries, .. } = &ann_expr_node.expr else {
         return crate::error::DiagnosticResult::ok(IndexMap::new());
     };
 
@@ -788,7 +791,7 @@ pub(crate) async fn extract_fn_annotation_extra(
         // Evaluate the annotation value: literals directly, type-level VarRefs as string identity, expressions via eval
         let val = match &e.node.value.expr {
             // Literals extract directly without evaluation
-            crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(s),
+            crate::ast::SurfaceExpression::StringLiteral { content: s, .. } => string_val(&s),
             crate::ast::SurfaceExpression::Int(n) => Value::Int {
                 n: *n,
                 type_val: Some(crate::type_infer::make_typevalue_nominal(
@@ -805,7 +808,7 @@ pub(crate) async fn extract_fn_annotation_extra(
             // This handles @[return: String], @[return: a], @[is: Int], etc.
             crate::ast::SurfaceExpression::VarRef {
                 name, resolution, ..
-            } if resolution.get() == Some(None) => string_val(name),
+            } if resolution.get() == Some(None) => string_val(&name),
             // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.
             // Annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
@@ -900,8 +903,34 @@ pub(crate) fn eval_core_expr<'a>(
             CoreExpr::Var { name, addr, .. } => {
                 let thunk = match addr {
                     VarAddr::Dispatch(depth, slot) => {
-                        SymbolTable::lookup_in_chain(scope, *depth, *slot)
-                            .and_then(|e| e.value.get().cloned())
+                        match SymbolTable::lookup_in_chain(scope, *depth, *slot) {
+                            Some((found_name, entry)) => {
+                                // Cross-check: `name` is the identifier this VarRef's source
+                                // text used; `found_name` is the key actually stored at
+                                // Dispatch(depth, slot) in the scope chain passed to this
+                                // evaluation. Report ONLY this observed fact when they
+                                // differ — do not speculate about cause (the mechanism is
+                                // not established by this check alone).
+                                if found_name != name.as_str() {
+                                    let mut diag = Diagnostic::error(
+                                        KIND,
+                                        format!(
+                                            "VarRef '{name}' has address Dispatch({depth}, {slot}); \
+                                             at that address, the scope chain holds a binding named \
+                                             '{found_name}', not '{name}'"
+                                        ),
+                                        span.clone(),
+                                    );
+                                    for note in SymbolTable::scope_chain_notes(scope, Some(*depth)) {
+                                        diag = diag.with_note(note);
+                                    }
+                                    return crate::error::DiagnosticResult::err(diag)
+                                        .with_diagnostics(_dr_diags);
+                                }
+                                entry.value.get().cloned()
+                            }
+                            None => None,
+                        }
                     }
                     VarAddr::EffectPerform {
                         class_decl_id,
@@ -947,11 +976,11 @@ pub(crate) fn eval_core_expr<'a>(
                         );
                         if let VarAddr::Dispatch(depth, slot) = addr {
                             let entry = SymbolTable::lookup_in_chain(scope, *depth, *slot);
-                            if let Some(e) = entry {
+                            if let Some((found_name, e)) = entry {
                                 let has_value = e.value.get().is_some();
                                 diag = diag.with_note(format!(
-                                    "entry at scope[{}] slot {} (has_value={})",
-                                    depth, slot, has_value
+                                    "entry at scope[{}] slot {} (name={:?}, has_value={})",
+                                    depth, slot, found_name, has_value
                                 ));
                             } else {
                                 diag = diag.with_note(format!(

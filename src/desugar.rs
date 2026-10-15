@@ -422,22 +422,11 @@ fn desugar_surface_entry(entry: &mut SurfaceEntry, depth: usize) {
     desugar_surface(&mut entry.value, depth);
 }
 
-/// Desugar an annotation (if it's a PropertyDict with expression values).
-fn desugar_surface_annotation(ann: &mut Annotation) {
-    match ann {
-        Annotation::Simple(_) => {}
-        Annotation::Quote => {}
-        Annotation::PropertyDict(_entries) => {
-            // PropertyDict entries use the old Entry/Expr AST types. $_ inside type
-            // annotations is a user error (type expressions don't evaluate), so we
-            // do not recurse here.
-        }
-        Annotation::Annotated(outer, inner) => {
-            desugar_surface_annotation(outer);
-            desugar_surface_annotation(inner);
-        }
-    }
-}
+/// Desugar an annotation. Always a no-op: type expressions don't evaluate, so `$_`
+/// (the only thing this pass desugars) inside an annotation is a user error, not
+/// something to recurse into — true for every Annotation::Expr shape (bare name,
+/// record-type literal, type application) alike, not just the former PropertyDict case.
+fn desugar_surface_annotation(_ann: &mut Annotation) {}
 
 /// Desugar a pipe chain starting at `node` (which must be a `Pipe` node).
 ///

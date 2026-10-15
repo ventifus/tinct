@@ -89,9 +89,18 @@ fn extract_property_dict_from_annotation(
     ann: &Annotation,
 ) -> Option<&Vec<Spanned<crate::ast::SurfaceEntry>>> {
     match ann {
-        Annotation::PropertyDict(entries) => Some(entries),
-        Annotation::Annotated(outer, _) => extract_property_dict_from_annotation(outer),
-        _ => None,
+        // Direct record-type literal (formerly PropertyDict).
+        Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::Dict { entries, .. } => Some(entries),
+            // Chained `@[key:val]@Inner` now parses as Call{func: Dict, args: [Inner]}
+            // (formerly Annotated(PropertyDict, inner)) — look for the dict in `func`.
+            SurfaceExpression::Call { func, .. } => match &func.expr {
+                SurfaceExpression::Dict { entries, .. } => Some(entries),
+                _ => None,
+            },
+            _ => None,
+        },
+        Annotation::Quote => None,
     }
 }
 

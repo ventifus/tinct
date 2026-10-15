@@ -127,8 +127,8 @@
   # ============================================================================
 
   SocketAddress: [type
-    IPv4: [host: String  port: Int]
-    IPv6: [host: String  port: Int]
+    IPv4: [host: String  port: Integer]
+    IPv6: [host: String  port: Integer]
     Unix: [path: String]]
 
   UdpDatagram: [type
@@ -166,13 +166,13 @@
 
   # CodecInvalidHandler: error recovery callback parameterized by codec input/output.
   # Called when decode encounters invalid or incomplete data. Returns {value: fallback, next: Int}.
-  CodecInvalidHandler: [type [let input output] [Fn@[value: input  next: Int] [output Int]]]
+  CodecInvalidHandler: [type [let input output] [Fn@[value: input  next: Integer] [output Integer]]]
 
   Codec@[doc: "Data transform between IO shapes: encode/decode + name."]:
     [class [let Codec c input output]
       encode:     [Fn@output [c input]]
-      decode:     [Fn@[value: output  next: Int]
-                   [c input Int [or [CodecInvalidHandler input output] Absent]]]
+      decode:     [Fn@[value: output  next: Integer]
+                   [c input Integer [or [CodecInvalidHandler input output] Absent]]]
       codec-name: [Fn@String [c]]]
 
   # codec: wrap a Codec instance into a pipeline-stage function input → output.

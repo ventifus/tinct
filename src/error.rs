@@ -392,39 +392,11 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Header: level[kind]: message
-        write!(f, "{}[{}]: {}", self.level, self.kind, self.message)?;
-
-        // Primary span location
-        if let Some(primary) = self.labels.first() {
-            write!(f, "\n --> {}", primary.span)?;
-            if !primary.message.is_empty() {
-                write!(f, "  {}", primary.message)?;
-            }
-        }
-
-        // Secondary labeled spans
-        for label in self.labels.iter().skip(1) {
-            write!(f, "\n --> {}", label.span)?;
-            if !label.message.is_empty() {
-                write!(f, "  {}", label.message)?;
-            }
-        }
-
-        // Text-only notes
-        for note in &self.notes {
-            write!(f, "\n  = note: {}", note)?;
-        }
-
-        // Child diagnostics — indented recursively
-        for child in &self.children {
-            let child_str = format!("{}", child);
-            for line in child_str.lines() {
-                write!(f, "\n  {}", line)?;
-            }
-        }
-
-        Ok(())
+        // Format using the shared implementation, with no source context
+        let formatted = format_diagnostic(self, "");
+        // format_diagnostic appends a trailing newline; trim it for Display
+        // (Display trait impls typically don't add trailing newlines)
+        write!(f, "{}", formatted.trim_end_matches('\n'))
     }
 }
 
@@ -440,12 +412,12 @@ pub fn has_type_errors(diags: &[Diagnostic]) -> bool {
 /// `source` is the source text to extract snippets from. If a span's file doesn't
 /// match the provided source (e.g., Rust-side spans from `rust_span!()`), the
 /// snippet is omitted and the base Display location is shown.
-pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> String {
+pub fn format_diagnostic(diag: &Diagnostic, source: &str) -> String {
     let mut out = format!("{}[{}]: {}", diag.level, diag.kind, diag.message);
 
-    for (i, label) in diag.labels.iter().enumerate() {
-        let prefix = if i == 0 { " at" } else { "-->" };
-        out.push_str(&format!("\n {prefix} {}", label.span));
+    for label in diag.labels.iter() {
+        // Use consistent prefix for all labels (Display convention)
+        out.push_str(&format!("\n --> {}", label.span));
         if let Some(snippet) = render_span_snippet(source, label.span.clone()) {
             out.push_str("\n  |\n");
             out.push_str(&snippet);
@@ -454,11 +426,7 @@ pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> S
                 out = format!("{}  {}\n", trimmed, label.message);
             }
         } else if !label.message.is_empty() {
-            if i == 0 {
-                out.push_str(&format!("  {}", label.message));
-            } else {
-                out.push_str(&format!("  {}", label.message));
-            }
+            out.push_str(&format!("  {}", label.message));
         }
     }
 
@@ -467,7 +435,7 @@ pub fn format_diagnostic(diag: &Diagnostic, source: &str, _file_name: &str) -> S
     }
 
     for child in &diag.children {
-        let child_str = format_diagnostic(child, source, _file_name);
+        let child_str = format_diagnostic(child, source);
         for line in child_str.lines() {
             out.push_str(&format!("\n  {}", line));
         }

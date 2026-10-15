@@ -803,6 +803,9 @@ async fn infer_step(
             TypeCheckAction::Done(tv)
         }
         SurfaceExpression::TypeDecl { inner, .. } => {
+            // TODO(unified-scope): TypeDecl inner bodies contain type-stage VarRefs that
+            // currently resolve incorrectly against the runtime scope. This will be fixed
+            // when type-stage and runtime scopes are unified into a single labeled chain.
             stack.push((TypeCheckCont::PassThrough, Arc::clone(node)));
             TypeCheckAction::Eval(Arc::clone(inner))
         }
@@ -1742,20 +1745,48 @@ async fn infer_var_ref(
                         unreachable!()
                     };
                     let (resolver_level, slot) = (*resolver_level, *slot);
-                    // Slot lookup via current_scope chain.
+                    // Slot lookup via current_scope chain. Single lookup (the entry, its
+                    // actual name, and its definition_span/type_scheme/referenced flag all
+                    // come from this one call) — four separate re-lookups of the same
+                    // depth/slot were previously made here redundantly.
                     let chain_slice = &state.current_scope;
-                    let entry_exists =
-                        SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot).is_some();
-                    let slot_scheme =
-                        SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
-                            .and_then(|e| e.type_scheme.get().cloned());
+                    let found = SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot);
+                    // Cross-check: `name` is this VarRef's source identifier; `found_name`
+                    // is the key actually stored at Dispatch(resolver_level, slot) in the
+                    // type-checker's current scope chain. Report ONLY this observed fact
+                    // when they differ — no speculation about cause. Without this check,
+                    // a mismatch here would otherwise surface only as a misleading "type
+                    // scheme not yet computed for 'X'" diagnostic (consulting, or failing
+                    // to find a type scheme on, an unrelated entry) — see eval_core.rs's
+                    // CoreExpr::Var handling for the equivalent runtime-side check.
+                    let found = found.filter(|(found_name, _)| {
+                        if *found_name != name {
+                            let mut diag = Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "VarRef '{name}' has address Dispatch({resolver_level}, {slot}); \
+                                     at that address, the scope chain holds a binding named \
+                                     '{found_name}', not '{name}'"
+                                ),
+                                node.span.clone(),
+                            );
+                            for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                                &state.current_scope,
+                                Some(resolver_level),
+                            ) {
+                                diag = diag.with_note(note);
+                            }
+                            errors.push(diag);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    let entry_exists = found.is_some();
+                    let slot_scheme = found.and_then(|(_, e)| e.type_scheme.get().cloned());
                     if entry_exists {
-                        let dep_def_span =
-                            SymbolTable::lookup_in_chain(chain_slice, resolver_level, slot)
-                                .map(|e| e.definition_span.clone());
-                        if let Some(entry) =
-                            SymbolTable::lookup_in_chain(&state.current_scope, resolver_level, slot)
-                        {
+                        let dep_def_span = found.map(|(_, e)| e.definition_span.clone());
+                        if let Some((_, entry)) = found {
                             entry
                                 .referenced
                                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1778,6 +1809,38 @@ async fn infer_var_ref(
                                         .insert(dep_id);
                                 }
                             }
+                        }
+                        if slot_scheme.is_none() {
+                            // Entry exists but type_scheme OnceLock has not been set.
+                            // This means inference hasn't visited the definition yet — a
+                            // sequencing or cycle problem upstream. Emit a diagnostic so the
+                            // root cause is visible instead of silently becoming Never.
+                            let mut diag = Diagnostic::error(
+                                KIND,
+                                format!(
+                                    "type scheme not yet computed for '{}' at Dispatch({}, {}): \
+                                     entry exists in scope but its type has not been inferred",
+                                    name, resolver_level, slot
+                                ),
+                                node.span.clone(),
+                            );
+                            if let Some(ref def_span) = dep_def_span {
+                                diag = diag.with_label(
+                                    def_span.clone(),
+                                    format!("'{}' is defined here", name),
+                                );
+                            }
+                            diag = diag.with_note(format!(
+                                "Dispatch({}, {}): entry found at scope depth {} but type_scheme OnceLock is empty",
+                                resolver_level, slot, resolver_level
+                            ));
+                            for note in crate::symbol_table::SymbolTable::scope_chain_notes(
+                                &state.current_scope,
+                                Some(resolver_level),
+                            ) {
+                                diag = diag.with_note(note);
+                            }
+                            errors.push(diag);
                         }
                         slot_scheme
                     } else {
@@ -1821,9 +1884,6 @@ async fn infer_var_ref(
                 None,
             ) {
                 diag = diag.with_note(note);
-            }
-            if !state.type_stage_scope.is_empty() {
-                diag = diag.with_note(format!("type_stage_scope: {} frames", state.type_stage_scope.len()));
             }
             errors.push(diag);
             None
@@ -3044,8 +3104,19 @@ async fn infer_fn_push_cont(
     // Harvest the user-declared bind: names BEFORE resolve_fn_metadata creates their TypeVars.
     // This is a read-only name scan — no TypeVar creation, no state mutation.
     // Used after param processing to detect dead bind: names (unused-type-variable lint).
+    fn ret_ann_dict_entries(
+        ret_ann: &Spanned<Annotation>,
+    ) -> Option<&Vec<Spanned<SurfaceEntry>>> {
+        match &ret_ann.node {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict { entries, .. } => Some(entries),
+                _ => None,
+            },
+            Annotation::Quote => None,
+        }
+    }
     let bind_declared_names: Vec<String> = if let Some(ret_ann) = return_ann {
-        if let Annotation::PropertyDict(entries) = &ret_ann.node {
+        if let Some(entries) = ret_ann_dict_entries(ret_ann) {
             let mut names: Vec<String> = Vec::new();
             for entry in entries {
                 let is_bind_key = entry.node.key.as_ref().is_some_and(|k| {
@@ -3090,21 +3161,22 @@ async fn infer_fn_push_cont(
 
     // Resolve return annotation first (populates bind: TypeVars into ann_mapping_str)
     let return_ann_type: Option<TypeValue> = if let Some(ret_ann) = return_ann {
-        let resolved = match &ret_ann.node {
-            Annotation::PropertyDict(entries)
-                if entries.iter().any(|e| {
-                    e.node.key.as_ref().is_some_and(|k| {
-                        // `doc:` alone is ambiguous (could be a record field name).
-                        // Only structural keys (return/bind/constraint/kinds) trigger
-                        // the fn-metadata path.
-                        const FN_STRUCTURAL_KEYS: &[&str] =
-                            &["return", "constraint", "bind", "kinds"];
-                        matches!(&k.expr,
-                            SurfaceExpression::StringLiteral { content: s, .. }
-                                if FN_STRUCTURAL_KEYS.contains(&s.as_str()))
-                    })
-                }) =>
-            {
+        let fn_meta_entries = ret_ann_dict_entries(ret_ann).filter(|entries| {
+            entries.iter().any(|e| {
+                e.node.key.as_ref().is_some_and(|k| {
+                    // `doc:` alone is ambiguous (could be a record field name).
+                    // Only structural keys (return/bind/constraint/kinds) trigger
+                    // the fn-metadata path.
+                    const FN_STRUCTURAL_KEYS: &[&str] =
+                        &["return", "constraint", "bind", "kinds"];
+                    matches!(&k.expr,
+                        SurfaceExpression::StringLiteral { content: s, .. }
+                            if FN_STRUCTURAL_KEYS.contains(&s.as_str()))
+                })
+            })
+        });
+        let resolved = match fn_meta_entries {
+            Some(entries) => {
                 let result = typecheck_annot::resolve_fn_metadata(
                     entries,
                     ret_ann.span.clone(),
@@ -4089,26 +4161,35 @@ fn collect_annotation_deps(
     deps: &mut Vec<usize>,
 ) {
     match ann {
-        crate::ast::Annotation::Simple(name) => {
-            if let Some(&idx) = name_to_idx.get(name.as_str()) {
-                deps.push(idx);
+        // Quote has no annotation dependencies — it's a keyword marker, not a type reference
+        crate::ast::Annotation::Quote => {}
+        crate::ast::Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } => {
+                if let Some(&idx) = name_to_idx.get(name.as_str()) {
+                    deps.push(idx);
+                }
             }
-        }
-        crate::ast::Annotation::Annotated(base, arg) => {
-            collect_annotation_deps(base, name_to_idx, deps);
-            collect_annotation_deps(arg, name_to_idx, deps);
-        }
-        crate::ast::Annotation::PropertyDict(entries) => {
-            for entry in entries {
-                if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
-                    if let Some(&idx) = name_to_idx.get(name.as_str()) {
-                        deps.push(idx);
+            SurfaceExpression::Dict { entries, .. } => {
+                for entry in entries {
+                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
+                        if let Some(&idx) = name_to_idx.get(name.as_str()) {
+                            deps.push(idx);
+                        }
                     }
                 }
             }
-        }
-        // Quote has no annotation dependencies — it's a keyword marker, not a type reference
-        crate::ast::Annotation::Quote => {}
+            // Chained type application (formerly Annotated(base, arg)): recurse into both.
+            _ => {
+                if let Some((outer, inner)) = ann.as_application() {
+                    collect_annotation_deps(&outer, name_to_idx, deps);
+                    collect_annotation_deps(&inner, name_to_idx, deps);
+                }
+            }
+        },
     }
 }
 
@@ -5429,7 +5510,7 @@ pub(crate) async fn typecheck_letrec_group(
                                     } = &narrows_node.expr
                                     {
                                         let ann_span = Spanned {
-                                            node: Annotation::Simple(type_name.clone()),
+                                            node: Annotation::simple_synthetic(type_name.clone(), narrows_node.span.clone()),
                                             span: narrows_node.span.clone(),
                                         };
                                         let mut constraints: Vec<Arc<crate::value::Value>> =
@@ -5473,7 +5554,7 @@ pub(crate) async fn typecheck_letrec_group(
                                         } = &is_node.expr
                                         {
                                             let ann_span = Spanned {
-                                                node: Annotation::Simple(type_name.clone()),
+                                                node: Annotation::simple_synthetic(type_name.clone(), is_node.span.clone()),
                                                 span: is_node.span.clone(),
                                             };
                                             let mut constraints: Vec<Arc<crate::value::Value>> =

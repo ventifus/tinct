@@ -207,7 +207,7 @@ pub(crate) fn extract_narrowings(
                                             *depth,
                                             *slot,
                                         )
-                                        .and_then(|e| e.type_scheme.get().cloned());
+                                        .and_then(|(_, e)| e.type_scheme.get().cloned());
                                     if let Some(ref scheme_tv) = func_scheme {
                                         if let Some(narrowing_ty) =
                                             extract_scheme_narrowings_first(scheme_tv)
@@ -322,7 +322,7 @@ pub(crate) fn apply_narrowings(
                         crate::symbol_table::SymbolTable::lookup_in_chain(
                             &state.current_scope, *depth, *slot,
                         )
-                        .and_then(|e| e.type_scheme.get().cloned())
+                        .and_then(|(_, e)| e.type_scheme.get().cloned())
                     } else {
                         None
                     };
@@ -380,20 +380,24 @@ pub(crate) async fn extract_pattern_types(
                 {
                     if name.as_str() == "bind" {
                         if let Some(ann) = annotation {
-                            // Use PropertyDict match to detect bind: regardless of key format.
-                            // `bind: [a]` stores as PropertyDict regardless of whether the
-                            // "default" key is StringLiteral or VarRef.
-                            if let crate::ast::Annotation::PropertyDict(entries) = &ann.node {
-                                // Extract the value from the first entry (the [a b c] node)
-                                if let Some(default_node) = entries.first().map(|e| &e.node.value) {
-                                    process_instance_bind_list(
-                                        default_node,
-                                        state,
-                                        &mut bind_vars,
-                                        binding.span.clone(),
-                                    )
-                                    .map_err(|e| vec![e])?;
-                                    skip_indices.insert(i);
+                            // Use Dict match to detect bind: regardless of key format.
+                            // `bind: [a]` stores as a Dict-shaped annotation regardless of
+                            // whether the "default" key is StringLiteral or VarRef.
+                            if let crate::ast::Annotation::Expr(node) = &ann.node {
+                                if let SurfaceExpression::Dict { entries, .. } = &node.expr {
+                                    // Extract the value from the first entry (the [a b c] node)
+                                    if let Some(default_node) =
+                                        entries.first().map(|e| &e.node.value)
+                                    {
+                                        process_instance_bind_list(
+                                            default_node,
+                                            state,
+                                            &mut bind_vars,
+                                            binding.span.clone(),
+                                        )
+                                        .map_err(|e| vec![e])?;
+                                        skip_indices.insert(i);
+                                    }
                                 }
                             }
                         }
@@ -566,7 +570,10 @@ pub(crate) fn extract_binding_types<'a>(
                     ..
                 } = &func.expr
                 {
-                    let ann = crate::ast::Annotation::Simple(name.clone());
+                    let ann = crate::ast::Annotation::simple_synthetic(
+                        name.clone(),
+                        func.span.clone(),
+                    );
                     let mut constraints: Vec<Arc<crate::value::Value>> = Vec::new();
                     let mut ann_m: Option<&mut std::collections::HashMap<String, String>> = None;
                     let mut row_m: Option<&mut std::collections::HashMap<String, String>> = None;
@@ -605,7 +612,18 @@ pub(crate) fn extract_binding_types<'a>(
                 // Simple annotation whose name is in bind_vars (declared via bind:).
                 // Return the same TypeVar Arc so that `target@a source@a` share one TypeVar,
                 // enforcing that both positions must have equal types.
-                let tv = if let crate::ast::Annotation::Simple(ann_name) = &ann.node {
+                let bare_name = match &ann.node {
+                    crate::ast::Annotation::Expr(node) => match &node.expr {
+                        SurfaceExpression::VarRef {
+                            name,
+                            annotation: None,
+                            ..
+                        } => Some(name),
+                        _ => None,
+                    },
+                    crate::ast::Annotation::Quote => None,
+                };
+                let tv = if let Some(ann_name) = bare_name {
                     if let Some(bound_tv) = bind_vars.get(ann_name) {
                         Arc::clone(bound_tv)
                     } else {

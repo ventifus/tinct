@@ -43,56 +43,61 @@ macro_rules! builtin {
     // 2-arg form: all-lazy (empty strictness array, force_count=0)
     ($name:literal, $func:expr) => {{
         const S: &[crate::value::Strictness] = &[];
+        const P: &[&'static str] = &[];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: 0,
-
+            param_names: P,
         }
     }};
-    // 3-arg form: with strictness array (force_count=0)
+    // 3-arg form: with strictness array (force_count=0, no param names)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&'static str] = &[];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: 0,
-
+            param_names: P,
         }
     }};
-    // 4-arg form: with strictness array and force_count
+    // 4-arg form: with strictness array and force_count (no param names)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&'static str] = &[];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-
+            param_names: P,
         }
     }};
-    // 5-arg form: with strictness array, force_count, and param names (param names ignored — BuiltinDef no longer stores them)
+    // 5-arg form: with strictness array, force_count, and param names
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&'static str] = &[$($param),*];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-
+            param_names: P,
         }
     }};
-    // 6-arg form: with strictness, force_count, param names, and named kwargs (param/named names ignored — BuiltinDef no longer stores them)
+    // 6-arg form: with strictness, force_count, param names, and named kwargs
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?], [$($named:literal),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&'static str] = &[$($param),*];
         crate::value::BuiltinDef {
             func: $func as crate::value::BuiltinFn,
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
-
+            param_names: P,
         }
     }};
 }
@@ -747,13 +752,24 @@ mod tests {
 
     /// Uses the stdlib environment so that builtins are available in the body.
     /// The snippet should be a complete expression (e.g. `"[fn [let] 42]"`).
+    ///
+    /// TODO: returns bare `Value` and panics on parse failure instead of returning
+    /// `DiagnosticResult<Value>` like `eval_str` does. This is inconsistent — it
+    /// means no test can ever assert on this helper's parse-failure behavior, only
+    /// crash the whole test binary. Fixing it properly requires changing this
+    /// signature and updating all 4 call sites (and their enclosing test fns) to
+    /// propagate via `?`/`.await?`, not just swapping the panic for something else
+    /// internally. Deferred because the tracker is currently unavailable to record
+    /// it properly — do this before trusting this helper for any test that cares
+    /// about parse-level failure behavior.
     async fn parse_eval(llt_src: &str, ctx: &Arc<crate::eval::EvalContext>) -> Value {
-        let parsed = crate::parser::parse(llt_src, test_file(llt_src))
-            .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
+        let (parsed, _diags) = crate::parser::parse(llt_src, test_file(llt_src)).into_parts();
+        let parsed =
+            parsed.unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let program = crate::desugar::desugar_program_full(&parsed.program);
         let program = crate::expand::expand_program(&program);
         let _table =
-            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), &Vec::new());
+            crate::resolve::resolve_program(&program, &crate::symbol_table::SymbolTable::empty_chain(), crate::symbol_table::Stage::Runtime);
 
         {
             let mut infer_state = crate::type_infer::InferState::new();
@@ -848,6 +864,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -879,6 +896,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -910,6 +928,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -941,6 +960,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -973,6 +993,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1004,6 +1025,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1035,6 +1057,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1066,6 +1089,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1090,6 +1114,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1114,6 +1139,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1130,6 +1156,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1150,6 +1177,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1179,6 +1207,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1199,6 +1228,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1234,6 +1264,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1271,6 +1302,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1295,6 +1327,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1323,6 +1356,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1351,6 +1385,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1382,6 +1417,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1414,6 +1450,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1446,6 +1483,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1477,6 +1515,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1508,6 +1547,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1540,6 +1580,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1572,6 +1613,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1603,6 +1645,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1634,6 +1677,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1665,6 +1709,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1696,6 +1741,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1720,6 +1766,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1744,6 +1791,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1760,6 +1808,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1780,6 +1829,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1800,6 +1850,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1835,6 +1886,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1859,6 +1911,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1887,6 +1940,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -1907,6 +1961,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1930,6 +1985,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1953,6 +2009,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1976,6 +2033,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -1999,6 +2057,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2015,6 +2074,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2031,6 +2091,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2047,6 +2108,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2071,6 +2133,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2099,6 +2162,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2123,6 +2187,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2148,6 +2213,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2164,6 +2230,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2180,6 +2247,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2196,6 +2264,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2220,6 +2289,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2243,6 +2313,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2266,6 +2337,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2289,6 +2361,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2312,6 +2385,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2336,6 +2410,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -2359,6 +2434,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2375,6 +2451,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2391,6 +2468,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2407,6 +2485,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2423,6 +2502,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2439,6 +2519,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2463,6 +2544,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2487,6 +2569,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2512,6 +2595,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2528,6 +2612,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2547,6 +2632,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2565,6 +2651,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2582,6 +2669,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2603,6 +2691,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2624,6 +2713,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2649,6 +2739,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2671,6 +2762,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2706,6 +2798,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2725,6 +2818,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2750,6 +2844,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -2783,6 +2878,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -2810,6 +2906,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         if let Value::Dict { entries: map, .. } = result {
@@ -2832,6 +2929,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -2879,6 +2977,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -2936,6 +3035,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -2995,6 +3095,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3026,6 +3127,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         // value.type_decl_id_of() for Int → TYPE_ID_INT, wrapped as TypeValue.Nominal(TYPE_ID_INT) — a Variant.
@@ -3063,6 +3165,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match &result {
@@ -3091,6 +3194,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match &result {
@@ -3128,6 +3232,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match &result {
@@ -3159,6 +3264,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         // thunk.type_decl_id for Function → TypeValue.Fn or TypeValue.Nominal(TYPE_ID_FUNCTION), both Variants.
@@ -3200,6 +3306,7 @@ mod tests {
                 name: "dummy",
                 pos_strictness: &[],
                 force_count: 0,
+                param_names: &[],
             },
             type_val: Some(crate::type_infer::make_typevalue_nominal(
                 crate::value::TYPE_ID_BUILTIN,
@@ -3213,6 +3320,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         // builtin_type_of(Builtin) → TypeValue.Nominal(TYPE_ID_BUILTIN).
@@ -3251,6 +3359,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         // builtin_type_of(Variant) → TypeValue.Nominal(type_decl_id) — a Variant with ctor=TV_NOMINAL.
@@ -3279,6 +3388,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3296,6 +3406,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -3320,6 +3431,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -3370,6 +3482,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -3405,6 +3518,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -3479,6 +3593,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -3507,6 +3622,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3559,6 +3675,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3586,6 +3703,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3641,6 +3759,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3658,6 +3777,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3674,6 +3794,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3691,6 +3812,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3715,6 +3837,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3735,6 +3858,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -3756,6 +3880,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3779,6 +3904,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3803,6 +3929,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -3830,6 +3957,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello Rust"));
@@ -3849,6 +3977,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("bonono"));
@@ -3868,6 +3997,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3887,6 +4017,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-"));
@@ -3906,6 +4037,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("heo"));
@@ -3929,6 +4061,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(result.is_err());
@@ -3952,6 +4085,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -3968,6 +4102,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3983,6 +4118,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -3998,6 +4134,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4013,6 +4150,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4028,6 +4166,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -4043,6 +4182,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("hello"));
@@ -4058,6 +4198,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val(""));
@@ -4073,6 +4214,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4090,6 +4232,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4118,6 +4261,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4151,6 +4295,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4183,6 +4328,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4211,6 +4357,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4233,6 +4380,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4267,6 +4415,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4304,6 +4453,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4333,6 +4483,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4366,6 +4517,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4414,6 +4566,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4462,6 +4615,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4510,6 +4664,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4558,6 +4713,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4606,6 +4762,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4654,6 +4811,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4699,6 +4857,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4738,6 +4897,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4768,6 +4928,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -4830,6 +4991,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -4874,6 +5036,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -4916,6 +5079,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -4958,6 +5122,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5000,6 +5165,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5034,6 +5200,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5063,6 +5230,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5098,6 +5266,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5137,6 +5306,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5176,6 +5346,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5218,6 +5389,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5260,6 +5432,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5302,6 +5475,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5325,6 +5499,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5349,6 +5524,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5376,6 +5552,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5416,6 +5593,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5458,6 +5636,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5500,6 +5679,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5542,6 +5722,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5584,6 +5765,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5626,6 +5808,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5665,6 +5848,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5701,6 +5885,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5736,6 +5921,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5775,6 +5961,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -5810,6 +5997,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match r {
@@ -5849,6 +6037,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match r {
@@ -5886,6 +6075,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match r {
@@ -5925,6 +6115,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -5967,6 +6158,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6008,6 +6200,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6044,6 +6237,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6079,6 +6273,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6121,6 +6316,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6163,6 +6359,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6206,6 +6403,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6248,6 +6446,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6290,6 +6489,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6332,6 +6532,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6359,6 +6560,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6385,6 +6587,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6416,6 +6619,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6451,6 +6655,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6493,6 +6698,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6535,6 +6741,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6577,6 +6784,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6603,6 +6811,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6629,6 +6838,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6655,6 +6865,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6681,6 +6892,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6725,6 +6937,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6765,6 +6978,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6796,6 +7010,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -6836,6 +7051,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6879,6 +7095,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6922,6 +7139,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -6965,6 +7183,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -7009,6 +7228,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -7033,6 +7253,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -7068,6 +7289,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -7110,6 +7332,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -7193,6 +7416,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -7263,6 +7487,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -7305,6 +7530,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -7356,6 +7582,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -7387,6 +7614,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(result.is_err());
@@ -7413,6 +7641,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(result.is_err());
@@ -7436,6 +7665,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(result.is_err());
@@ -7474,6 +7704,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
 
@@ -7538,6 +7769,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
 
@@ -7622,6 +7854,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
 
@@ -7702,6 +7935,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -7765,6 +7999,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
 
@@ -7847,6 +8082,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
 
@@ -7888,6 +8124,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap();
@@ -7922,6 +8159,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -7954,6 +8192,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -7995,6 +8234,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -8025,6 +8265,7 @@ mod tests {
             ctx,
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await
         .unwrap_err();
@@ -8124,6 +8365,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(
@@ -8170,6 +8412,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(
@@ -8218,6 +8461,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -8254,6 +8498,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         match result {
@@ -8290,6 +8535,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert_eq!(result, string_val("second"));
@@ -8324,6 +8570,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         assert!(result.is_err());
@@ -8366,6 +8613,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -8409,6 +8657,7 @@ mod tests {
             ctx: Arc::clone(&ctx),
 
             scope: crate::symbol_table::SymbolTable::empty_chain(),
+            param_names: &[],
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

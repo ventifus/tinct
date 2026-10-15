@@ -145,6 +145,7 @@ pub(crate) fn lower_inner(
         arc.span.clone()
     };
 
+
     // Read the inferred type from the SurfaceNode BEFORE lowering, so lower_expr
     // can use it directly during CoreExpr construction — no temporary Unknown.
     let inferred_type = arc
@@ -1008,7 +1009,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             let annotation = match check {
                 crate::ast::TypeAssertCheck::Source { annotation } => annotation.clone(),
                 crate::ast::TypeAssertCheck::Resolved(_) => crate::ast::Spanned::new(
-                    crate::ast::Annotation::Simple("_".to_string()),
+                    crate::ast::Annotation::simple_synthetic("_", rust_span!()),
                     rust_span!(),
                 ),
             };
@@ -1457,7 +1458,7 @@ mod tests {
             span.clone(),
         );
         let return_ann = Some(Spanned::new(
-            Annotation::PropertyDict(vec![trace_entry]),
+            Annotation::dict_synthetic(vec![trace_entry], span.clone()),
             span.clone(),
         ));
 

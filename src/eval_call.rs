@@ -112,7 +112,10 @@ pub(crate) async fn eval_call_core(
 
     // Return PendingCall thunk — function dispatch deferred to PendingCallDispatch in run().
     // Attach the function label (if known) to the call span for blame tracking.
-    let thunk_span = if let Some(label) = func_label_core(&func_expr.node) {
+    // Both thunk_span and call_span get the label so that both user-defined functions
+    // (via invoke_function) and builtins (via PendingCallDispatch) have the function name
+    // for error reporting.
+    let label_span = if let Some(label) = func_label_core(&func_expr.node) {
         call_span.clone().with_name(label)
     } else {
         call_span.clone()
@@ -121,9 +124,9 @@ pub(crate) async fn eval_call_core(
         func_thunk,
         pos_args,
         named_args_map,
-        thunk_span,
+        label_span.clone(),
         crate::value::FnCallSpec {
-            call_span: call_span.clone(),
+            call_span: label_span,
             ctx: Arc::clone(ctx),
             original_call,
             scope: caller_scope.clone(),
@@ -517,6 +520,13 @@ pub async fn invoke_function(
     ctx: &CallContext<'_>,
 ) -> crate::error::DiagnosticResult<Arc<Thunk>> {
     let mut _dr_diags: Vec<crate::error::Diagnostic> = Vec::new();
+    if ctx.call_span.name.is_none() {
+        _dr_diags.push(crate::error::Diagnostic::error(
+            KIND,
+            "unnamed call span in invoke_function — this is a compiler bug".to_string(),
+            ctx.call_span.clone(),
+        ));
+    }
     let (result, diags) = invoke_function_tco(ctx).await.into_parts();
     _dr_diags.extend(diags);
     let (body, frame) = match result {
@@ -956,7 +966,7 @@ pub(crate) async fn bind_args_thunks(
                     let mut diag = Diagnostic::error(
                         "eval",
                         format!(
-                            "arity mismatch calling '{}': function has {} ({}) but received {} argument(s)",
+                            "arity mismatch calling '{}': unrouted function has {} ({}) but received {} argument(s)",
                             fn_name, expected, param_descs.join(", "), positional.len()
                         ),
                         call_span.clone(),
@@ -1074,6 +1084,7 @@ pub(crate) fn get_default(param: &Param) -> Option<Arc<SurfaceNode>> {
 mod tests {
     use super::*;
     use crate::ast::{Annotation, CoreExpr};
+    use crate::rust_span;
     use crate::test_util::sp;
 
     #[test]
@@ -1156,7 +1167,7 @@ mod tests {
     fn typed_variadic_param(name: &str, type_id: u64, slot: u32) -> Param {
         Param {
             name: name.to_string(),
-            annotation: Some(sp(Annotation::Simple(name.to_string()))),
+            annotation: Some(sp(Annotation::simple_synthetic(name.to_string(), rust_span!()))),
             variadic: true,
             slot,
             resolved_type: Some(make_nominal_typevalue(type_id)),
@@ -1305,14 +1316,14 @@ mod tests {
         // A param with resolved_type=Some(TypeValue.Unknown) is the rest bucket (accept-all = no bucket).
         let int_bucket = Param {
             name: "ns".to_string(),
-            annotation: Some(sp(Annotation::Simple("Int".to_string()))),
+            annotation: Some(sp(Annotation::simple_synthetic("Int", rust_span!()))),
             variadic: true,
             slot: 0,
             resolved_type: Some(make_nominal_typevalue(crate::value::TYPE_ID_INT)),
         };
         let unknown_bucket = Param {
             name: "rest".to_string(),
-            annotation: Some(sp(Annotation::Simple("Unknown".to_string()))),
+            annotation: Some(sp(Annotation::simple_synthetic("Unknown", rust_span!()))),
             variadic: true,
             slot: 1,
             resolved_type: Some(crate::type_infer::make_typevalue_unknown()),

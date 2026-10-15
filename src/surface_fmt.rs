@@ -33,8 +33,11 @@ fn scope_with_names(
 }
 
 /// Check if a name is in scope (known binding — param, stdlib, or enclosing dict).
+/// This checks an ordinary runtime `CoreExpr::Var` reference, so only runtime-stage
+/// frames count — matching resolve.rs's stage rule for ordinary VarRefs.
 fn name_in_scope(scope: &ScopeChain, name: &str) -> bool {
-    SymbolTable::lookup_by_name_in_chain(scope, name).is_some()
+    SymbolTable::find_in_chain_staged(scope, name, &[crate::symbol_table::Stage::Runtime], 0)
+        .is_some()
 }
 
 /// Format a dict as a tinct literal `[k: v  ...]`.

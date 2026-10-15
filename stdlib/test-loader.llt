@@ -990,7 +990,7 @@
     [parse-result: [builtin-parse
                      [read-file [builtin-file-open %libdir "cli/out/llt.llt" ["read"] -1 -1] [builtin-bytes]]
                      "cli/out/llt.llt"]]
-    # If the formatter has parse errors, raise — formatter-ok's builtin-try catches this.
+    # If the formatter has parse errors, raise — formatter-result's builtin-try catches this.
     # The raise message includes formatted diagnostics so the error is not silently swallowed.
     # On success (no errors), return the program directly; no emit needed for empty diagnostics.
     [match [builtin-eq-int [builtin-dict-length parse-result.diagnostics] 0]
@@ -999,27 +999,14 @@
       1: parse-result.program]]]
 
   # Bootstrap check: verify the formatter loaded correctly.
-  # On failure, print the actual error from builtin-try and raise — never silently swallow it.
-  formatter-ok: [call [fn [let _raw@Dict]
-      [match [builtin-has-key? "ok" _raw]
-        0: [call [fn [let _w]
-                    [match [builtin-int-gte [builtin-dict-length _w] 0]
-                      0: [builtin-raise [make-diag "llt.llt formatter failed to load"]]
-                      1: [builtin-raise [make-diag "llt.llt formatter failed to load"]]]]
-              [call [builtin-dict-get "write" %stderr]
-                [builtin-string-concat "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
-                  [builtin-string-concat
-                    [match [builtin-has-key? "message" _raw]
-                      0: "(unknown — try result has no message field)"
-                      1: [get-or "" "message" _raw]]
-                    "\n"]] %stderr]]
-        1: 1]]
-    [builtin-try [builtin-program-docs formatter-src]]]
+  # Returns {ok: <program>} on success or a Diagnostic dict on failure.
+  # Any error message is written to stderr in the final expression, threaded through the handle chain.
+  formatter-result: [builtin-try [builtin-program-docs formatter-src]]
 
   # Discover test files (or use the ones given on the command line).
-  # Both formatter-ok and prelude diagnostics are hard gates: any prelude error
+  # Both formatter-result and prelude diagnostics are hard gates: any prelude error
   # means the test environment is undefined — running tests would produce false results.
-  tests: [match [builtin-eq-int formatter-ok 1]
+  tests: [match [builtin-has-key? "ok" formatter-result]
     0: []
     1: [match [builtin-eq-int [count-errors [@Dict prel.diagnostics]] 0]
       0: [builtin-raise [make-diag [join "" ["\nprelude has "
@@ -1081,4 +1068,11 @@
       0: [join "" [", " [builtin-int->string n-failed] " failed\n" run.first-fail "\n"]]
       1: "\n"]]]
   run.stdout]]
-[merge [%stdout.flush summary-stdout] [%stderr.flush [@[stderr: Dict] run].stderr]]
+[summary-stderr: [match [builtin-has-key? "ok" formatter-result]
+  0: [call [builtin-dict-get@[trace: 2] "write" %stderr]
+        [join "" ["\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\nCause: "
+                  [get-or "(unknown — try result has no message field)" "message" formatter-result]
+                  "\n"]]
+        run.stderr]
+  1: run.stderr]]
+[merge [%stdout.flush summary-stdout] [%stderr.flush summary-stderr]]

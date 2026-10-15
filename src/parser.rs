@@ -68,6 +68,63 @@ fn peek_next_horizontal(
     None
 }
 
+/// Skip forward over any `Comment` tokens starting at `idx`, returning the index of
+/// the next non-comment token (or `tokens.len()` if none remain).
+fn skip_comment_tokens(tokens: &[Spanned<Token>], mut idx: usize) -> usize {
+    while idx < tokens.len() && matches!(tokens[idx].node, Token::Comment(_)) {
+        idx += 1;
+    }
+    idx
+}
+
+/// Pure lookahead: given the index of the `@`/`ImmediateAt` token that starts an
+/// annotation, return the index of the next significant (non-comment) token
+/// immediately following the complete, possibly-chained annotation — without
+/// constructing any AST or touching comment-collection maps.
+///
+/// Mirrors the grammar `parse_annotation_direct` actually parses: `@Identifier` or
+/// `@[...]`, optionally repeated via a directly-following `ImmediateAt` for each
+/// further `@...` hop (`Foo@Int@Extra`, `@[key:val]@Int`). Used by the bracket-dispatch
+/// loop to distinguish `[name@ann]` / `[name@ann: val]` (Dict-literal syntax) from
+/// `[name@ann arg1 arg2 ...]` (an ordinary call whose head happens to carry an
+/// annotation, e.g. `[builtin-dict-get@[trace: 2] "write" %stderr]`) — these are not
+/// distinguishable by looking only at the single token right after the identifier,
+/// since both start with `Identifier` immediately followed by `@`.
+fn peek_past_annotation_chain(tokens: &[Spanned<Token>], at_idx: usize) -> usize {
+    let mut idx = at_idx;
+    loop {
+        idx = skip_comment_tokens(tokens, idx);
+        match tokens.get(idx).map(|t| &t.node) {
+            Some(Token::At) | Some(Token::ImmediateAt) => idx += 1,
+            _ => return idx,
+        }
+        idx = skip_comment_tokens(tokens, idx);
+        match tokens.get(idx).map(|t| &t.node) {
+            Some(Token::Identifier(_)) => idx += 1,
+            Some(Token::OpenBracket) => {
+                let mut depth: usize = 1;
+                idx += 1;
+                while idx < tokens.len() && depth > 0 {
+                    match &tokens[idx].node {
+                        Token::OpenBracket => depth += 1,
+                        Token::CloseBracket => depth -= 1,
+                        _ => {}
+                    }
+                    idx += 1;
+                }
+            }
+            // Malformed annotation payload — stop here; caller treats the result as
+            // "not immediately followed by `:` or `]`", i.e. not Dict-literal shape.
+            _ => return idx,
+        }
+        let after = skip_comment_tokens(tokens, idx);
+        if !matches!(tokens.get(after).map(|t| &t.node), Some(Token::ImmediateAt)) {
+            return after;
+        }
+        idx = after;
+    }
+}
+
 /// Extract a comparable string from a key expression for duplicate detection.
 /// Returns None for complex expressions where comparison isn't meaningful.
 ///
@@ -166,11 +223,12 @@ fn skip_whitespace_tokens(
 /// Returns `(Annotation, next_index)` on success.
 ///
 /// Handles:
-/// - `@Name` → `Annotation::Simple("Name")` (via expression_to_annotation)
+/// - `@Name` → `Annotation::Expr(VarRef("Name"))` (via expression_to_annotation)
 /// - `@Expr` → `Annotation::Quote` (via expression_to_annotation)
-/// - `@Name@Inner` → `Annotation::Annotated(Simple("Name"), inner)` (outer is Box<Annotation>)
-/// - `@[key: val ...]` → `Annotation::PropertyDict(entries)` (via expression_to_annotation)
-/// - `@[key: val ...]@Next` → `Annotation::Annotated(PropertyDict(...), Next)`
+/// - `@Name@Inner` → `Annotation::Expr(VarRef("Name", annotation: Some(Inner)))` — the
+///   chain is nested on the VarRef's own `annotation` field, not a separate wrapper
+/// - `@[key: val ...]` → `Annotation::Expr(Dict(entries))` (via expression_to_annotation)
+/// - `@[key: val ...]@Next` → `Annotation::Expr(Call(func: Dict(...), args: [Next]))`
 ///
 /// The `@Name` and `@[...]` cases build a `SurfaceNode` (VarRef or Dict) and delegate to
 /// `expression_to_annotation` for the actual annotation conversion — the same function used
@@ -540,8 +598,13 @@ fn parse_annotation_direct(
                     inner_ann.span.end_col,
                     Arc::clone(&bracket_start_span.file),
                 );
-                // Build outer Dict annotation, then chain via Annotated.
-                // Outer uses expression_to_annotation for consistency.
+                // @[key:val]@Inner means: apply the dict (resolved as a type) to Inner as a
+                // type argument — exactly what a Call node already means. Build a real
+                // Call{func: dict, args: [inner]} node rather than a bespoke Annotated
+                // wrapper; resolve_type_expr's existing Call handling resolves `func` as a
+                // type expression (falling through to the structural/record-type path for
+                // a Dict-shaped func, since it won't match any name-based lookup) and
+                // applies `args` to it — the same mechanism `Seq@Int`-style chains use.
                 let outer_dict_node = Arc::new(SurfaceNode::new(
                     SurfaceExpression::Dict {
                         entries,
@@ -549,12 +612,31 @@ fn parse_annotation_direct(
                     },
                     ann_span.clone(),
                 ));
-                let outer_ann = expression_to_annotation(&outer_dict_node);
+                let inner_node: Arc<SurfaceNode> = match &inner_ann.node {
+                    Annotation::Expr(node) => Arc::clone(node),
+                    Annotation::Quote => Arc::new(SurfaceNode::new(
+                        SurfaceExpression::VarRef {
+                            name: "Expr".to_string(),
+                            escaped: false,
+                            resolution: crate::ast::Resolution::new(),
+                            annotation: None,
+                            do_infer_placeholder: false,
+                        },
+                        inner_ann.span.clone(),
+                    )),
+                };
+                let call_node = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Call {
+                        func: outer_dict_node,
+                        args: vec![inner_node],
+                        named_args: vec![],
+                        implied: true,
+                        pipe_span: None,
+                    },
+                    chained_span.clone(),
+                ));
                 return Ok((
-                    Spanned::new(
-                        Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann.node)),
-                        chained_span,
-                    ),
+                    Spanned::new(expression_to_annotation(&call_node), chained_span),
                     final_i,
                 ));
             }
@@ -1412,24 +1494,100 @@ pub fn parse(source: &str, file: Arc<str>) -> crate::error::DiagnosticResult<Par
                         i += 1; // Consume the OpenBracket
                         continue;
                     }
-                    Some((Token::Identifier(_name), identifier_idx))
+                    Some((Token::Identifier(name), identifier_idx))
                         if matches!(
                             peek_next_horizontal(&token_vec, identifier_idx),
                             Some((Token::ImmediateAt, _))
                         ) =>
                     {
-                        // Priority 2b: Identifier followed by ImmediateAt → Dict (data)
-                        // [Foo@String] and [x@Number: 42] are data forms, not implied calls.
-                        // Annotations attach to bare words in data position; call heads are never annotated.
+                        // Identifier immediately followed by `@` — could be Dict-literal
+                        // syntax ([Foo@String], [x@Number: 42]) or an ordinary call whose
+                        // head happens to carry an annotation
+                        // ([builtin-dict-get@[trace: 2] "write" %stderr]). The single
+                        // token right after the identifier cannot distinguish these —
+                        // both start with `Identifier` + `ImmediateAt`. Peek PAST the
+                        // full (possibly chained) annotation instead: if a `:` or the
+                        // closing `]` follows immediately, it's Dict syntax (Priority
+                        // 2b); otherwise there are further positional tokens, so this is
+                        // an implied call (Priority 3) whose func VarRef carries the
+                        // parsed annotation.
                         // (depth already checked above)
-                        stack.push(StackFrame::Dict {
-                            entries: Vec::new(),
-                            pending_key: None,
-                            seen_keys: std::collections::HashSet::new(),
-                            span_start: span.clone(),
-                            floating_annotation: None,
-                        });
+                        let (_, at_idx) =
+                            peek_next_horizontal(&token_vec, identifier_idx).unwrap();
+                        let after_ann_idx = peek_past_annotation_chain(&token_vec, at_idx);
+                        let is_dict_shape = matches!(
+                            token_vec.get(after_ann_idx).map(|t| &t.node),
+                            Some(Token::Colon) | Some(Token::CloseBracket)
+                        );
+
+                        if is_dict_shape {
+                            // Priority 2b: annotated identifier immediately followed by
+                            // `:` or `]` → Dict (data). [Foo@String] and
+                            // [x@Number: 42] are data forms, not implied calls.
+                            stack.push(StackFrame::Dict {
+                                entries: Vec::new(),
+                                pending_key: None,
+                                seen_keys: std::collections::HashSet::new(),
+                                span_start: span.clone(),
+                                floating_annotation: None,
+                            });
+                            i += 1; // Consume the OpenBracket
+                            continue;
+                        }
+
+                        // Priority 3 (annotated head): annotated identifier followed by
+                        // further positional tokens → implied call. Consume the
+                        // OpenBracket and the identifier, then parse the annotation for
+                        // real (the side-effecting parse — comments collected here are
+                        // the genuine ones for this annotation) and attach it to the
+                        // func VarRef.
                         i += 1; // Consume the OpenBracket
+                        i += skip_whitespace_tokens(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        );
+
+                        let func_span = token_vec[i].span.clone();
+                        let func_name = name.clone();
+                        i += 1; // Consume the identifier
+
+                        // `i` now points at the `@`/`ImmediateAt` token (guaranteed by
+                        // the outer guard above).
+                        let (annotation, after_ann) = match parse_annotation_direct(
+                            &token_vec,
+                            i,
+                            &mut leading_comments,
+                            &mut blank_before,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                diagnostics.push(e.clone());
+                                return crate::error::DiagnosticResult::err(e)
+                                    .with_diagnostics(diagnostics);
+                            }
+                        };
+                        i = after_ann;
+
+                        let func_expr = Arc::new(SurfaceNode::new(
+                            SurfaceExpression::VarRef {
+                                name: func_name,
+                                escaped: false,
+                                resolution: crate::ast::Resolution::new(),
+                                annotation: Some(annotation),
+                                do_infer_placeholder: false,
+                            },
+                            func_span,
+                        ));
+
+                        stack.push(StackFrame::Call {
+                            func: Some(func_expr),
+                            implied: true,
+                            args: Vec::new(),
+                            pending_key: None,
+                            span_start: span.clone(),
+                        });
                         continue;
                     }
                     Some((Token::Identifier(name), _identifier_idx)) => {
@@ -5457,17 +5615,21 @@ fn commit_let_pending(
                 },
                 key_span,
             );
-            let ann = Spanned::new(
-                Annotation::PropertyDict(vec![Spanned::new(
-                    SurfaceEntry {
-                        key: Some(surf_key),
-                        value: Arc::clone(&rhs_node),
-                        assigned_slot: std::sync::OnceLock::new(),
-                    },
-                    rhs_node.span.clone(),
-                )]),
+            let default_dict_node = mk(
+                SurfaceExpression::Dict {
+                    entries: vec![Spanned::new(
+                        SurfaceEntry {
+                            key: Some(surf_key),
+                            value: Arc::clone(&rhs_node),
+                            assigned_slot: std::sync::OnceLock::new(),
+                        },
+                        rhs_node.span.clone(),
+                    )],
+                    scope: std::sync::OnceLock::new(),
+                },
                 combined_span.clone(),
             );
+            let ann = Spanned::new(Annotation::expr(default_dict_node), combined_span.clone());
             let annotated = mk(
                 SurfaceExpression::VarRef {
                     name: key_name,
@@ -5557,72 +5719,23 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
 /// Convert a surface expression to an `Annotation` value.
 ///
 /// Used by `drain_annotation_frames` to build an `Annotation` from the collected expression.
-fn expression_to_annotation(node: &SurfaceNode) -> Annotation {
-    match &node.expr {
-        SurfaceExpression::VarRef {
-            name,
-            annotation: None,
-            ..
-        } => {
-            // `@Expr` is the quoting sentinel — convert to Annotation::Quote immediately
-            // so the quoting mechanism is independent of the prelude's Expr type name.
-            if name == "Expr" {
-                Annotation::Quote
-            } else {
-                Annotation::Simple(name.clone())
-            }
-        }
-        SurfaceExpression::VarRef {
-            name,
-            annotation: Some(ann),
-            ..
-        } => Annotation::Annotated(
-            Box::new(Annotation::Simple(name.clone())),
-            Box::new(ann.node.clone()),
-        ),
-        SurfaceExpression::Dict { entries, scope: _ } => Annotation::PropertyDict(entries.clone()),
-        // Implied call with VarRef head (e.g. @[Seq Int] parsed as implied call) →
-        // convert to PropertyDict: func as key-less entry 0, then each positional arg.
-        SurfaceExpression::Call {
-            implied: true,
-            func,
-            args,
-            ..
-        } if matches!(&func.expr, SurfaceExpression::VarRef { .. }) => {
-            let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
-            entries.push(Spanned::new(
-                SurfaceEntry {
-                    key: None,
-                    value: Arc::clone(func),
-                    assigned_slot: std::sync::OnceLock::new(),
-                },
-                func.span.clone(),
-            ));
-            for arg in args {
-                entries.push(Spanned::new(
-                    SurfaceEntry {
-                        key: None,
-                        value: Arc::clone(arg),
-                        assigned_slot: std::sync::OnceLock::new(),
-                    },
-                    arg.span.clone(),
-                ));
-            }
-            Annotation::PropertyDict(entries)
-        }
-        _ => {
-            // Fallback: wrap in single-entry PropertyDict
-            let entry = Spanned::new(
-                SurfaceEntry {
-                    key: None,
-                    value: Arc::new(node.clone()),
-                    assigned_slot: std::sync::OnceLock::new(),
-                },
-                node.span.clone(),
-            );
-            Annotation::PropertyDict(vec![entry])
+/// `Annotation::Expr` wraps whatever real node was parsed — a bare name (`VarRef`), a
+/// record-type literal (`Dict`), a type application (`Call`), or anything else — with no
+/// transformation of its shape. The only special case is the `@Expr` quoting sentinel,
+/// which the parser converts immediately so quoting stays independent of whatever the
+/// prelude's `Expr` type is named.
+fn expression_to_annotation(node: &Arc<SurfaceNode>) -> Annotation {
+    if let SurfaceExpression::VarRef {
+        name,
+        annotation: None,
+        ..
+    } = &node.expr
+    {
+        if name == "Expr" {
+            return Annotation::Quote;
         }
     }
+    Annotation::Expr(Arc::clone(node))
 }
 
 /// Create an annotated AST node by attaching an annotation to a target expression.
@@ -6468,9 +6581,9 @@ mod tests {
             SurfaceExpression::TypeAssert {
                 annotation, expr, ..
             } => {
-                match &annotation.node {
-                    Annotation::Simple(name) => assert_eq!(name, "Number"),
-                    other => panic!("expected Simple annotation, got {other:?}"),
+                match annotation.node.bare_name() {
+                    Some(name) => assert_eq!(name, "Number"),
+                    None => panic!("expected Simple annotation, got {:?}", annotation.node),
                 }
                 assert!(matches!(&expr.expr, SurfaceExpression::Int(42)));
             }
@@ -6518,9 +6631,9 @@ mod tests {
             "expected recovered error for empty call form"
         );
         assert!(
-            output.diagnostics[0].message.contains("call form requires"),
+            err.message.contains("call form requires"),
             "expected error about call form requiring a function, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6534,9 +6647,9 @@ mod tests {
             "expected recovered error for named-arg func"
         );
         assert!(
-            output.diagnostics[0].message.contains("named argument"),
+            err.message.contains("named argument"),
             "expected error about named argument, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6550,9 +6663,9 @@ mod tests {
             "expected recovered error for key without value"
         );
         assert!(
-            output.diagnostics[0].message.contains("key without value"),
+            err.message.contains("key without value"),
             "expected 'key without value' error, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6566,9 +6679,9 @@ mod tests {
             "expected recovered error for named arg without value"
         );
         assert!(
-            output.diagnostics[0].message.contains("without value"),
+            err.message.contains("without value"),
             "expected 'without value' error for named arg, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6607,10 +6720,10 @@ mod tests {
         let err = parse_for_test("[@]", test_file("[@]")).unwrap_err();
         assert!(
             err.message.contains("unclosed bracket") || err.message.contains("annotation @")
-                || output.diagnostics[0].message.contains("extra annotation")
-                || output.diagnostics[0].message.contains("annotation"),
+                || err.message.contains("extra annotation")
+                || err.message.contains("annotation"),
             "expected error related to unclosed bracket or annotation, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6624,12 +6737,12 @@ mod tests {
             "expected recovered error for type-assert without expression"
         );
         assert!(
-            output.diagnostics[0].message.contains("type-assert form")
-                && output.diagnostics[0]
+            err.message.contains("type-assert form")
+                && err
                     .message
                     .contains("requires an expression"),
             "expected error about missing expression, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6644,16 +6757,16 @@ mod tests {
             "expected recovered error for colon in fn form"
         );
         assert!(
-            output.diagnostics[0].message.contains("key without value")
-                || output.diagnostics[0].message.contains("`:` without a key")
-                || output.diagnostics[0]
+            err.message.contains("key without value")
+                || err.message.contains("`:` without a key")
+                || err
                     .message
                     .contains("`:` is not valid inside a")
-                || output.diagnostics[0]
+                || err
                     .message
                     .contains("`:` at document top level"),
             "expected key-related error for [fn :], got: {}",
-            output.diagnostics[0].message
+            err.message
         );
         // Also test the true "colon outside dict/call" case: colon in a TypeAlias frame
         let src2 = "[type x :]";
@@ -6663,17 +6776,17 @@ mod tests {
             "expected recovered error for colon in type-alias form"
         );
         assert!(
-            output2.diagnostics[0]
+            err2
                 .message
                 .contains("`:` is not valid inside a type form")
-                || output2.diagnostics[0]
+                || err2
                     .message
                     .contains("must follow an uppercase constructor name")
-                || output2.diagnostics[0]
+                || err2
                     .message
                     .contains("requires a value before"),
             "expected error about colon in wrong context for [type x :], got: {}",
-            output2.diagnostics[0].message
+            err2.message
         );
     }
 
@@ -6687,9 +6800,9 @@ mod tests {
             "expected recovered error for colon without key"
         );
         assert!(
-            output.diagnostics[0].message.contains("`:` without a key"),
+            err.message.contains("`:` without a key"),
             "expected error about colon without key, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6769,9 +6882,9 @@ mod tests {
             "expected error for [type [a b] Int] (missing `let`), got no errors"
         );
         assert!(
-            output.diagnostics[0].message.contains("must start with"),
+            err.message.contains("must start with"),
             "expected error about missing `let`, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -6785,9 +6898,9 @@ mod tests {
             "expected error for [type [a] Int] (missing `let`), got no errors"
         );
         assert!(
-            output.diagnostics[0].message.contains("must start with"),
+            err.message.contains("must start with"),
             "expected error about missing `let`, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -7021,11 +7134,11 @@ mod tests {
             "expected recovered error for empty fn form"
         );
         assert!(
-            output.diagnostics[0]
+            err
                 .message
                 .contains("fn form requires a body expression"),
             "expected error about fn requiring a body, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -7242,9 +7355,9 @@ mod tests {
             "expected recovered error for colon without name in call frame"
         );
         assert!(
-            output.diagnostics[0].message.contains("without a name"),
+            err.message.contains("without a name"),
             "expected error about colon without a name in call frame, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -7359,10 +7472,7 @@ mod tests {
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
                 assert!(
-                    matches!(
-                        &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::Simple(s) if s == "Int"
-                    ),
+                    params[0].node.annotation.as_ref().unwrap().node.bare_name() == Some("Int"),
                     "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
@@ -7385,9 +7495,12 @@ mod tests {
                 return_ann, params, ..
             } => {
                 assert!(return_ann.is_some());
-                match &return_ann.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Number"),
-                    other => panic!("expected Simple annotation, got {other:?}"),
+                match return_ann.as_ref().unwrap().node.bare_name() {
+                    Some(name) => assert_eq!(name, "Number"),
+                    None => panic!(
+                        "expected Simple annotation, got {:?}",
+                        return_ann.as_ref().unwrap().node
+                    ),
                 }
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
@@ -7749,10 +7862,7 @@ mod tests {
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_some());
                 assert!(
-                    matches!(
-                        &params[1].node.annotation.as_ref().unwrap().node,
-                        Annotation::Simple(s) if s == "Int"
-                    ),
+                    params[1].node.annotation.as_ref().unwrap().node.bare_name() == Some("Int"),
                     "expected Simple(\"Int\") annotation, got {:?}",
                     params[1].node.annotation.as_ref().unwrap().node
                 );
@@ -7788,19 +7898,19 @@ mod tests {
             } => {
                 // Return annotation
                 assert!(return_ann.is_some());
-                match &return_ann.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Number"),
-                    other => panic!("expected Simple(Number) return annotation, got {other:?}"),
+                match return_ann.as_ref().unwrap().node.bare_name() {
+                    Some(name) => assert_eq!(name, "Number"),
+                    None => panic!(
+                        "expected Simple(Number) return annotation, got {:?}",
+                        return_ann.as_ref().unwrap().node
+                    ),
                 }
                 // Param
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
                 assert!(
-                    matches!(
-                        &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::Simple(s) if s == "Int"
-                    ),
+                    params[0].node.annotation.as_ref().unwrap().node.bare_name() == Some("Int"),
                     "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
@@ -7981,14 +8091,14 @@ mod tests {
             "expected recovered error for duplicate key"
         );
         assert!(
-            output.diagnostics[0].message.contains("duplicate key"),
+            err.message.contains("duplicate key"),
             "expected 'duplicate key' in error, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
         assert!(
-            output.diagnostics[0].message.contains("\"a\""),
+            err.message.contains("\"a\""),
             "expected key name in error, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -8031,9 +8141,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(name.as_str(), "word");
-                match &annotation.node {
-                    Annotation::Simple(s) => assert_eq!(s, "Int"),
-                    other => panic!("expected Simple(\"Int\") annotation, got {other:?}"),
+                match annotation.node.bare_name() {
+                    Some(s) => assert_eq!(s, "Int"),
+                    None => panic!("expected Simple(\"Int\") annotation, got {:?}", annotation.node),
                 }
             }
             other => panic!("expected annotated VarRef, got {other:?}"),
@@ -8170,9 +8280,9 @@ mod tests {
             "expected recovered error for colon without name in call form"
         );
         assert!(
-            output.diagnostics[0].message.contains("`:` without a name"),
+            err.message.contains("`:` without a name"),
             "expected error about colon without name, got: {}",
-            output.diagnostics[0].message
+            err.message
         );
     }
 
@@ -8241,33 +8351,6 @@ mod tests {
             }
             other => panic!("expected Dict, got {other:?}"),
         }
-    }
-
-    /// skip_to_closing_bracket correctly finds the matching ] accounting for nesting.
-    #[test]
-    fn test_skip_to_closing_bracket() {
-        // Tokenize "[a [b c] d]" and verify skip_to_closing_bracket from index 1
-        // (just past the opening '[') finds the matching ']' at the end.
-        let src = "[a [b c] d]";
-        let tokens = crate::lexer::tokenize(src, test_file(src)).expect("tokenize failed");
-        // tokens: [ Identifier("a") OpenBracket Identifier("b") Identifier("c") CloseBracket Identifier("d") CloseBracket
-        // from_idx=1 (Identifier("a")), depth starts at 1
-        let close = skip_to_closing_bracket(&tokens, 1);
-        assert!(
-            close < tokens.len(),
-            "expected to find closing bracket, got tokens.len()"
-        );
-        assert!(
-            matches!(tokens[close].node, crate::lexer::Token::CloseBracket),
-            "expected CloseBracket at close index, got {:?}",
-            tokens[close].node
-        );
-        // The outer ']' should be the last token
-        assert_eq!(
-            close,
-            tokens.len() - 1,
-            "expected close to be the last token"
-        );
     }
 
     #[test]
@@ -8670,10 +8753,7 @@ mod tests {
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
                 assert!(
-                    matches!(
-                        &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::Simple(s) if s == "Int"
-                    ),
+                    params[0].node.annotation.as_ref().unwrap().node.bare_name() == Some("Int"),
                     "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
@@ -8750,10 +8830,7 @@ mod tests {
                     "x should have @Int annotation"
                 );
                 assert!(
-                    matches!(
-                        &params[0].node.annotation.as_ref().unwrap().node,
-                        Annotation::Simple(s) if s == "Int"
-                    ),
+                    params[0].node.annotation.as_ref().unwrap().node.bare_name() == Some("Int"),
                     "expected Simple(\"Int\") annotation, got {:?}",
                     params[0].node.annotation.as_ref().unwrap().node
                 );
@@ -8985,7 +9062,7 @@ mod tests {
     #[test]
     fn test_fn_multiline_annotation_does_not_lose_frame() {
         let src = "[whenM: [fn@[return: Unknown  doc: \"\"\"\nMultiline doc.\n\"\"\"] [let app cond action]\n  [if cond action [app.pure []]]]  other: 42]";
-        let output = parse_for_test(src);
+        let output = parse_for_test(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.diagnostics.is_empty(),
             "fn@[multiline-annotation] lost its frame: {:?}",
@@ -8997,7 +9074,7 @@ mod tests {
     #[test]
     fn test_fn_annotation_with_nested_type_param() {
         let src = "[f@[doc: \"x\"]: [fn@[bind: [a]  return: a] [let p d xs] xs]  other: 42]";
-        let output = parse_for_test(src);
+        let output = parse_for_test(src, test_file(src)).expect("parse should succeed");
         assert!(
             output.diagnostics.is_empty(),
             "fn@[bind: [a] return: a] lost its frame: {:?}",
@@ -9037,7 +9114,7 @@ mod tests {
 
     #[test]
     fn test_expression_to_annotation_expr_produces_quote() {
-        let node = SurfaceNode::new(
+        let node = Arc::new(SurfaceNode::new(
             SurfaceExpression::VarRef {
                 name: "Expr".to_string(),
                 escaped: false,
@@ -9047,7 +9124,7 @@ mod tests {
                 do_infer_placeholder: false,
             },
             crate::ast::Span::rust_source(file!(), line!()),
-        );
+        ));
         let ann = expression_to_annotation(&node);
         assert!(
             matches!(ann, Annotation::Quote),
@@ -9057,7 +9134,7 @@ mod tests {
 
     #[test]
     fn test_expression_to_annotation_non_expr_produces_simple() {
-        let node = SurfaceNode::new(
+        let node = Arc::new(SurfaceNode::new(
             SurfaceExpression::VarRef {
                 name: "Integer".to_string(),
                 escaped: false,
@@ -9067,11 +9144,11 @@ mod tests {
                 do_infer_placeholder: false,
             },
             crate::ast::Span::rust_source(file!(), line!()),
-        );
+        ));
         let ann = expression_to_annotation(&node);
         assert!(
-            matches!(ann, Annotation::Simple(ref s) if s == "Integer"),
-            "expected Annotation::Simple(\"Integer\") for @Integer, got {ann:?}"
+            matches!(&ann, Annotation::Expr(n) if n.expr.varref_name() == Some("Integer")),
+            "expected Annotation::Expr(VarRef(\"Integer\")) for @Integer, got {ann:?}"
         );
     }
 

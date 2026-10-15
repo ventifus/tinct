@@ -1,11 +1,24 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::value::{Thunk, Value};
+
+/// Which pipeline stage a scope frame's bindings belong to. Resolution searches
+/// the single unified scope chain filtered by stage: type expressions search
+/// `Type` frames first then `Runtime` frames, ordinary runtime references search
+/// only `Runtime` frames.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    Type,
+    Runtime,
+}
+
+const STAGE_RUNTIME: u8 = 0;
+const STAGE_TYPE: u8 = 1;
 
 pub struct EvidenceEntry {
     pub handler_frame: Arc<SymbolTable>,
@@ -24,6 +37,7 @@ pub struct SymbolTable {
     entries: IndexMap<String, SymbolEntry>,
     evidence: OnceLock<HashMap<u64, EvidenceEntry>>,
     type_instantiation: Option<HashMap<String, Arc<Value>>>,
+    stage: AtomicU8,
 }
 
 pub type ScopeChain = Vec<Arc<SymbolTable>>;
@@ -34,6 +48,7 @@ impl SymbolTable {
             entries: IndexMap::new(),
             evidence: OnceLock::new(),
             type_instantiation: None,
+            stage: AtomicU8::new(STAGE_RUNTIME),
         }
     }
 
@@ -42,6 +57,24 @@ impl SymbolTable {
             entries: IndexMap::new(),
             evidence: OnceLock::new(),
             type_instantiation: type_inst,
+            stage: AtomicU8::new(STAGE_RUNTIME),
+        }
+    }
+
+    /// Mark this frame's bindings as belonging to the type stage (produced by a
+    /// `--- stage: "type"` document's own top-level body). Called exactly once,
+    /// from `SurfaceResolver::walk_surface_document`, after the frame has already
+    /// been pushed onto the scope stack (frames are shared via `Arc` by then, so
+    /// this uses interior mutability rather than rebuilding the table).
+    pub fn mark_type_stage(&self) {
+        self.stage.store(STAGE_TYPE, Ordering::Relaxed);
+    }
+
+    /// Which stage this frame's bindings belong to. Defaults to `Runtime`.
+    pub fn stage(&self) -> Stage {
+        match self.stage.load(Ordering::Relaxed) {
+            STAGE_TYPE => Stage::Type,
+            _ => Stage::Runtime,
         }
     }
 
@@ -66,30 +99,31 @@ impl SymbolTable {
         );
     }
 
+    /// Look up the entry at `Dispatch(depth, slot)` in the given scope chain, returning
+    /// both the entry AND the name it is actually stored under.
+    ///
+    /// Returning the name alongside the entry (rather than discarding it, as a prior
+    /// version of this function did) lets every caller that resolved `depth`/`slot`
+    /// statically for a specific name cross-check that the *runtime* scope chain still
+    /// agrees with that assumption. `Dispatch(depth, slot)` is a pure positional
+    /// address — if the runtime scope chain's frame count or per-frame entry order ever
+    /// diverges from what the static resolver assumed (e.g. a frame-count-affecting bug
+    /// elsewhere), this lookup would otherwise silently return a DIFFERENT binding's
+    /// value with no error at all. Name verification at the call site turns that silent
+    /// corruption into an immediate, precise diagnostic.
     pub fn lookup_in_chain(
         chain: &[Arc<SymbolTable>],
         depth: u32,
         slot: u32,
-    ) -> Option<&SymbolEntry> {
+    ) -> Option<(&str, &SymbolEntry)> {
         let len = chain.len();
         if (depth as usize) >= len {
             return None;
         }
         chain
             .get(len - 1 - depth as usize)
-            .and_then(|frame| frame.entries.get_index(slot as usize).map(|(_, e)| e))
-    }
-
-    pub fn lookup_by_name_in_chain<'a>(
-        chain: &'a [Arc<SymbolTable>],
-        name: &str,
-    ) -> Option<(u32, &'a SymbolEntry)> {
-        for (depth, frame) in chain.iter().rev().enumerate() {
-            if let Some(entry) = frame.entries.get(name) {
-                return Some((depth as u32, entry));
-            }
-        }
-        None
+            .and_then(|frame| frame.entries.get_index(slot as usize))
+            .map(|(k, e)| (k.as_str(), e))
     }
 
     pub fn lookup_evidence_in_chain(
@@ -207,6 +241,7 @@ impl SymbolTable {
             entries,
             evidence: OnceLock::new(),
             type_instantiation: None,
+            stage: AtomicU8::new(STAGE_RUNTIME),
         });
         let mut new_chain = chain.clone();
         new_chain.push(new_frame);
@@ -235,30 +270,69 @@ impl SymbolTable {
         notes
     }
 
-    pub fn get_in_chain(
-        chain: &[Arc<SymbolTable>],
+    /// Find `name` in `chain`, in stage-priority order: for each stage in `stages` (in
+    /// order), scan the chain innermost-to-outermost, skipping `skip` matches within
+    /// that stage's pass before returning a match. Only considers `stages[1]` etc. if
+    /// `stages[0]` matches nowhere in the chain.
+    ///
+    /// This is the single correct implementation of "a name may legitimately be bound
+    /// at more than one stage; the caller's stage priority must override mere lexical
+    /// depth" — every name-based chain lookup in this codebase converges on this
+    /// function (directly, or via `get_in_chain_staged` below). Do not reimplement this
+    /// search elsewhere: a prior second implementation (a flat, stage-unaware scan) was
+    /// exactly how `@Callable`-style annotations could silently resolve to a
+    /// same-named binding at the wrong stage, because closer-in-depth won regardless of
+    /// stage. Every caller must state its own `stages` priority explicitly — there is no
+    /// universally-correct default (type expressions want `[Type, Runtime]`; ordinary
+    /// runtime value references want `[Runtime]` only; other needs may differ again).
+    pub fn find_in_chain_staged<'a>(
+        chain: &'a [Arc<SymbolTable>],
         name: &str,
-    ) -> crate::error::DiagnosticResult<Option<Arc<Thunk>>> {
-        for frame in chain.iter().rev() {
-            if let Some(entry) = frame.entries.get(name) {
-                return match entry.value.get() {
-                    Some(thunk) => crate::error::DiagnosticResult::ok(Some(thunk.clone())),
-                    None => {
-                        crate::error::DiagnosticResult::err(
-                            crate::error::Diagnostic::error(
-                                "scope",
-                                format!(
-                                    "entry '{}' exists at slot {} but its value has not been written",
-                                    name, entry.slot
-                                ),
-                                entry.definition_span.clone(),
-                            ),
-                        )
+        stages: &[Stage],
+        skip: u32,
+    ) -> Option<(u32, &'a Arc<SymbolTable>, &'a SymbolEntry)> {
+        for &want in stages {
+            let mut seen = 0u32;
+            for (depth, frame) in chain.iter().rev().enumerate() {
+                if frame.stage() != want {
+                    continue;
+                }
+                if let Some(entry) = frame.entries.get(name) {
+                    if seen < skip {
+                        seen += 1;
+                        continue;
                     }
-                };
+                    return Some((depth as u32, frame, entry));
+                }
             }
         }
-        crate::error::DiagnosticResult::ok(None)
+        None
+    }
+
+    /// Stage-prioritized `name` lookup that materializes the match to a thunk, with the
+    /// same "entry exists but its value has not been written" diagnostic as a flat scan
+    /// would need. Built on `find_in_chain_staged` — see its doc comment for the stage
+    /// rule. Use this whenever the caller only needs the bound value (not depth/slot/
+    /// referenced-tracking bookkeeping); `find_in_chain_staged` directly otherwise.
+    pub fn get_in_chain_staged(
+        chain: &[Arc<SymbolTable>],
+        name: &str,
+        stages: &[Stage],
+    ) -> crate::error::DiagnosticResult<Option<Arc<Thunk>>> {
+        match Self::find_in_chain_staged(chain, name, stages, 0) {
+            Some((_, _, entry)) => match entry.value.get() {
+                Some(thunk) => crate::error::DiagnosticResult::ok(Some(thunk.clone())),
+                None => crate::error::DiagnosticResult::err(crate::error::Diagnostic::error(
+                    "scope",
+                    format!(
+                        "entry '{}' exists at slot {} but its value has not been written",
+                        name, entry.slot
+                    ),
+                    entry.definition_span.clone(),
+                )),
+            },
+            None => crate::error::DiagnosticResult::ok(None),
+        }
     }
 }
 

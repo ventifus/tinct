@@ -67,7 +67,11 @@ pub async fn format_source_tinct(
     // Resolve the formatter program against the scope.
     let mut resolve_diags: Vec<crate::error::Diagnostic> = Vec::new();
     for doc_spanned in &formatter_program.documents {
-        let result = resolve::resolve_document(&doc_spanned.node, &scope, &Vec::new());
+        let result = resolve::resolve_document(
+            &doc_spanned.node,
+            &scope,
+            crate::symbol_table::Stage::Runtime,
+        );
         resolve_diags.extend(result.diagnostics);
     }
     let resolve_errors: Vec<_> = resolve_diags

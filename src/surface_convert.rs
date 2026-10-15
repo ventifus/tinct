@@ -777,18 +777,18 @@ fn dict_to_annotation(
                         // Try "name" first (canonical field); fall back to "text" if absent.
                         let name = get_string_field(d, "name", path, ctx)
                             .or_else(|_| get_string_field(d, "text", path, ctx))?;
-                        Annotation::Simple(name)
+                        Annotation::simple_synthetic(name, rust_span!())
                     }
-                    _ => Annotation::Simple(String::new()),
+                    _ => Annotation::simple_synthetic(String::new(), rust_span!()),
                 },
                 crate::type_tags::ANN_PROP_DICT | crate::type_tags::ANN_UNKNOWN => {
                     // Reconstruct as a simple annotation using the text field
                     match &payload_val {
                         Value::Dict { entries: d, .. } => {
                             let text = get_string_field(d, "text", path, ctx)?;
-                            Annotation::Simple(text)
+                            Annotation::simple_synthetic(text, rust_span!())
                         }
-                        _ => Annotation::Simple(String::new()),
+                        _ => Annotation::simple_synthetic(String::new(), rust_span!()),
                     }
                 }
                 crate::type_tags::ANN_ANNOTATED => match &payload_val {
@@ -799,19 +799,19 @@ fn dict_to_annotation(
                             dict_to_annotation(&outer_val, path, ctx)?.node
                         } else {
                             let name = get_string_field(d, "name", path, ctx)?;
-                            Annotation::Simple(name)
+                            Annotation::simple_synthetic(name, rust_span!())
                         };
                         // Deserialize inner from "inner-ann" (structured recursive Annotation value).
                         let inner_ann_val = get_field(d, "inner-ann", path, ctx)?;
                         let inner_ann = dict_to_annotation(&inner_ann_val, path, ctx)?.node;
-                        Annotation::Annotated(Box::new(outer_ann), Box::new(inner_ann))
+                        Annotation::application_synthetic(outer_ann, inner_ann, rust_span!())
                     }
-                    _ => Annotation::Simple(String::new()),
+                    _ => Annotation::simple_synthetic(String::new(), rust_span!()),
                 },
-                _ => Annotation::Simple(String::new()),
+                _ => Annotation::simple_synthetic(String::new(), rust_span!()),
             }
         } else {
-            Annotation::Simple(String::new())
+            Annotation::simple_synthetic(String::new(), rust_span!())
         };
         return Ok(Spanned::new(ann, rust_span!()));
     }
@@ -832,13 +832,17 @@ fn dict_to_annotation(
         "quote" => Annotation::Quote,
         "simple" => {
             let value = get_string_field(dict, "value", path, ctx)?;
-            Annotation::Simple(value)
+            Annotation::simple_synthetic(value, rust_span!())
         }
         "annotated" => {
             let name = get_string_field(dict, "name", path, ctx)?;
             let inner_val = get_dict_field(dict, "inner", path, ctx)?;
             let inner = dict_to_annotation(&inner_val, path, ctx)?;
-            Annotation::Annotated(Box::new(Annotation::Simple(name)), Box::new(inner.node))
+            Annotation::application_synthetic(
+                Annotation::simple_synthetic(name, rust_span!()),
+                inner.node,
+                rust_span!(),
+            )
         }
         "dict" => {
             let entries_val = get_dict_field(dict, "entries", path, ctx)?;
@@ -857,7 +861,7 @@ fn dict_to_annotation(
                     dict_to_surface_entry(&entry_val, &fallback_span, &entry_path_refs, ctx)?;
                 entries.push(entry);
             }
-            Annotation::PropertyDict(entries)
+            Annotation::dict_synthetic(entries, rust_span!())
         }
         _ => {
             let mut kind_path = path.to_vec();

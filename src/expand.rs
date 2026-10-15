@@ -694,19 +694,26 @@ fn extract_repr_and_is_from_body(
         ..
     } = body
     {
-        let prop_dict_entries = match &ann.node {
-            Annotation::PropertyDict(entries) => Some(entries),
-            Annotation::Annotated(_, inner) => {
-                if let Annotation::PropertyDict(entries) = inner.as_ref() {
-                    Some(entries)
-                } else {
-                    None
+        match &ann.node {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict { entries, .. } => {
+                    return extract_repr_and_is_from_entries(entries);
                 }
-            }
-            _ => None,
-        };
-        if let Some(entries) = prop_dict_entries {
-            return extract_repr_and_is_from_entries(entries);
+                // Chained annotation (formerly Annotated(_, inner)): if the inner part
+                // is a record-type literal, scan it. `as_application` returns owned
+                // values (it may need to synthesize a stripped node), so the extracted
+                // entries must be consumed here rather than returned by reference.
+                _ => {
+                    if let Some((_, inner)) = ann.node.as_application() {
+                        if let Annotation::Expr(inner_node) = &inner {
+                            if let SurfaceExpression::Dict { entries, .. } = &inner_node.expr {
+                                return extract_repr_and_is_from_entries(entries);
+                            }
+                        }
+                    }
+                }
+            },
+            Annotation::Quote => {}
         }
     }
 
@@ -764,9 +771,16 @@ fn has_structural_alias_metadata(ann: &Annotation) -> bool {
         })
     };
     match ann {
-        Annotation::PropertyDict(entries) => check_entries(entries),
-        Annotation::Annotated(_, inner) => has_structural_alias_metadata(inner),
-        _ => false,
+        Annotation::Expr(node) => match &node.expr {
+            SurfaceExpression::Dict { entries, .. } => check_entries(entries),
+            // Chained annotation (formerly Annotated(_, inner)): recurse into the inner
+            // part. `as_application` returns an owned Annotation (may synthesize a
+            // stripped node) — fine here since this function returns bool, not a borrow.
+            _ => ann
+                .as_application()
+                .is_some_and(|(_, inner)| has_structural_alias_metadata(&inner)),
+        },
+        Annotation::Quote => false,
     }
 }
 
@@ -816,6 +830,20 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
         crate::eval::is_constructor_name(s)
     }
 
+    // If `ann`'s node is a non-empty record-type-literal (formerly PropertyDict), clone
+    // its entries — the recurring pattern both constructor-shape arms below need.
+    fn non_empty_dict_entries(ann: &Spanned<Annotation>) -> Option<Vec<Spanned<SurfaceEntry>>> {
+        match &ann.node {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict { entries, .. } if !entries.is_empty() => {
+                    Some(entries.clone())
+                }
+                _ => None,
+            },
+            Annotation::Quote => None,
+        }
+    }
+
     fn try_extract_one(expr: &SurfaceExpression, ctors: &mut Vec<ConstructorInfo>) {
         match expr {
             // Uppercase VarRef → unit constructor.
@@ -828,12 +856,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                         return;
                     }
                 }
-                let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
-                    Annotation::PropertyDict(entries) if !entries.is_empty() => {
-                        Some(entries.clone())
-                    }
-                    _ => None,
-                });
+                let ann_entries = annotation.as_ref().and_then(non_empty_dict_entries);
                 ctors.push(ConstructorInfo {
                     name: name.clone(),
                     is_unit: true,
@@ -873,14 +896,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                         if !is_ctor(name) {
                             continue;
                         }
-                        let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
-                            Annotation::PropertyDict(ann_entries)
-                                if !ann_entries.is_empty() =>
-                            {
-                                Some(ann_entries.clone())
-                            }
-                            _ => None,
-                        });
+                        let ann_entries = annotation.as_ref().and_then(non_empty_dict_entries);
                         let mut fields: Vec<String> = Vec::new();
                         let mut field_anns = indexmap::IndexMap::new();
                         let mut field_param_anns: indexmap::IndexMap<String, Spanned<Annotation>> = indexmap::IndexMap::new();
@@ -904,12 +920,18 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                                     };
                                     if let Some(fn_) = field_name {
                                         if let Some(ann) = annotation {
-                                            let is_child = match &ann.node {
-                                                Annotation::Simple(s) => s == crate::ast::ANNOTATION_KEY_CHILD,
-                                                Annotation::Annotated(outer, _) => {
-                                                    matches!(outer.as_ref(), Annotation::Simple(s) if s == crate::ast::ANNOTATION_KEY_CHILD)
+                                            let is_child = match ann.node.bare_name() {
+                                                Some(s) => s == crate::ast::ANNOTATION_KEY_CHILD,
+                                                None => {
+                                                    ann.node.as_application().is_some_and(
+                                                        |(outer, _)| {
+                                                            outer.bare_name()
+                                                                == Some(
+                                                                    crate::ast::ANNOTATION_KEY_CHILD,
+                                                                )
+                                                        },
+                                                    )
                                                 }
-                                                _ => false,
                                             };
                                             if is_child {
                                                 let role = child_role_from_annotation(&ann.node);
@@ -1148,7 +1170,8 @@ fn extract_arm_annotations(arm_pattern: &SurfaceExpression) -> Vec<(String, Span
             {
                 if name.as_str() == "bind" {
                     if let Some(ann) = annotation {
-                        if matches!(ann.node, Annotation::PropertyDict(_)) {
+                        if matches!(&ann.node, Annotation::Expr(node) if matches!(&node.expr, SurfaceExpression::Dict { .. }))
+                        {
                             return false;
                         }
                     }

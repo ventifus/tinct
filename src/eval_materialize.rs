@@ -794,6 +794,7 @@ async fn dispatch_state(
                 call_span: call_span.clone(),
                 ctx: Arc::clone(&thunk_ctx),
                 scope: builtin_scope,
+                param_names: def.param_names,
             };
 
             let (builtin_result, builtin_diags) = (def.func)(builtin_args).await.into_parts();
@@ -1587,6 +1588,7 @@ pub(crate) async fn apply_cont(
                                     call_span: call_span.clone(),
                                     ctx: Arc::clone(&thunk_ctx),
                                     scope: call_scope.clone(),
+                                    param_names: def.param_names,
                                 };
                                 (def.func)(builtin_args).await
                             };
@@ -1674,15 +1676,28 @@ pub(crate) async fn apply_cont(
                                     }
                                     None
                                 });
-                            // For Dict values, list the first few keys to help identification.
+                            // For Dict values, render each entry's key AND value (not just the
+                            // key) to help identify what was actually substituted for the
+                            // expected function — e.g. distinguishing "this really is the
+                            // %stderr protocol dict, something else is wrong" from "this is a
+                            // completely unrelated dict that leaked in here". `Thunk::render`
+                            // is non-blocking (peeks already-settled state; shows
+                            // `<thunk@file:line:col type=...>` — the entry's own CREATION
+                            // span — for anything not yet forced), so this is always safe to
+                            // call here, with no risk of further materialization side effects.
                             let got_detail = match &other {
                                 crate::value::Value::Dict { entries: map, .. }
                                     if !map.is_empty() =>
                                 {
-                                    let keys: Vec<String> =
-                                        map.keys().take(5).map(|k| format!("{k}")).collect();
+                                    let empty_env = std::collections::HashMap::new();
+                                    let tycon_env = thunk_ctx.tycon_env().unwrap_or(&empty_env);
+                                    let entries: Vec<String> = map
+                                        .iter()
+                                        .take(5)
+                                        .map(|(k, v)| format!("{k}: {}", v.render(tycon_env)))
+                                        .collect();
                                     let ellipsis = if map.len() > 5 { ", ..." } else { "" };
-                                    format!("Dict {{{}{}}}", keys.join(", "), ellipsis)
+                                    format!("Dict {{{}{}}}", entries.join(", "), ellipsis)
                                 }
                                 _ => thunk_ctx.type_display_name(other.type_decl_id_of()),
                             };
@@ -2062,6 +2077,7 @@ pub(crate) async fn apply_cont(
                         call_span: call_span.clone(),
                         ctx: Arc::clone(&thunk_ctx),
                         scope: builtin_scope,
+                        param_names: def.param_names,
                     };
                     let builtin_result = (def.func)(builtin_args).await;
                     let (builtin_result_inner, builtin_result_diags) = builtin_result.into_parts();
@@ -2140,32 +2156,39 @@ pub(crate) async fn apply_cont(
                     // For Simple: use the name directly.
                     // For PropertyDict: look for `type:` metadata key (e.g., @[type: Integer  default: 0]).
                     let type_name: Option<String> = match &annotation.node {
-                        crate::ast::Annotation::Simple(name) => Some(name.clone()),
-                        crate::ast::Annotation::PropertyDict(entries) => {
-                            // Find the `type:` key entry; extract its VarRef name as the type.
-                            entries.iter().find_map(|e| {
-                                let key_node = e.node.key.as_ref()?;
-                                let key_is_type = match &key_node.expr {
-                                    crate::ast::SurfaceExpression::VarRef { name, .. } => {
-                                        name == "type"
+                        crate::ast::Annotation::Expr(node) => match &node.expr {
+                            crate::ast::SurfaceExpression::VarRef {
+                                name,
+                                annotation: None,
+                                ..
+                            } => Some(name.clone()),
+                            crate::ast::SurfaceExpression::Dict { entries, .. } => {
+                                // Find the `type:` key entry; extract its VarRef name as the type.
+                                entries.iter().find_map(|e| {
+                                    let key_node = e.node.key.as_ref()?;
+                                    let key_is_type = match &key_node.expr {
+                                        crate::ast::SurfaceExpression::VarRef { name, .. } => {
+                                            name == "type"
+                                        }
+                                        crate::ast::SurfaceExpression::StringLiteral {
+                                            content,
+                                            ..
+                                        } => content == "type",
+                                        _ => false,
+                                    };
+                                    if !key_is_type {
+                                        return None;
                                     }
-                                    crate::ast::SurfaceExpression::StringLiteral {
-                                        content,
-                                        ..
-                                    } => content == "type",
-                                    _ => false,
-                                };
-                                if !key_is_type {
-                                    return None;
-                                }
-                                match &e.node.value.expr {
-                                    crate::ast::SurfaceExpression::VarRef { name, .. } => {
-                                        Some(name.clone())
+                                    match &e.node.value.expr {
+                                        crate::ast::SurfaceExpression::VarRef { name, .. } => {
+                                            Some(name.clone())
+                                        }
+                                        _ => None,
                                     }
-                                    _ => None,
-                                }
-                            })
-                        }
+                                })
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     };
                     match type_name {
@@ -2572,7 +2595,12 @@ pub(crate) async fn apply_cont(
 
                         // Build the arm SymbolTable scope with pattern bindings.
                         // The arm scope prepends a new frame to the enclosing chain so outer
-                        // names resolve through chain traversal.
+                        // names resolve through chain traversal. Pushed unconditionally —
+                        // even when the arm has no bindings (an empty frame) — matching the
+                        // Dict-node convention (resolve.rs and eval both always push a frame
+                        // per Dict regardless of whether it ends up empty); resolve.rs's
+                        // match-arm handling must push a frame unconditionally too, for the
+                        // same reason (see its `enter_scope` call site).
                         let mut arm_scope_inner = SymbolTable::new();
                         let mut sorted = arm_bindings;
                         sorted.sort_unstable_by_key(|(slot, _)| *slot);
@@ -3196,7 +3224,7 @@ fn eval_structural_pattern_inner_impl<'a>(
                         let Some(ann) = annotation.as_deref() else {
                             return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags);
                         };
-                        let Some(crate::ast::Annotation::Simple(tag)) = ann.return_ann.as_ref()
+                        let Some(tag) = ann.return_ann.as_ref().and_then(|a| a.bare_name())
                         else {
                             return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags);
                         };
@@ -3218,7 +3246,7 @@ fn eval_structural_pattern_inner_impl<'a>(
                             tycon_env,
                         );
 
-                        crate::error::DiagnosticResult::ok(scrutinee_tag == tag.as_str()).with_diagnostics(_dr_diags)
+                        crate::error::DiagnosticResult::ok(scrutinee_tag == tag).with_diagnostics(_dr_diags)
                     }
                     _ => {
                         // Not a constructor — Field in pattern position must evaluate to a
@@ -3287,10 +3315,9 @@ fn eval_structural_pattern_inner_impl<'a>(
                         Value::Variant { .. } => true,
                         Value::Function { annotation, .. } => {
                             annotation.as_deref().is_some_and(|ann| {
-                                matches!(
-                                    ann.return_ann.as_ref(),
-                                    Some(crate::ast::Annotation::Simple(_))
-                                )
+                                ann.return_ann
+                                    .as_ref()
+                                    .is_some_and(|a| a.bare_name().is_some())
                             })
                         }
                         _ => false,
@@ -3316,21 +3343,16 @@ fn eval_structural_pattern_inner_impl<'a>(
                         Value::Function { annotation, .. } => annotation
                             .as_deref()
                             .and_then(|ann| {
-                                if let Some(crate::ast::Annotation::Simple(tag)) =
-                                    ann.return_ann.as_ref()
-                                {
-                                    let empty = std::collections::HashMap::new();
-                                    let tycon_env = ctx.tycon_env().unwrap_or(&empty);
-                                    Some(
-                                        crate::type_tags::ctor_display_name(
-                                            *scrutinee_tdid,
-                                            *scrutinee_idx,
-                                            tycon_env,
-                                        ) == tag.as_str(),
-                                    )
-                                } else {
-                                    None
-                                }
+                                let tag = ann.return_ann.as_ref().and_then(|a| a.bare_name())?;
+                                let empty = std::collections::HashMap::new();
+                                let tycon_env = ctx.tycon_env().unwrap_or(&empty);
+                                Some(
+                                    crate::type_tags::ctor_display_name(
+                                        *scrutinee_tdid,
+                                        *scrutinee_idx,
+                                        tycon_env,
+                                    ) == tag,
+                                )
                             })
                             .unwrap_or(false),
                         _ => false,
@@ -3516,10 +3538,9 @@ fn eval_structural_pattern_inner_impl<'a>(
                                 Value::Variant { .. } => true,
                                 Value::Function { annotation, .. } => {
                                     annotation.as_deref().is_some_and(|ann| {
-                                        matches!(
-                                            ann.return_ann.as_ref(),
-                                            Some(crate::ast::Annotation::Simple(_))
-                                        )
+                                        ann.return_ann
+                                            .as_ref()
+                                            .is_some_and(|a| a.bare_name().is_some())
                                     })
                                 }
                                 _ => false,
@@ -3547,22 +3568,20 @@ fn eval_structural_pattern_inner_impl<'a>(
                                         Value::Function { annotation, .. } => annotation
                                             .as_deref()
                                             .and_then(|ann| {
-                                                if let Some(crate::ast::Annotation::Simple(tag)) =
-                                                    ann.return_ann.as_ref()
-                                                {
-                                                    let empty = std::collections::HashMap::new();
-                                                    let tycon_env =
-                                                        ctx.tycon_env().unwrap_or(&empty);
-                                                    Some(
-                                                        crate::type_tags::ctor_display_name(
-                                                            *scrutinee_tdid,
-                                                            *scrutinee_idx,
-                                                            tycon_env,
-                                                        ) == tag.as_str(),
-                                                    )
-                                                } else {
-                                                    None
-                                                }
+                                                let tag = ann
+                                                    .return_ann
+                                                    .as_ref()
+                                                    .and_then(|a| a.bare_name())?;
+                                                let empty = std::collections::HashMap::new();
+                                                let tycon_env =
+                                                    ctx.tycon_env().unwrap_or(&empty);
+                                                Some(
+                                                    crate::type_tags::ctor_display_name(
+                                                        *scrutinee_tdid,
+                                                        *scrutinee_idx,
+                                                        tycon_env,
+                                                    ) == tag,
+                                                )
                                             })
                                             .unwrap_or(false),
                                         _ => false,
@@ -3761,10 +3780,26 @@ async fn bind_or_pin_name(
         let pinned_thunk = match addr {
             VarAddr::Dispatch(depth, slot) => {
                 match SymbolTable::lookup_in_chain(scope, *depth, *slot) {
-                    Some(entry) => match entry.value.get() {
-                        Some(thunk) => Arc::clone(thunk),
-                        None => return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags),
-                    },
+                    Some((found_name, entry)) => {
+                        // Same cross-check as the main CoreExpr::Var lookup in
+                        // eval_core.rs: report only the observed fact when the name at
+                        // this address differs from the pin's own name — no speculation
+                        // about cause.
+                        if found_name != name {
+                            return crate::error::DiagnosticResult::err(Diagnostic::error(KIND,
+                                format!(
+                                    "pattern pin '{name}' has address Dispatch({depth}, {slot}); \
+                                     at that address, the scope chain holds a binding named \
+                                     '{found_name}', not '{name}'"
+                                ),
+                                match_span.clone(),
+                            )).with_diagnostics(_dr_diags);
+                        }
+                        match entry.value.get() {
+                            Some(thunk) => Arc::clone(thunk),
+                            None => return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags),
+                        }
+                    }
                     None => return crate::error::DiagnosticResult::ok(false).with_diagnostics(_dr_diags),
                 }
             }
@@ -4533,6 +4568,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            param_names: &[],
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
@@ -4665,6 +4701,7 @@ mod tests {
             name: "dummy-force2",
             pos_strictness: DUMMY_STRICTNESS,
             force_count: 2,
+            param_names: &[],
         };
 
         let outer_thunk = Arc::new(Thunk::builtin_call(

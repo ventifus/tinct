@@ -60,6 +60,7 @@ pub struct BuiltinArgs {
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
     pub scope: crate::symbol_table::ScopeChain,
+    pub param_names: &'static [&'static str],
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -100,6 +101,9 @@ pub struct BuiltinDef {
     /// Number of positional args to pre-materialize unconditionally before dispatch.
     /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
     pub force_count: usize,
+    /// Parameter names for error reporting. Length must match pos_strictness.len().
+    /// Used to generate detailed arity error messages like "missing argument for parameter `x`".
+    pub param_names: &'static [&'static str],
 }
 
 impl PartialEq for BuiltinDef {

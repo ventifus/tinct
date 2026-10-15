@@ -199,12 +199,22 @@ impl std::fmt::Display for Param {
 // MatchArm deleted (used Expr which is now deleted). Replaced by SurfaceMatchArm.
 // Pattern enum deleted (T-1750) — match arm patterns are now Arc<SurfaceNode>.
 
-/// An annotation (type shorthand or property dict)
+/// An annotation (a type expression, or the macro-quoting sentinel)
 #[derive(Debug, Clone, PartialEq)]
 pub enum Annotation {
-    Simple(String),
-    PropertyDict(Vec<Spanned<SurfaceEntry>>),
-    Annotated(Box<Annotation>, Box<Annotation>), // e.g., Seq@Int = Annotated(Simple("Seq"), Simple("Int"))
+    /// Any type expression — a bare name (`VarRef`, the degenerate case formerly called
+    /// `Simple`), a record-type literal (`Dict`, formerly `PropertyDict`), a type
+    /// application (`Call`, formerly `Annotated`/flattened out of a `VarRef`'s own nested
+    /// `annotation` field), or any other `SurfaceExpression` shape the type-expression
+    /// walker (`resolve.rs::walk_type_expr_node`) and resolver (`typecheck_annot.rs::
+    /// resolve_type_expr`) handle. These were never different concepts — only different
+    /// `SurfaceExpression` shapes, each previously given its own bespoke `Annotation`
+    /// representation that duplicated structure `SurfaceExpression` already provides
+    /// generically (span, a `Resolution` cell, recursive walking). There is exactly one
+    /// representation now; a `VarRef`'s own nested `annotation` field (e.g. for chained
+    /// `Seq@Int`) is preserved as-is on the wrapped node, not flattened into a second
+    /// `Annotation`-level pair.
+    Expr(Arc<SurfaceNode>),
     /// Quoting sentinel — produced by the parser when it sees `@Expr` and used exclusively
     /// to mark macro parameters that receive raw quoted AST instead of evaluated values.
     ///
@@ -220,21 +230,218 @@ pub enum Annotation {
 }
 
 impl Annotation {
-    /// Look up a property by string key in a PropertyDict annotation.
-    /// Returns a reference to the value node if found, None for Simple annotations.
+    /// Construct an `Expr` annotation wrapping a real, already-parsed node — the common
+    /// case, used wherever the parser already has a `VarRef`/`Dict`/`Call` node in hand.
+    pub fn expr(node: Arc<SurfaceNode>) -> Self {
+        Annotation::Expr(node)
+    }
+
+    /// Construct an `Expr` annotation from a bare name with no real parsed source — for
+    /// macro/metaprogramming round-trip paths (`surface_convert.rs::dict_to_annotation`)
+    /// and post-typecheck placeholder reconstruction (`lower.rs`) that have no original
+    /// `VarRef` node to keep, the same way those paths already synthesize spans via
+    /// `rust_span!()` for other fields. The synthesized node's `Resolution` is fresh
+    /// (never resolved) since these paths don't go through surface resolution.
+    pub fn simple_synthetic(name: impl Into<String>, span: Span) -> Self {
+        Annotation::Expr(Arc::new(SurfaceNode::new(
+            SurfaceExpression::VarRef {
+                name: name.into(),
+                escaped: false,
+                resolution: Resolution::new(),
+                annotation: None,
+                do_infer_placeholder: false,
+            },
+            span,
+        )))
+    }
+
+    /// Construct a synthetic record-type-literal annotation from already-built entries —
+    /// for macro/metaprogramming round-trip paths (`surface_convert.rs::dict_to_annotation`)
+    /// with no original parsed `Dict` node to keep.
+    pub fn dict_synthetic(entries: Vec<Spanned<SurfaceEntry>>, span: Span) -> Self {
+        Annotation::Expr(Arc::new(SurfaceNode::new(
+            SurfaceExpression::Dict {
+                entries,
+                scope: std::sync::OnceLock::new(),
+            },
+            span,
+        )))
+    }
+
+    /// Construct a synthetic chained-application annotation (formerly the separate
+    /// `Annotated(outer, inner)` variant) from already-resolved `outer`/`inner` values —
+    /// for macro/metaprogramming round-trip paths with no original parsed node. If
+    /// `outer` is a bare name, nests `inner` into a synthetic `VarRef`'s own annotation
+    /// field (matching how real parsed `Seq@Int` chains are represented); otherwise
+    /// builds a synthetic `Call` node (matching real parsed `@[dict]@Inner` chains).
+    pub fn application_synthetic(outer: Annotation, inner: Annotation, span: Span) -> Self {
+        match outer.bare_name() {
+            Some(name) => {
+                let name = name.to_string();
+                let inner_node = inner.into_node(span.clone());
+                Annotation::Expr(Arc::new(SurfaceNode::new(
+                    SurfaceExpression::VarRef {
+                        name,
+                        escaped: false,
+                        resolution: Resolution::new(),
+                        annotation: Some(Spanned::new(Annotation::Expr(inner_node), span.clone())),
+                        do_infer_placeholder: false,
+                    },
+                    span,
+                )))
+            }
+            None => {
+                let outer_node = outer.into_node(span.clone());
+                let inner_node = inner.into_node(span.clone());
+                Annotation::Expr(Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Call {
+                        func: outer_node,
+                        args: vec![inner_node],
+                        named_args: vec![],
+                        implied: true,
+                        pipe_span: None,
+                    },
+                    span,
+                )))
+            }
+        }
+    }
+
+    /// Convert this annotation into its underlying node, synthesizing an `Expr`-named
+    /// `VarRef` sentinel node for `Quote` (the inverse of the parser's `@Expr` → `Quote`
+    /// conversion) — needed wherever a nested `Annotation` must be embedded as a plain
+    /// node (e.g. inside a synthesized `Call`'s args).
+    fn into_node(self, fallback_span: Span) -> Arc<SurfaceNode> {
+        match self {
+            Annotation::Expr(node) => node,
+            Annotation::Quote => Arc::new(SurfaceNode::new(
+                SurfaceExpression::VarRef {
+                    name: "Expr".to_string(),
+                    escaped: false,
+                    resolution: Resolution::new(),
+                    annotation: None,
+                    do_infer_placeholder: false,
+                },
+                fallback_span,
+            )),
+        }
+    }
+
+    /// If this is an `Expr` annotation wrapping a bare `VarRef` (no nested annotation —
+    /// the degenerate "Simple" case), returns its name. Panics if the wrapped node isn't
+    /// a `VarRef` with no nested annotation, or if this is `Quote` — callers that expect
+    /// a bare name (e.g. the former `Simple` consumers) should only call this where that
+    /// shape is guaranteed by construction; use the `Expr`/`Quote` match directly for any
+    /// caller that must also handle compound annotation shapes.
+    pub fn simple_name(&self) -> &str {
+        match self {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::VarRef {
+                    name,
+                    annotation: None,
+                    ..
+                } => name.as_str(),
+                other => panic!(
+                    "Annotation::simple_name called on a non-bare-name annotation: {other:?}"
+                ),
+            },
+            Annotation::Quote => panic!("Annotation::simple_name called on Annotation::Quote"),
+        }
+    }
+
+    /// Non-panicking counterpart to `simple_name`: if this is an `Expr` annotation
+    /// wrapping a bare `VarRef` with no nested annotation, returns its name; `None` for
+    /// any other shape (compound type expressions, `Quote`). Prefer this over
+    /// `simple_name` whenever the caller must also gracefully handle non-bare-name
+    /// annotations rather than treating that shape as an invariant violation.
+    pub fn bare_name(&self) -> Option<&str> {
+        match self {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::VarRef {
+                    name,
+                    annotation: None,
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            },
+            Annotation::Quote => None,
+        }
+    }
+
+    /// If this represents chained type application (formerly the separate `Annotated(outer,
+    /// inner)` variant — `Seq@Int`, `@[key:val]@Int`), returns `(outer, inner)` as two
+    /// `Annotation` values, matching `Annotated`'s old semantics exactly: `outer` applied
+    /// as a type constructor to `inner` as its type argument. Covers both shapes chaining
+    /// can take: a `VarRef`'s own nested annotation field (`Seq@Int` — `outer` is
+    /// reconstructed as the bare name with its annotation stripped so recursion
+    /// terminates; its `Resolution` is preserved via `Resolution::clone`, which copies an
+    /// already-resolved value into a fresh cell rather than losing it) and a `Call`-shaped
+    /// node with exactly one positional argument and no named arguments
+    /// (`@[key:val]@Int`, built by the parser specifically for this case — `outer` is
+    /// `func`, `inner` is the sole arg). Returns `None` for anything else (no chaining,
+    /// multi-arg `Call`, `Quote`) — the single place every former-`Annotated` consumer
+    /// should call instead of hand-rolling this extraction.
+    pub fn as_application(&self) -> Option<(Annotation, Annotation)> {
+        match self {
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::VarRef {
+                    name,
+                    escaped,
+                    resolution,
+                    annotation: Some(inner),
+                    ..
+                } => {
+                    let outer_node = Arc::new(SurfaceNode::new(
+                        SurfaceExpression::VarRef {
+                            name: name.clone(),
+                            escaped: *escaped,
+                            resolution: resolution.clone(),
+                            annotation: None,
+                            do_infer_placeholder: false,
+                        },
+                        node.span.clone(),
+                    ));
+                    Some((Annotation::Expr(outer_node), inner.node.clone()))
+                }
+                SurfaceExpression::Call {
+                    func,
+                    args,
+                    named_args,
+                    implied: true,
+                    ..
+                } if args.len() == 1 && named_args.is_empty() => Some((
+                    Annotation::Expr(Arc::clone(func)),
+                    Annotation::Expr(Arc::clone(&args[0])),
+                )),
+                _ => None,
+            },
+            Annotation::Quote => None,
+        }
+    }
+
+    /// Look up a property by string key in a record-type-literal (`Dict`-shaped) annotation.
+    /// Returns a reference to the value node if found. Delegates into a `VarRef`'s own
+    /// nested annotation for chained type application (e.g. `Seq@[doc: \"...\"]`'s `doc`
+    /// lives on the inner annotation). Returns `None` for any other shape (bare names,
+    /// `Call`-shaped type application, `Quote`).
     pub fn get_property(&self, key: &str) -> Option<&Arc<SurfaceNode>> {
         match self {
-            Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
-                let key_node = entry.node.key.as_ref()?;
-                match &key_node.expr {
-                    SurfaceExpression::StringLiteral { content, .. } if content == key => {
-                        Some(&entry.node.value)
+            Annotation::Expr(node) => match &node.expr {
+                SurfaceExpression::Dict { entries, .. } => entries.iter().find_map(|entry| {
+                    let key_node = entry.node.key.as_ref()?;
+                    match &key_node.expr {
+                        SurfaceExpression::StringLiteral { content, .. } if content == key => {
+                            Some(&entry.node.value)
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                }
-            }),
-            Annotation::Simple(_) => None,
-            Annotation::Annotated(_, inner) => inner.get_property(key),
+                }),
+                SurfaceExpression::VarRef {
+                    annotation: Some(inner),
+                    ..
+                } => inner.node.get_property(key),
+                _ => None,
+            },
             Annotation::Quote => None,
         }
     }
@@ -243,22 +450,10 @@ impl Annotation {
 impl fmt::Display for Annotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Annotation::Simple(name) => write!(f, "{name}"),
-            Annotation::PropertyDict(entries) => {
-                write!(f, "[")?;
-                for (i, entry) in entries.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "  ")?;
-                    }
-                    if let Some(key) = &entry.node.key {
-                        write!(f, "{}: {}", key, entry.node.value)?;
-                    } else {
-                        write!(f, "{}", entry.node.value)?;
-                    }
-                }
-                write!(f, "]")
-            }
-            Annotation::Annotated(outer, inner) => write!(f, "{outer}@{inner}"),
+            // SurfaceExpression's own Display already renders every shape correctly,
+            // including a VarRef's nested annotation (`name@{ann}`) and Dict's
+            // `[key: value ...]` form — no separate rendering logic needed here.
+            Annotation::Expr(node) => write!(f, "{}", node.expr),
             // Display intentionally renders as "Expr" — this is the user-visible text they
             // wrote in source (@Expr), not a semantic dependency on the prelude's Expr type.
             Annotation::Quote => write!(f, "Expr"),
@@ -1793,13 +1988,20 @@ mod tests {
 
     #[test]
     fn test_display_annotation_simple() {
-        let ann = Annotation::Simple("String".into());
+        let ann = Annotation::simple_synthetic("String", rust_span!());
         assert_eq!(format!("{ann}"), "String");
     }
 
     #[test]
     fn test_display_annotation_property_dict_empty() {
-        let ann = Annotation::PropertyDict(vec![]);
+        let node = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Dict {
+                entries: vec![],
+                scope: std::sync::OnceLock::new(),
+            },
+            rust_span!(),
+        ));
+        let ann = Annotation::expr(node);
         assert_eq!(format!("{ann}"), "[]");
     }
 
@@ -1824,30 +2026,41 @@ mod tests {
                 type_instantiation: TypeInstantiation::new(),
             })
         };
-        let ann = Annotation::PropertyDict(vec![
-            sp(SurfaceEntry {
-                key: Some(mk_node(SurfaceExpression::StringLiteral {
-                    prefix: String::new(),
-                    delimiter: "\"".to_string(),
-                    content: "type".into(),
-                })),
-                value: mk_node(SurfaceExpression::StringLiteral {
-                    prefix: String::new(),
-                    delimiter: "\"".to_string(),
-                    content: "Number".into(),
-                }),
-                assigned_slot: std::sync::OnceLock::new(),
-            }),
-            sp(SurfaceEntry {
-                key: Some(mk_node(SurfaceExpression::StringLiteral {
-                    prefix: String::new(),
-                    delimiter: "\"".to_string(),
-                    content: "default".into(),
-                })),
-                value: mk_node(SurfaceExpression::Int(42)),
-                assigned_slot: std::sync::OnceLock::new(),
-            }),
-        ]);
+        let node = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Dict {
+                entries: vec![
+                    sp(SurfaceEntry {
+                        key: Some(mk_node(SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: "type".into(),
+                        })),
+                        value: mk_node(SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: "Number".into(),
+                        }),
+                        assigned_slot: std::sync::OnceLock::new(),
+                    }),
+                    sp(SurfaceEntry {
+                        key: Some(mk_node(SurfaceExpression::StringLiteral {
+                            prefix: String::new(),
+                            delimiter: "\"".to_string(),
+                            content: "default".into(),
+                        })),
+                        value: mk_node(SurfaceExpression::Int(42)),
+                        assigned_slot: std::sync::OnceLock::new(),
+                    }),
+                ],
+                scope: std::sync::OnceLock::new(),
+            },
+            span: zero_span.clone(),
+            type_guard: TypeAnnotation::new(),
+            provenance: Provenance::new(),
+            inferred_type_decl_id: InferredType::new(),
+            type_instantiation: TypeInstantiation::new(),
+        });
+        let ann = Annotation::expr(node);
         assert_eq!(format!("{ann}"), "[\"type\": \"Number\"  \"default\": 42]");
     }
 
@@ -1866,9 +2079,13 @@ mod tests {
 
     #[test]
     fn test_is_expr_annotation_simple_expr_returns_false() {
-        // Simple("Expr") must NOT trigger quoting — the parser converts @Expr to Quote
-        // immediately. If it ever produces Simple("Expr") instead, quoting silently breaks.
-        assert!(!is_expr_annotation(&Annotation::Simple("Expr".to_string())));
+        // Expr(VarRef("Expr")) must NOT trigger quoting — the parser converts @Expr to
+        // Quote immediately. If it ever produces a bare-name "Expr" annotation instead,
+        // quoting silently breaks.
+        assert!(!is_expr_annotation(&Annotation::simple_synthetic(
+            "Expr",
+            rust_span!()
+        )));
     }
 
     // ── Span PartialEq and Hash identity tests ────────────────────────────────
